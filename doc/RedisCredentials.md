@@ -47,3 +47,7 @@ The live runtime must obtain credentials outside its core event loop.
 with warnings denied. Full preflight loaded both keys from local Redis and
 resolved CRUDEOIL26SEPFUT.MCX at 07:00:00 UTC. Output contained only
 credentials_loaded=true and kite_session_validated=false, with no secret values.
+
+The later session-check and stream commands do validate the stored credentials
+with Kite; see doc/Step2Verification.md. Plain preflight remains an instrument
+and Redis check and continues to report kite_session_validated=false.

@@ -20,10 +20,10 @@ empty placeholders are not presented as finished components.
 | Read-only preflight orchestration | crates/kite-adapter/src/preflight.rs | 1 |
 | CLI entrypoint | apps/kite-node/src/main.rs | 1 |
 | Redis credential loading | adapter credentials/redis module | Implemented |
-| Session lifecycle | adapter auth module | 2 |
-| Binary frame parsing | adapter websocket parser module | 2 |
-| Socket/reconnect/subscriptions | adapter websocket transport module | 2 |
-| Quote/depth mapping | adapter mapping data module | 2 |
+| Session validation | adapter auth/session module | Implemented; renewal deferred |
+| Binary frame parsing | adapter websocket/parser module | Implemented |
+| Socket/reconnect/subscriptions | adapter websocket transport/supervisor/subscription modules | Implemented |
+| Quote/depth observations | adapter mapping/market_data module | Implemented; Nautilus event mapping next |
 | Nautilus DataClient/factory | adapter data/factories modules | 3 |
 | Node lifecycle | application runtime module | 3 |
 | Recording | separate recorder crate | 3 |
@@ -66,3 +66,6 @@ The offline CSV route is explicitly reported as freshness-unverified.
 Step 1's blocking HTTP client runs only in the standalone preflight CLI.
 The future live runtime must use async transport and must not call this
 blocking downloader from Nautilus's event loop.
+
+Step 2 automated and live diagnostic checks have passed; manual verification
+is described in doc/Step2Verification.md. Session renewal is not implemented.

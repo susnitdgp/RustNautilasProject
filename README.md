@@ -3,8 +3,10 @@
 Rust workspace for a modular Kite integration. First target: standard MCX
 CRUDEOIL September 2026 futures (not CRUDEOILM).
 
-**Step 1 only:** read-only instrument preflight using Nautilus model 0.63.0.
-No WebSocket subscription, engine runtime, strategy or order API is implemented yet.
+**Implemented:** modular instrument preflight, Redis credentials, session validation
+and bounded WebSocket market-data diagnostics using Nautilus model 0.63.0.
+See [Step 2 verification](doc/Step2Verification.md) for live data commands.
+The Nautilus engine runtime, strategies and order APIs are not implemented yet.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 
 Run from this repository:
