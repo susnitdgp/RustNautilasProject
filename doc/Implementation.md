@@ -1,5 +1,18 @@
 # Implementation stages
 
+## Current native integration status (15 September 2026)
+
+[NativeIntegration.md](NativeIntegration.md) is the current architecture and
+verification record. LiveNode, BacktestNode, the native engines, Sandbox, Redis
+cache, full-packet catalog replay, native indicators, OrderEmulator and TWAP
+are integrated and exercised. Native live Kite execution and Sandbox event
+dispatch compatibility are still open. Hardening has not started.
+
+The stage descriptions below record earlier checkpoints; statements that
+LiveNode or the native catalog are pending describe those historical stages.
+
+## Historical stages
+
 Current project: /home/ubuntu/RustNautilasProject on ip-172-31-36-59.
 Original Step 1 host: vmi3506951.
 Target changed from the initial NSE proposal to standard MCX CRUDEOIL September

@@ -69,3 +69,8 @@ pub async fn next(socket: &mut Socket, deadline: Instant) -> Result<Option<Messa
 pub async fn close(socket: &mut Socket) {
     let _ = tokio::time::timeout(Duration::from_secs(1), socket.close(None)).await;
 }
+
+/// Connect to the fixed Kite market-data endpoint for native node adapters.
+pub async fn connect(credentials: &KiteCredentials, deadline: Instant) -> Result<Socket> {
+    connect_at(credentials, deadline, "wss://ws.kite.trade").await
+}

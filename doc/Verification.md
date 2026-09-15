@@ -1,5 +1,8 @@
 # Step 1 manual verification
 
+For current native node verification, see [NativeIntegration.md](NativeIntegration.md).
+This file retains the earlier preflight-only checkpoint.
+
 Run from the cloned repository on the active development server.
 Preflight requires the two Redis keys described in doc/RedisCredentials.md.
 The current clone is /home/ubuntu/RustNautilasProject:

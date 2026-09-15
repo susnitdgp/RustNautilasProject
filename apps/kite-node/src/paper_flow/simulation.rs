@@ -79,7 +79,7 @@ pub fn run_at(url: &str, namespace: &str, config: Config) -> Result<serde_json::
     Ok(result)
 }
 
-pub fn full_snapshot(
+pub(crate) fn full_snapshot(
     p: i32,
     ts: u64,
     generation: u32,

@@ -28,6 +28,29 @@ nautilus-risk.workspace = true
 nautilus-portfolio.workspace = true
 rust_decimal.workspace = true
 
+nautilus-live.workspace = true
+async-trait.workspace = true
+
+nautilus-backtest.workspace = true
+nautilus-system.workspace = true
+nautilus-indicators.workspace = true
+nautilus-analysis.workspace = true
+nautilus-persistence.workspace = true
+nautilus-infrastructure.workspace = true
+
+nautilus-sandbox.workspace = true
+
+serde.workspace = true
+redis.workspace = true
+indexmap = "2"
+log = "0.4"
+ustr = "1"
+
+ahash = "0.8"
+bytes = "1"
+
+arrow = { version = "59", default-features = false }
+
 [dev-dependencies]
 tempfile = "3"
 redis.workspace = true

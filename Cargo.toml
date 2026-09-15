@@ -32,3 +32,19 @@ nautilus-execution = { version = "=0.63.0", default-features = false }
 nautilus-trading = { version = "=0.63.0", default-features = false }
 nautilus-risk = { version = "=0.63.0", default-features = false }
 nautilus-portfolio = { version = "=0.63.0", default-features = false }
+
+nautilus-live = { version = "=0.63.0", default-features = false, features = ["node"] }
+
+nautilus-backtest = { version = "=0.63.0", default-features = false, features = ["streaming"] }
+
+nautilus-system = { version = "=0.63.0", default-features = false }
+
+nautilus-indicators = { version = "=0.63.0", default-features = false }
+
+nautilus-analysis = { version = "=0.63.0", default-features = false }
+
+nautilus-persistence = { version = "=0.63.0", default-features = false }
+
+nautilus-infrastructure = { version = "=0.63.0", default-features = false, features = ["redis"] }
+
+nautilus-sandbox = { version = "=0.63.0", default-features = false }

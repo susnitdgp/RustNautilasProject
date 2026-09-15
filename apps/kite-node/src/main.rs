@@ -2,6 +2,7 @@ mod cli;
 mod execution_command;
 mod management_command;
 mod market_data_command;
+mod native_node;
 mod native_paper_command;
 mod paper_flow;
 mod preflight_command;
@@ -13,6 +14,9 @@ mod strategy_command;
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Some(result) = native_node::cli::dispatch(&args) {
+        return result;
+    }
     match cli::parse(&args)? {
         cli::Command::PaperRecover { namespace } => paper_flow::recovery::run(&namespace),
         cli::Command::PaperFlowSim { config } => paper_flow::simulation::run(&config),

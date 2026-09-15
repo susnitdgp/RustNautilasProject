@@ -3,7 +3,26 @@
 Rust workspace for a modular Kite integration. First target: standard MCX
 CRUDEOIL September 2026 futures (not CRUDEOILM).
 
-**Implemented:** modular preflight, Redis credentials, session validation,
+**Current native integration:** LiveNode/Kernel/Trader, native strategy and audit
+actor, DataEngine/RiskEngine/ExecutionEngine, Sandbox matching, portfolio/accounts,
+Redis cache, ParquetDataCatalog, BacktestNode/BacktestEngine, SMA indicators,
+OrderEmulator and TWAP are exercised. Full Kite packets reach the user strategy,
+roundtrip through the native catalog, and replay through BacktestNode.
+Real Kite broker execution is still not wired into the native node; real orders
+remain disabled. Native Sandbox event dispatch warnings remain unresolved.
+See [native architecture and verification](doc/NativeIntegration.md) for exact
+scope, test evidence, commands and remaining integration work.
+
+Edit strategy decisions in `apps/kite-node/src/native_node/strategy.rs`.
+`on_full_tick` receives depth, OHLC, volume, OI and the derived native quote;
+its default delegates to `on_quote`. Quote-only catalogs use `on_quote`.
+The runtime still restricts execution to one long contract and one pending order.
+Strategy parameters are in `config/strategy-crossover.toml`.
+There is **no usable live execution enable flag** for the native node today.
+`native-node-live` rejects execution; `native-node-paper` means live data with
+simulated fills, not broker orders.
+
+**Earlier stages:** modular preflight, Redis credentials, session validation,
 WebSocket diagnostics, a Nautilus DataClient/factory and DataEngine quote runner,
 plus Parquet recording, offline quote replay and read-only broker reconciliation. Nautilus is pinned to 0.63.0.
 See [Step 3 verification](doc/Step3Verification.md) for capture/replay commands
@@ -16,8 +35,9 @@ See [Step 5C verification](doc/Step5CVerification.md) for mock modification and 
 See [Step 5D verification](doc/Step5DVerification.md) for native Nautilus order/fill report mapping.
 See [Step 6 verification](doc/Step6Verification.md) for the reference crossover
 strategy, paper replay, and guarded Kite HTTP/service modules.
-Full LiveNode trading, production risk controls and live order submission
-are not implemented yet. Native paper ExecutionEngine integration is implemented.
+Native LiveNode paper integration is now implemented. Production risk controls
+and native live broker execution remain incomplete. Earlier stage commands use
+the previous Session/paper runtime and do not validate the new native node.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 
 Run from this repository:
