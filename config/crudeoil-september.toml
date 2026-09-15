@@ -1,0 +1,10 @@
+# Explicit contract selection; never automatically roll to another expiry.
+mode = "data_only"
+exchange = "MCX"
+segment = "MCX-FUT"
+underlying = "CRUDEOIL"
+instrument_type = "FUT"
+expiry_year = 2026
+expiry_month = 9
+expected_symbol = "CRUDEOIL26SEPFUT"
+expected_expiry = "2026-09-21"
