@@ -1,0 +1,13 @@
+[package]
+name = "kite-execution"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+kite-journal = { path = "../kite-journal" }
+[dev-dependencies]
+redis.workspace = true
+tempfile = "3"

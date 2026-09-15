@@ -1,8 +1,7 @@
 # Step 4: read-only account and reconciliation verification
 
 Step 3 was reviewed by the user (16 captured quotes and 16 replay callbacks),
-committed as 0464122, and pushed to origin/main. Step 4 is left uncommitted
-for review.
+committed as 0464122, and pushed to origin/main. Step 4 was subsequently reviewed and committed as ff2b1a4.
 
 ## Run on the dev server
 

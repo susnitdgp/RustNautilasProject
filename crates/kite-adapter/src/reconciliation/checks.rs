@@ -45,10 +45,14 @@ pub(super) fn check(s: &Snapshot, symbol: &str, token: u32, products: &[String])
             || o.filled_quantity < 0
             || o.pending_quantity < 0
             || o.cancelled_quantity < 0
-            || i128::from(o.filled_quantity)
-                + i128::from(o.pending_quantity)
-                + i128::from(o.cancelled_quantity)
+            || o.filled_quantity > o.quantity
+            || o.pending_quantity > o.quantity
+            || o.cancelled_quantity > o.quantity
+            || i128::from(o.filled_quantity) + i128::from(o.cancelled_quantity)
                 > i128::from(o.quantity)
+            || (!o.terminal()
+                && i128::from(o.filled_quantity) + i128::from(o.pending_quantity)
+                    > i128::from(o.quantity))
             || (o.status == "COMPLETE" && o.filled_quantity != o.quantity)
         {
             issues.insert("invalid_order_quantities");
@@ -290,6 +294,8 @@ mod tests {
         let mut s = fixture();
         s.orders[0].quantity = 3;
         s.orders[0].cancelled_quantity = 1;
+        // Kite may retain pending_quantity on a cancelled order.
+        s.orders[0].pending_quantity = 1;
         s.orders[0].status = "CANCELLED".into();
         assert!(run(&s).consistency_checks_passed);
         s.orders[0].filled_quantity = 1;

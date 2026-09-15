@@ -1,4 +1,5 @@
 mod cli;
+mod execution_command;
 mod market_data_command;
 mod preflight_command;
 mod reconciliation_command;
@@ -7,6 +8,7 @@ mod runtime;
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cli::parse(&args)? {
+        cli::Command::ExecutionSim { namespace } => execution_command::run(namespace.as_deref()),
         cli::Command::Reconcile { config } => reconciliation_command::run(&config),
         cli::Command::Capture {
             config,

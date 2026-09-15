@@ -9,6 +9,8 @@ plus Parquet recording, offline quote replay and read-only broker reconciliation
 See [Step 3 verification](doc/Step3Verification.md) for capture/replay commands
 and [Step 2 verification](doc/Step2Verification.md) for sample price display.
 See [Step 4 verification](doc/Step4Verification.md) for the read-only reconcile command.
+See [Step 5A verification](doc/Step5Verification.md) for the durable Redis journal
+and offline mock execution simulator.
 Full LiveNode trading, strategies, native execution reports and order submission
 are not implemented yet.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).

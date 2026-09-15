@@ -23,15 +23,16 @@ empty placeholders are not presented as finished components.
 | Session validation | adapter auth/session module | Implemented; renewal deferred |
 | Binary frame parsing | adapter websocket/parser module | Implemented |
 | Socket/reconnect/subscriptions | adapter websocket transport/supervisor/subscription modules | Implemented |
-| Quote/depth observations | adapter mapping/market_data module | Implemented; Nautilus event mapping next |
+| Quote/depth observations | adapter mapping/market_data module | Implemented; native quote mapping available |
 | Nautilus DataClient/factory | adapter data/factories modules | Implemented for quotes |
 | DataEngine runner lifecycle | application runtime modules | Implemented; full LiveNode later |
 | Recording and quote replay | separate kite-recorder crate | Implemented |
 | Account and product mapping | adapter account module | Implemented read-only; native account reports deferred |
 | Orders, trades and positions | separate adapter orders/trades/positions modules | Implemented read-only |
 | Broker snapshot reconciliation | adapter reconciliation module | Implemented target quantity consistency |
-| Durable order journal | separate journal crate | 5 |
-| Order command translation | adapter execution module | 5 |
+| Redis order journal | separate kite-journal crate | 5A implemented, simulation scope |
+| Order command translation | kite-execution translation module | 5A regular LIMIT/DAY simulation |
+| Persist-before-submit and mock broker | kite-execution coordinator/mock modules | 5A implemented |
 | Account-wide rate limiting | adapter rate_limit module | 5 |
 | Strategy | separate strategies crate | 6 |
 | Application trading controls | separate risk-controls crate | 6 |
@@ -76,3 +77,7 @@ The current artifact format is application Parquet, not the native Nautilus cata
 
 Step 4 automated and live read-only checks passed; see doc/Step4Verification.md.
 This stage does not hydrate the Nautilus execution engine or enable orders.
+
+Step 5A journal and offline mock execution checks passed; see doc/Step5Verification.md.
+The rest of Step 5 remains pending, including production ownership, execution
+reports, rate limiting, cancel/modify requests and live transport.

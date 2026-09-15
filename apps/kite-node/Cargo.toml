@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+kite-execution = { path = "../../crates/kite-execution" }
 anyhow.workspace = true
 nautilus-common.workspace = true
 nautilus-core.workspace = true

@@ -1084,12 +1084,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "kite-execution"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kite-journal",
+ "redis",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "kite-journal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "redis",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "kite-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "kite-adapter",
+ "kite-execution",
  "kite-recorder",
  "nautilus-common",
  "nautilus-core",
