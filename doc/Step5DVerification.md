@@ -136,4 +136,4 @@ exchange timestamps, actual fees, position reports, ambiguity reconciliation and
 real place/modify/cancel transport remain pending. Strategy logic and risk
 controls also remain pending.
 
-Changes are uncommitted for manual review.
+User verification passed; committed and pushed as dcabeee.

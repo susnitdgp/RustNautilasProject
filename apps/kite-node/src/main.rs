@@ -7,10 +7,14 @@ mod rate_limit_command;
 mod reconciliation_command;
 mod reports_command;
 mod runtime;
+mod strategy_command;
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cli::parse(&args)? {
+        cli::Command::Strategy { config, input } => {
+            strategy_command::run(&config, input.as_deref())
+        }
         cli::Command::ReportsSim => reports_command::run(),
         cli::Command::ManagementSim => management_command::run(),
         cli::Command::RateLimitSim => rate_limit_command::run(),

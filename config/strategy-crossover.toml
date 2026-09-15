@@ -1,0 +1,6 @@
+# Reference quote-based crossover, paper mode only.
+fast = 3
+slow = 5
+max_spread_rupees = 2
+max_age_seconds = 10
+max_entries = 20

@@ -5,7 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+live-orders = []
+
 [dependencies]
+kite-journal = { path = "../kite-journal" }
+kite-execution = { path = "../kite-execution" }
 anyhow.workspace = true
 nautilus-common.workspace = true
 nautilus-core.workspace = true

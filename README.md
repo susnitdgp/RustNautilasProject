@@ -14,7 +14,9 @@ and offline mock execution simulator.
 See [Step 5B verification](doc/Step5BVerification.md) for shared Redis order budgets.
 See [Step 5C verification](doc/Step5CVerification.md) for mock modification and cancellation.
 See [Step 5D verification](doc/Step5DVerification.md) for native Nautilus order/fill report mapping.
-Full LiveNode trading, strategies, execution-engine integration and real order submission
+See [Step 6 verification](doc/Step6Verification.md) for the reference crossover
+strategy, paper replay, and guarded Kite HTTP/service modules.
+Full LiveNode trading, production risk controls, execution-engine integration and live order submission
 are not implemented yet.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 

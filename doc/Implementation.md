@@ -36,7 +36,8 @@ empty placeholders are not presented as finished components.
 | Native order/fill report mapping | kite-execution reports modules | 5D simulation mapping implemented; engine integration pending |
 | Mock modify/cancel lifecycle | journal actions and execution management modules | 5C implemented; real broker transport pending |
 | Shared order-request budgets | kite-execution rate_limit modules | 5B simulation implemented; production dispatcher pending |
-| Strategy | separate strategies crate | 6 |
+| Strategy | separate kite-strategy crate | 6 reference crossover and paper replay implemented |
+| Kite order HTTP/service | adapter execution modules | 6 implemented with live gate disabled; engine integration pending |
 | Application trading controls | separate risk-controls crate | 6 |
 
 ## Checkpoints
@@ -92,3 +93,7 @@ doc/Step5CVerification.md. Strategy and real Kite order execution remain pending
 
 Step 5D native Nautilus order/fill report mapping checks passed; see
 doc/Step5DVerification.md. This does not start an execution engine or enable live orders.
+
+Step 6 reference strategy, Redis checkpoints, paper matching and guarded Kite
+order transport/service are implemented; see doc/Step6Verification.md.
+Full LiveNode and production broker/risk integration remain pending.

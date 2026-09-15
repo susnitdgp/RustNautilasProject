@@ -1069,6 +1069,8 @@ dependencies = [
  "chrono",
  "csv",
  "futures-util",
+ "kite-execution",
+ "kite-journal",
  "nautilus-common",
  "nautilus-core",
  "nautilus-model",
@@ -1121,6 +1123,7 @@ dependencies = [
  "kite-adapter",
  "kite-execution",
  "kite-recorder",
+ "kite-strategy",
  "nautilus-common",
  "nautilus-core",
  "nautilus-data",
@@ -1139,6 +1142,24 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "kite-strategy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kite-execution",
+ "kite-journal",
+ "kite-recorder",
+ "nautilus-core",
+ "nautilus-model",
+ "redis",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
