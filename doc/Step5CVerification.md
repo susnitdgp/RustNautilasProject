@@ -128,6 +128,6 @@ No strategy, risk engine or live order submission is enabled by this checkpoint.
 Reference: [Kite order operations](https://kite.trade/docs/connect/v3/orders/)
 and [Kite rate and modification limits](https://kite.trade/docs/connect/v3/exceptions/).
 
-Changes are left uncommitted for manual review. Next checkpoint: native Nautilus
+User verification passed; committed and pushed as 4e221b9. Next checkpoint: native Nautilus
 execution reports and reconciliation boundaries, before production broker transport.
 Strategy implementation remains pending.

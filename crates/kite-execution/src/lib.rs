@@ -3,5 +3,6 @@ pub mod coordinator;
 pub mod management;
 pub mod mock;
 pub mod rate_limit;
+pub mod reports;
 pub mod translation;
 pub mod verification;

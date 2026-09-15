@@ -25,12 +25,12 @@ if redis.call('HLEN',KEYS[1])~=tonumber(ARGV[3])+3 or redis.call('HEXISTS',KEYS[
 redis.call('HSET',KEYS[1],ARGV[4],ARGV[5],'revision',ARGV[6])
 return 1
 "#;
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record {
+pub struct Record {
     version: u32,
-    recorded_at_ns: u64,
-    event: Event,
+    pub recorded_at_ns: u64,
+    pub event: Event,
 }
 pub struct Journal {
     connection: redis::Connection,
@@ -39,6 +39,7 @@ pub struct Journal {
     state: State,
     poisoned: bool,
     records: usize,
+    history: Vec<Record>,
 }
 impl Journal {
     pub fn create(namespace: &str) -> Result<Self> {
@@ -110,6 +111,7 @@ impl Journal {
             "Journal record count mismatch"
         );
         let mut state = State::default();
+        let mut history = Vec::with_capacity(records);
         for sequence in 1..=records {
             let payload = values
                 .remove(&format!("event:{sequence}"))
@@ -125,6 +127,7 @@ impl Journal {
                 state.apply(&record.event)?,
                 "Unexpected duplicate journal event"
             );
+            history.push(record);
         }
         Ok(Self {
             connection,
@@ -133,10 +136,20 @@ impl Journal {
             state,
             poisoned: false,
             records,
+            history,
         })
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    pub fn history(&self) -> &[Record] {
+        &self.history
+    }
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+    pub fn write_uncertain(&self) -> bool {
+        self.poisoned
     }
     pub fn record_count(&self) -> usize {
         self.records
@@ -151,13 +164,14 @@ impl Journal {
         if !next.apply(&event)? {
             return Ok(false);
         }
-        let payload = serde_json::to_string(&Record {
+        let record = Record {
             version: 2,
             recorded_at_ns: u64::try_from(
                 SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
             )?,
             event,
-        })?;
+        };
+        let payload = serde_json::to_string(&record)?;
         ensure!(payload.len() <= 8192, "Journal record too large");
         let result = (|| -> Result<()> {
             let changed: i32 = redis::cmd("EVAL")
@@ -184,6 +198,7 @@ impl Journal {
         }
         self.state = next;
         self.records += 1;
+        self.history.push(record);
         Ok(true)
     }
 }

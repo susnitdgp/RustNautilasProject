@@ -1,6 +1,7 @@
 use anyhow::{Result, bail, ensure};
 
 pub enum Command {
+    ReportsSim,
     ManagementSim,
     RateLimitSim,
     ExecutionSim {
@@ -32,6 +33,7 @@ pub enum Command {
 
 pub fn parse(args: &[String]) -> Result<Command> {
     match args {
+        [command] if command == "reports-sim" => Ok(Command::ReportsSim),
         [command] if command == "order-management-sim" => Ok(Command::ManagementSim),
         [command] if command == "rate-limit-sim" => Ok(Command::RateLimitSim),
         [command] if command == "execution-sim" => Ok(Command::ExecutionSim { namespace: None }),
@@ -91,7 +93,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             })
         }
         _ => bail!(
-            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG | execution-sim [--namespace NEW_NAME] | rate-limit-sim | order-management-sim"
+            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG | execution-sim [--namespace NEW_NAME] | rate-limit-sim | order-management-sim | reports-sim"
         ),
     }
 }

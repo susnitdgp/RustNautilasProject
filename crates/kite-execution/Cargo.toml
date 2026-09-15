@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 [dependencies]
+nautilus-model.workspace = true
+nautilus-core.workspace = true
+rust_decimal.workspace = true
+sha2 = "0.10"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

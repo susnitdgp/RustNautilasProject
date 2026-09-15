@@ -5,11 +5,13 @@ mod market_data_command;
 mod preflight_command;
 mod rate_limit_command;
 mod reconciliation_command;
+mod reports_command;
 mod runtime;
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cli::parse(&args)? {
+        cli::Command::ReportsSim => reports_command::run(),
         cli::Command::ManagementSim => management_command::run(),
         cli::Command::RateLimitSim => rate_limit_command::run(),
         cli::Command::ExecutionSim { namespace } => execution_command::run(namespace.as_deref()),

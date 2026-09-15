@@ -13,7 +13,8 @@ See [Step 5A verification](doc/Step5Verification.md) for the durable Redis journ
 and offline mock execution simulator.
 See [Step 5B verification](doc/Step5BVerification.md) for shared Redis order budgets.
 See [Step 5C verification](doc/Step5CVerification.md) for mock modification and cancellation.
-Full LiveNode trading, strategies, native execution reports and order submission
+See [Step 5D verification](doc/Step5DVerification.md) for native Nautilus order/fill report mapping.
+Full LiveNode trading, strategies, execution-engine integration and real order submission
 are not implemented yet.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 

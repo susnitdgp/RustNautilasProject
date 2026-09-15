@@ -33,6 +33,7 @@ empty placeholders are not presented as finished components.
 | Redis order journal | separate kite-journal crate | 5A implemented, simulation scope |
 | Order command translation | kite-execution translation module | 5A regular LIMIT/DAY simulation |
 | Persist-before-submit and mock broker | kite-execution coordinator/mock modules | 5A implemented |
+| Native order/fill report mapping | kite-execution reports modules | 5D simulation mapping implemented; engine integration pending |
 | Mock modify/cancel lifecycle | journal actions and execution management modules | 5C implemented; real broker transport pending |
 | Shared order-request budgets | kite-execution rate_limit modules | 5B simulation implemented; production dispatcher pending |
 | Strategy | separate strategies crate | 6 |
@@ -88,3 +89,6 @@ Strategy logic and real Kite order execution are not implemented.
 
 Step 5C Redis-backed mock modification/cancellation checks passed; see
 doc/Step5CVerification.md. Strategy and real Kite order execution remain pending.
+
+Step 5D native Nautilus order/fill report mapping checks passed; see
+doc/Step5DVerification.md. This does not start an execution engine or enable live orders.
