@@ -1,5 +1,5 @@
 //! Parses documented Kite 8/44/184-byte packets for the MCX subscription.
-use super::models::{BinaryFrame, DepthLevel, FullFields, Tick};
+use super::models::{BinaryFrame, DepthLevel, FullFields, QuoteFields, Tick};
 use anyhow::{Result, ensure};
 
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
@@ -26,6 +26,7 @@ fn parse_packet(bytes: &[u8]) -> Result<Tick> {
         "Unsupported MCX packet length"
     );
     let mut tick = Tick {
+        quote_fields: None,
         instrument_token: u32_at(bytes, 0),
         ltp_paise: i32_at(bytes, 4),
         last_quantity: None,
@@ -37,6 +38,15 @@ fn parse_packet(bytes: &[u8]) -> Result<Tick> {
         "Zero WebSocket instrument token"
     );
     if bytes.len() >= 44 {
+        tick.quote_fields = Some(QuoteFields {
+            average_price_paise: i32_at(bytes, 12),
+            total_buy_quantity: u32_at(bytes, 20),
+            total_sell_quantity: u32_at(bytes, 24),
+            open_paise: i32_at(bytes, 28),
+            high_paise: i32_at(bytes, 32),
+            low_paise: i32_at(bytes, 36),
+            close_paise: i32_at(bytes, 40),
+        });
         tick.last_quantity = Some(u32_at(bytes, 8));
         tick.cumulative_volume = Some(u32_at(bytes, 16));
     }
@@ -54,6 +64,8 @@ fn parse_packet(bytes: &[u8]) -> Result<Tick> {
             }
         });
         tick.full = Some(FullFields {
+            open_interest_day_high: u32_at(bytes, 52),
+            open_interest_day_low: u32_at(bytes, 56),
             last_trade_timestamp: timestamp(u32_at(bytes, 44)),
             exchange_timestamp: timestamp(u32_at(bytes, 60)),
             open_interest: u32_at(bytes, 48),

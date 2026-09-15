@@ -1,9 +1,9 @@
+use crate::mapping::market_data::Snapshot;
 use crate::websocket::supervisor::{FeedEvent, Summary};
-use nautilus_model::data::QuoteTick;
 
 #[derive(Debug)]
 pub enum AdapterEvent {
-    Quote { quote: QuoteTick, generation: u32 },
+    Full { snapshot: Box<Snapshot> },
     Feed(FeedEvent),
     Complete(Summary),
     Failed,

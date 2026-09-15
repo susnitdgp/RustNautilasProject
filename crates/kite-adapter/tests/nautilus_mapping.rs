@@ -20,6 +20,7 @@ fn instrument() -> FuturesContract {
 }
 fn snapshot() -> Snapshot {
     Snapshot {
+        raw: None,
         instrument_token: 144870151,
         received_at_utc: Utc.timestamp_opt(1789456401, 123).unwrap(),
         connection_generation: 1,

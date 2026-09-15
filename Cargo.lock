@@ -1131,7 +1131,11 @@ dependencies = [
  "nautilus-data",
  "nautilus-execution",
  "nautilus-model",
+ "nautilus-portfolio",
+ "nautilus-risk",
+ "nautilus-trading",
  "redis",
+ "rust_decimal",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1255,6 +1259,20 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nautilus-analysis"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf33ea08d8a4e5921ef0b476b785c3799e1ea4c2bac1cf1ae2a1545e8876bd4e"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "indexmap",
+ "nautilus-core",
+ "nautilus-model",
+ "rust_decimal",
 ]
 
 [[package]]
@@ -1392,6 +1410,72 @@ dependencies = [
  "strum",
  "tabled",
  "thiserror",
+ "ustr",
+]
+
+[[package]]
+name = "nautilus-portfolio"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44b243de9c0f3b37467adbea8ea1adc9e9eb22e122aa5995b16a6cb525af4cf3"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bon",
+ "indexmap",
+ "log",
+ "nautilus-analysis",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-model",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+]
+
+[[package]]
+name = "nautilus-risk"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bcf97c9651b90a9ae051fd56e791580265fc384e2c4cfedfa7103b991f9313d"
+dependencies = [
+ "ahash",
+ "bon",
+ "indexmap",
+ "log",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-portfolio",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "ustr",
+]
+
+[[package]]
+name = "nautilus-trading"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81c6ab8899bc6df9d533f136939ddbdbf422ea7b243d0895a2f22345174501de"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bon",
+ "indexmap",
+ "jiff",
+ "log",
+ "nautilus-analysis",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-portfolio",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "strum",
  "ustr",
 ]
 

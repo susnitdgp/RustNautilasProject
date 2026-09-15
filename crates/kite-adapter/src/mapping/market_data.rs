@@ -2,14 +2,16 @@
 use crate::websocket::models::Tick;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub fn mcx_price(paise: i32) -> String {
     Decimal::new(i64::from(paise), 2).to_string()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Tick>,
     pub instrument_token: u32,
     pub received_at_utc: DateTime<Utc>,
     pub connection_generation: u32,
@@ -34,6 +36,7 @@ pub fn is_fresh(source: Option<u32>, received: i64) -> bool {
 pub fn snapshot(tick: &Tick, received: DateTime<Utc>, generation: u32) -> Snapshot {
     let source = tick.full.as_ref().and_then(|f| f.exchange_timestamp);
     Snapshot {
+        raw: Some(tick.clone()),
         instrument_token: tick.instrument_token,
         received_at_utc: received,
         connection_generation: generation,

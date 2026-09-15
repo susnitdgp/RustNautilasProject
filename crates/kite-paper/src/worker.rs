@@ -33,6 +33,8 @@ pub enum Request {
     Quote(QuoteTick),
     Cancel(nautilus_model::identifiers::ClientOrderId, UnixNanos),
     Checkpoint(Snapshot),
+    Control(serde_json::Value),
+    ExternalEvents(Vec<OrderEventAny>),
 }
 pub struct Handle {
     pub(crate) tx: SyncSender<Request>,
@@ -65,19 +67,21 @@ impl Handle {
                         Limiter::create_at(&url, &namespace, Policy::default())?,
                         Outbox::create_at(&url, &namespace)?,
                         Store::create_at(&url, &namespace)?,
+                        crate::control_store::ControlStore::create_at(&url, &namespace)?,
                     ))
                 })();
-                let (mut journal, mut limiter, mut outbox, mut checkpoint) = match state {
-                    Ok(s) => {
-                        let _ = ready.send(Ok(()));
-                        s
-                    }
-                    Err(e) => {
-                        let _ = ready.send(Err(e));
-                        running.store(false, Ordering::Release);
-                        return;
-                    }
-                };
+                let (mut journal, mut limiter, mut outbox, mut checkpoint, mut control) =
+                    match state {
+                        Ok(s) => {
+                            let _ = ready.send(Ok(()));
+                            s
+                        }
+                        Err(e) => {
+                            let _ = ready.send(Err(e));
+                            running.store(false, Ordering::Release);
+                            return;
+                        }
+                    };
                 let mut pending: Option<Pending> = None;
                 let mut last_quote_ts = 0;
                 while running.load(Ordering::Acquire) {
@@ -146,7 +150,11 @@ impl Handle {
                                 pending = Some(Pending { init: *init, venue });
                             }
                             Request::Quote(q) => {
-                                crate::validation::quote(&q, &config, last_quote_ts)?;
+                                crate::validation::quote(&q, &config, 0)?;
+                                ensure!(
+                                    q.ts_event.as_u64() >= last_quote_ts,
+                                    "Backwards paper source time"
+                                );
                                 last_quote_ts = q.ts_event.as_u64();
                                 if let Some(p) = &pending {
                                     ensure!(
@@ -196,6 +204,12 @@ impl Handle {
                                 })?;
                                 batch.push(events::cancelled(&p.init, p.venue, ts));
                                 pending = None;
+                            }
+                            Request::ExternalEvents(events) => {
+                                batch.extend(events);
+                            }
+                            Request::Control(value) => {
+                                control.save(value)?;
                             }
                             Request::Checkpoint(snapshot) => {
                                 checkpoint.save(&snapshot)?;

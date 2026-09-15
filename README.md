@@ -16,8 +16,8 @@ See [Step 5C verification](doc/Step5CVerification.md) for mock modification and 
 See [Step 5D verification](doc/Step5DVerification.md) for native Nautilus order/fill report mapping.
 See [Step 6 verification](doc/Step6Verification.md) for the reference crossover
 strategy, paper replay, and guarded Kite HTTP/service modules.
-Full LiveNode trading, production risk controls, execution-engine integration and live order submission
-are not implemented yet.
+Full LiveNode trading, production risk controls and live order submission
+are not implemented yet. Native paper ExecutionEngine integration is implemented.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 
 Run from this repository:
@@ -47,3 +47,13 @@ Run `cargo run --locked -p kite-node -- nautilus-paper-sim config/strategy-cross
 This exercises a real ExecutionEngine and paper ExecutionClient with synthetic
 quotes, Redis persistence, native fills/cancellation and fresh-cache replay.
 [Verification and scope](doc/Step7Verification.md).
+
+### Live Kite full ticks with native strategy and paper risk flow (Step 8)
+
+Run `cargo run --locked -p kite-node -- paper-flow-sim config/strategy-crossover.toml` first.
+Then use `paper-live config/crudeoil-september.toml config/strategy-crossover.toml --seconds 30`.
+The native Strategy actor receives KiteFullTick custom data including five-level
+depth, OHLC, volume and open interest. Derived quotes support paper matching.
+The RiskEngine routes orders to paper execution only; diagnostics classify rejected
+updates and distinguish transport gaps from quality suspensions.
+[Verification, disconnect and restart behavior](doc/Step8Verification.md).

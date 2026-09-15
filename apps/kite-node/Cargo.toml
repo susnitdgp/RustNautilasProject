@@ -23,6 +23,11 @@ kite-paper = { path = "../../crates/kite-paper" }
 kite-journal = { path = "../../crates/kite-journal" }
 nautilus-execution.workspace = true
 
+nautilus-trading.workspace = true
+nautilus-risk.workspace = true
+nautilus-portfolio.workspace = true
+rust_decimal.workspace = true
+
 [dev-dependencies]
 tempfile = "3"
 redis.workspace = true

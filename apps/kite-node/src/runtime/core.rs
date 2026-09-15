@@ -23,8 +23,10 @@ pub struct Core {
 }
 impl Core {
     pub fn new(instrument: &FuturesContract) -> Self {
+        Self::with_clock(instrument, Rc::new(RefCell::new(LiveClock::new(None))))
+    }
+    pub fn with_clock(instrument: &FuturesContract, clock: Rc<RefCell<dyn Clock>>) -> Self {
         let cache = Rc::new(RefCell::new(Cache::default()));
-        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(LiveClock::new(None)));
         msgbus::set_message_bus(Rc::new(RefCell::new(MessageBus::default())));
         let callbacks = Rc::new(Cell::new(0u64));
         let count = callbacks.clone();

@@ -3,6 +3,7 @@ mod execution_command;
 mod management_command;
 mod market_data_command;
 mod native_paper_command;
+mod paper_flow;
 mod preflight_command;
 mod rate_limit_command;
 mod reconciliation_command;
@@ -13,6 +14,13 @@ mod strategy_command;
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cli::parse(&args)? {
+        cli::Command::PaperRecover { namespace } => paper_flow::recovery::run(&namespace),
+        cli::Command::PaperFlowSim { config } => paper_flow::simulation::run(&config),
+        cli::Command::PaperLive {
+            instrument,
+            strategy,
+            seconds,
+        } => paper_flow::live::run(&instrument, &strategy, seconds),
         cli::Command::NativePaper { config } => native_paper_command::run(&config),
         cli::Command::Strategy { config, input } => {
             strategy_command::run(&config, input.as_deref())

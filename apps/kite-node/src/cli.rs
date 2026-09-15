@@ -1,6 +1,17 @@
 use anyhow::{Result, bail, ensure};
 
 pub enum Command {
+    PaperRecover {
+        namespace: String,
+    },
+    PaperFlowSim {
+        config: String,
+    },
+    PaperLive {
+        instrument: String,
+        strategy: String,
+        seconds: u64,
+    },
     NativePaper {
         config: String,
     },
@@ -40,6 +51,28 @@ pub enum Command {
 
 pub fn parse(args: &[String]) -> Result<Command> {
     match args {
+        [command, namespace] if command == "paper-recover" => Ok(Command::PaperRecover {
+            namespace: namespace.clone(),
+        }),
+        [command, config] if command == "paper-flow-sim" => Ok(Command::PaperFlowSim {
+            config: config.clone(),
+        }),
+        [command, instrument, strategy, flag, seconds]
+            if command == "paper-live" && flag == "--seconds" =>
+        {
+            let seconds = seconds
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("Invalid paper duration"))?;
+            ensure!(
+                (1..=300).contains(&seconds),
+                "Paper duration must be 1..300 seconds"
+            );
+            Ok(Command::PaperLive {
+                instrument: instrument.clone(),
+                strategy: strategy.clone(),
+                seconds,
+            })
+        }
         [command, config] if command == "nautilus-paper-sim" => Ok(Command::NativePaper {
             config: config.clone(),
         }),
@@ -113,7 +146,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             })
         }
         _ => bail!(
-            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG | execution-sim [--namespace NEW_NAME] | rate-limit-sim | order-management-sim | reports-sim | nautilus-paper-sim CONFIG | strategy-sim CONFIG | strategy-replay CONFIG --input FILE"
+            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG | execution-sim [--namespace NEW_NAME] | rate-limit-sim | order-management-sim | reports-sim | paper-flow-sim CONFIG | paper-live INSTRUMENT_CONFIG STRATEGY_CONFIG --seconds 30 | paper-recover NAMESPACE | nautilus-paper-sim CONFIG | strategy-sim CONFIG | strategy-replay CONFIG --input FILE"
         ),
     }
 }

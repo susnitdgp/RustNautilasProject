@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::Message;
 pub enum FeedEvent {
     Connected { generation: u32 },
     Gap { generation: u32 },
-    Snapshot(Snapshot),
+    Snapshot(Box<Snapshot>),
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -59,7 +59,7 @@ fn process_binary(
                     summary.last_exchange_timestamp = snapshot.exchange_timestamp;
                     summary.current_generation_has_full = true;
                 }
-                on_event(FeedEvent::Snapshot(snapshot));
+                on_event(FeedEvent::Snapshot(Box::new(snapshot)));
             }
         }
     }

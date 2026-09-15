@@ -69,7 +69,9 @@ pub fn run(config_path: &str, seconds: u64, output: &Path) -> Result<()> {
                     _ = tokio::signal::ctrl_c() => return Err(anyhow!("Capture interrupted; file will be incomplete")),
                 };
                 match event {
-                    AdapterEvent::Quote { quote, generation } => {
+                    AdapterEvent::Full { snapshot } => {
+                        let Some(quote)=kite_adapter::mapping::quotes::map(&snapshot,&instrument)? else {continue};
+                        let generation=snapshot.connection_generation;
                         recorder.record(Record::Quote { quote, generation })?;
                         core.quote(quote); accepted += 1;
                     }

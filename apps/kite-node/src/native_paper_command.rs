@@ -28,7 +28,7 @@ use nautilus_model::{
     types::*,
 };
 
-fn account(ts: UnixNanos) -> AccountAny {
+pub(crate) fn account(ts: UnixNanos) -> AccountAny {
     let currency = Currency::INR();
     AccountAny::Margin(MarginAccount::new(
         AccountState::new(
@@ -49,7 +49,7 @@ fn account(ts: UnixNanos) -> AccountAny {
         false,
     ))
 }
-fn order(id: &str, side: OrderSide, price: Price, ts: UnixNanos) -> OrderAny {
+pub(crate) fn order(id: &str, side: OrderSide, price: Price, ts: UnixNanos) -> OrderAny {
     OrderAny::Limit(LimitOrder::new(
         msgbus::get_message_bus().borrow().trader_id,
         StrategyId::from("CROSSOVER-001"),
@@ -102,7 +102,7 @@ fn cancel(engine: &ExecutionEngine, id: ClientOrderId, ts: UnixNanos) {
         None,
     )));
 }
-fn apply(
+pub(crate) fn apply(
     core: &Core,
     engine: &mut ExecutionEngine,
     batch: Vec<OrderEventAny>,
@@ -155,7 +155,7 @@ fn apply(
     }
     Ok((fills, cancels))
 }
-fn position_economics(core: &Core) -> Vec<String> {
+pub(crate) fn position_economics(core: &Core) -> Vec<String> {
     let cache = core.cache.borrow();
     let mut positions = cache.positions_open(None, None, None, None, None);
     positions.extend(cache.positions_closed(None, None, None, None, None));
@@ -390,7 +390,7 @@ pub fn run_at(url: &str, namespace: &str, config: Config) -> Result<serde_json::
 
 #[cfg(test)]
 #[path = "../../../crates/kite-journal/test-support/redis.rs"]
-mod redis_support;
+pub(crate) mod redis_support;
 #[cfg(test)]
 mod tests {
     use super::*;

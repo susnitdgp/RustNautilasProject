@@ -28,3 +28,7 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", features = ["sink"] }
 
 nautilus-execution = { version = "=0.63.0", default-features = false }
+
+nautilus-trading = { version = "=0.63.0", default-features = false }
+nautilus-risk = { version = "=0.63.0", default-features = false }
+nautilus-portfolio = { version = "=0.63.0", default-features = false }

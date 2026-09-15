@@ -1,7 +1,6 @@
 use super::{config::KiteDataClientConfig, events::AdapterEvent};
 use crate::{
     auth::session,
-    mapping::quotes,
     websocket::{
         supervisor::{self, FeedEvent},
         transport::{self, Socket},
@@ -160,19 +159,7 @@ impl DataClient for KiteDataClient {
                 Duration::from_secs(config.duration_seconds),
                 |event| {
                     let event = match event {
-                        FeedEvent::Snapshot(snapshot) => {
-                            match quotes::map(&snapshot, &config.instrument) {
-                                Ok(Some(quote)) => AdapterEvent::Quote {
-                                    quote,
-                                    generation: snapshot.connection_generation,
-                                },
-                                Ok(None) => return,
-                                Err(_) => {
-                                    signal.notify_one();
-                                    return;
-                                }
-                            }
-                        }
+                        FeedEvent::Snapshot(snapshot) => AdapterEvent::Full { snapshot },
                         other => {
                             connected.store(
                                 matches!(other, FeedEvent::Connected { .. }),

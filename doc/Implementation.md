@@ -39,8 +39,8 @@ empty placeholders are not presented as finished components.
 | Strategy | separate kite-strategy crate | 6 reference crossover and paper replay implemented |
 | Kite order HTTP/service | adapter execution modules | 6 implemented with live gate disabled; engine integration pending |
 | Native paper ExecutionClient and Redis worker | separate kite-paper crate | 7 implemented, synthetic venue |
-| Native ExecutionEngine strategy runner | application native_paper_command module | 7 implemented; full Strategy actor/LiveNode pending |
-| Application trading controls | separate risk-controls crate | Planned; current paper checks are scoped to simulation |
+| Native ExecutionEngine strategy runner | application native_paper_command module | 8 native Strategy actor and live-feed paper runner implemented; full LiveNode pending |
+| Application trading controls | separate risk-controls crate | 8 native RiskEngine and paper feed/position controls implemented; production risk pending |
 
 ## Checkpoints
 
@@ -105,3 +105,16 @@ Full LiveNode and production broker/risk integration remain pending.
 Real Nautilus ExecutionClient/ExecutionEngine paper integration is implemented.
 See [Step 7 verification](Step7Verification.md) for the command, expected output,
 Redis event replay and remaining live-node/recovery limitations.
+
+## Step 8 native strategy and live-feed paper flow
+
+Native Strategy actor, native RiskEngine, live Kite quote routing, paper execution,
+feed-gap handling and read-only restart inspection are implemented. See
+[Step 8 verification](Step8Verification.md). Full LiveNode, real broker execution,
+production portfolio/risk and automatic trading resumption remain pending.
+
+Step 8 full-mode update: the adapter retains the complete MCX packet and routes
+KiteFullTick custom data through the native DataEngine to the Strategy actor.
+Derived quotes remain available for native cache and paper matching. Redis session
+checkpoints include the latest complete snapshot and classified feed diagnostics.
+See Step8Verification.md for checks and scope.
