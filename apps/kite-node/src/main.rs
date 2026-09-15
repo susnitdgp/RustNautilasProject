@@ -2,6 +2,7 @@ mod cli;
 mod execution_command;
 mod management_command;
 mod market_data_command;
+mod native_paper_command;
 mod preflight_command;
 mod rate_limit_command;
 mod reconciliation_command;
@@ -12,6 +13,7 @@ mod strategy_command;
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cli::parse(&args)? {
+        cli::Command::NativePaper { config } => native_paper_command::run(&config),
         cli::Command::Strategy { config, input } => {
             strategy_command::run(&config, input.as_deref())
         }

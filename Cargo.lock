@@ -1122,14 +1122,37 @@ dependencies = [
  "chrono",
  "kite-adapter",
  "kite-execution",
+ "kite-journal",
+ "kite-paper",
  "kite-recorder",
  "kite-strategy",
  "nautilus-common",
  "nautilus-core",
  "nautilus-data",
+ "nautilus-execution",
  "nautilus-model",
+ "redis",
  "serde_json",
+ "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "kite-paper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "kite-execution",
+ "kite-journal",
+ "kite-strategy",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-model",
+ "redis",
+ "rust_decimal",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1313,6 +1336,33 @@ dependencies = [
  "serde",
  "serde_json",
  "ustr",
+]
+
+[[package]]
+name = "nautilus-execution"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f426d04dc58c801532d2fb6c97813d19574f2224a19f469a6cc6ee8c0e4e6892"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "futures",
+ "indexmap",
+ "jiff",
+ "log",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-model",
+ "rand 0.10.2",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "smallvec",
+ "ustr",
+ "uuid",
 ]
 
 [[package]]

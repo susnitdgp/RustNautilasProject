@@ -1,0 +1,20 @@
+[package]
+name = "kite-paper"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+nautilus-common.workspace = true
+nautilus-core.workspace = true
+nautilus-model.workspace = true
+redis.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+kite-journal = { path = "../kite-journal" }
+kite-execution = { path = "../kite-execution" }
+kite-strategy = { path = "../kite-strategy" }
+[dev-dependencies]
+tempfile = "3"

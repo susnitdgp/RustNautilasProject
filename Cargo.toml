@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kite-adapter", "apps/kite-node", "crates/kite-recorder", "crates/kite-journal", "crates/kite-execution", "crates/kite-strategy"]
+members = ["crates/kite-adapter", "apps/kite-node", "crates/kite-recorder", "crates/kite-journal", "crates/kite-execution", "crates/kite-strategy", "crates/kite-paper"]
 resolver = "2"
 
 [workspace.package]
@@ -26,3 +26,5 @@ toml = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", features = ["sink"] }
+
+nautilus-execution = { version = "=0.63.0", default-features = false }

@@ -38,7 +38,9 @@ empty placeholders are not presented as finished components.
 | Shared order-request budgets | kite-execution rate_limit modules | 5B simulation implemented; production dispatcher pending |
 | Strategy | separate kite-strategy crate | 6 reference crossover and paper replay implemented |
 | Kite order HTTP/service | adapter execution modules | 6 implemented with live gate disabled; engine integration pending |
-| Application trading controls | separate risk-controls crate | 6 |
+| Native paper ExecutionClient and Redis worker | separate kite-paper crate | 7 implemented, synthetic venue |
+| Native ExecutionEngine strategy runner | application native_paper_command module | 7 implemented; full Strategy actor/LiveNode pending |
+| Application trading controls | separate risk-controls crate | Planned; current paper checks are scoped to simulation |
 
 ## Checkpoints
 
@@ -97,3 +99,9 @@ doc/Step5DVerification.md. This does not start an execution engine or enable liv
 Step 6 reference strategy, Redis checkpoints, paper matching and guarded Kite
 order transport/service are implemented; see doc/Step6Verification.md.
 Full LiveNode and production broker/risk integration remain pending.
+
+## Step 7 native paper execution
+
+Real Nautilus ExecutionClient/ExecutionEngine paper integration is implemented.
+See [Step 7 verification](Step7Verification.md) for the command, expected output,
+Redis event replay and remaining live-node/recovery limitations.

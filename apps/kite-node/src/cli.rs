@@ -1,6 +1,9 @@
 use anyhow::{Result, bail, ensure};
 
 pub enum Command {
+    NativePaper {
+        config: String,
+    },
     Strategy {
         config: String,
         input: Option<String>,
@@ -37,6 +40,9 @@ pub enum Command {
 
 pub fn parse(args: &[String]) -> Result<Command> {
     match args {
+        [command, config] if command == "nautilus-paper-sim" => Ok(Command::NativePaper {
+            config: config.clone(),
+        }),
         [command, config] if command == "strategy-sim" => Ok(Command::Strategy {
             config: config.clone(),
             input: None,
@@ -107,7 +113,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             })
         }
         _ => bail!(
-            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG | execution-sim [--namespace NEW_NAME] | rate-limit-sim | order-management-sim | reports-sim | strategy-sim CONFIG | strategy-replay CONFIG --input FILE"
+            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG | execution-sim [--namespace NEW_NAME] | rate-limit-sim | order-management-sim | reports-sim | nautilus-paper-sim CONFIG | strategy-sim CONFIG | strategy-replay CONFIG --input FILE"
         ),
     }
 }

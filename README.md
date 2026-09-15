@@ -40,3 +40,10 @@ Margin, fees, native account reports and order handling remain later work.
 Nautilus dependencies are LGPL-3.0-only; review upstream license obligations
 before redistribution. This project consumes published crates rather than
 modifying upstream engine sources.
+
+### Native Nautilus paper execution (Step 7)
+
+Run `cargo run --locked -p kite-node -- nautilus-paper-sim config/strategy-crossover.toml`.
+This exercises a real ExecutionEngine and paper ExecutionClient with synthetic
+quotes, Redis persistence, native fills/cancellation and fresh-cache replay.
+[Verification and scope](doc/Step7Verification.md).
