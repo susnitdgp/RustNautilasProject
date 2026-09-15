@@ -1,5 +1,7 @@
 # Rust Nautilus + Zerodha Kite
 
+Latest user-selected endpoint: http://94.136.191.37:3000/. Its current static mock responses fail native execution compatibility checks. Configuration and findings: [doc/CustomSandbox.md](doc/CustomSandbox.md). Real orders remain disabled.
+
 Latest hardening, short trading, explicit signals, local protection and official sandbox status: [doc/NativeHardening.md](doc/NativeHardening.md). Real orders remain disabled.
 
 Rust workspace for a modular Kite integration. First target: standard MCX

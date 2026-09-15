@@ -1,5 +1,7 @@
 # Native hardening and strategy review
 
+Latest user-selected endpoint: http://94.136.191.37:3000/. Its current static mock responses fail native execution compatibility checks. Configuration and findings: [CustomSandbox.md](CustomSandbox.md). Real orders remain disabled.
+
 Updated 15 September 2026. This follows integration commit 84d2df2.
 Real Kite orders remain disabled. The user authorized the official Kite sandbox,
 manual code review and continued testing. No production-order activation is included.

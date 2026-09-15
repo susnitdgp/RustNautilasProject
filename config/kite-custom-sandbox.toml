@@ -1,0 +1,2 @@
+# User-selected Nordible API mock. Credential-free read compatibility checks only.
+base_url = "http://94.136.191.37:3000"

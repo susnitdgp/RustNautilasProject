@@ -1,5 +1,7 @@
 # Native Nautilus integration handoff
 
+Latest user-selected endpoint: http://94.136.191.37:3000/. Its current static mock responses fail native execution compatibility checks. Configuration and findings: [CustomSandbox.md](CustomSandbox.md). Real orders remain disabled.
+
 Updated 15 September 2026. Repository: /home/ubuntu/RustNautilasProject, main.
 Use git log -1 for the latest review checkpoint.
 

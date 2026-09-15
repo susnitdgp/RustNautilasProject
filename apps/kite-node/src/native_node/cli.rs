@@ -6,6 +6,8 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match (command, &args[1..]) {
+        ("native-kite-custom-preflight", []) => custom_probe("config/kite-custom-sandbox.toml"),
+        ("native-kite-custom-preflight", [config]) => custom_probe(config),
         ("native-kite-sandbox-preflight", []) => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|r| r.block_on(kite_adapter::execution::native_client::sandbox::preflight()))
@@ -67,4 +69,16 @@ fn usage() -> Result<()> {
     bail!(
         "Usage: native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
+}
+
+fn custom_probe(path: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let result = tokio::runtime::Runtime::new()?
+        .block_on(kite_adapter::execution::native_client::custom_sandbox::probe(&text))?;
+    println!("{}", result);
+    anyhow::ensure!(
+        result["read_shapes_compatible"] == true,
+        "Custom sandbox is incompatible with native execution; see checks above"
+    );
+    Ok(())
 }
