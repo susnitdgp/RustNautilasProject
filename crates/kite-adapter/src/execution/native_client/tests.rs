@@ -335,7 +335,13 @@ async fn native_mass_reconciliation_preserves_owned_ids_fills_and_positions() {
         VenueOrderId::from("1")
     );
     assert!(c.generate_mass_status(Some(u64::MAX)).await.is_err());
-    c.disconnect().await.unwrap();
+    assert!(
+        c.disconnect()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("review")
+    );
 }
 
 #[tokio::test]
@@ -404,6 +410,12 @@ async fn native_polling_delivers_delayed_fill_without_resubmitting() {
         reconstructed.apply(event).unwrap();
     }
     assert_eq!(reconstructed.status(), OrderStatus::Filled);
-    c.disconnect().await.unwrap();
+    assert!(
+        c.disconnect()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("review")
+    );
     assert!(!c.is_connected());
 }

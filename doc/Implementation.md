@@ -1,5 +1,7 @@
 # Implementation stages
 
+Latest hardening, short trading, explicit signals, local protection and official sandbox status: [NativeHardening.md](NativeHardening.md). Real orders remain disabled.
+
 Latest Kite-only checkpoint: [NativeKiteExecution.md](NativeKiteExecution.md).
 Native Kite dispatch, event mapping and mass reconciliation are tested with a
 deterministic broker fixture. Real API execution remains disabled.

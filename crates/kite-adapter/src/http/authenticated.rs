@@ -1,5 +1,6 @@
 //! Authenticated reads and fixed virtual-contract-note calculation; no order mutation endpoints.
 use crate::credentials::KiteCredentials;
+use crate::execution::native_client::outage::ReadFailure;
 use anyhow::{Result, anyhow, ensure};
 use reqwest::{
     Client, StatusCode,
@@ -30,6 +31,8 @@ impl Endpoint {
 pub(crate) struct ReadClient {
     #[cfg(test)]
     charge_test_url: Option<String>,
+    root: &'static str,
+    pace: tokio::sync::Mutex<tokio::time::Instant>,
     client: Client,
     authorization: HeaderValue,
 }
@@ -44,6 +47,7 @@ impl ReadClient {
             .map_err(|_| anyhow!("Invalid Kite authentication header"))?;
         authorization.set_sensitive(true);
         let client = Client::builder()
+            .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
@@ -52,12 +56,27 @@ impl ReadClient {
         Ok(Self {
             #[cfg(test)]
             charge_test_url: None,
+            root: "https://api.kite.trade",
+            pace: tokio::sync::Mutex::new(tokio::time::Instant::now()),
             client,
             authorization,
         })
     }
+    pub(crate) fn sandbox(credentials: &KiteCredentials) -> Result<Self> {
+        let mut client = Self::new(credentials)?;
+        client.root = "https://sandbox.kite.trade/oms";
+        Ok(client)
+    }
+    pub(crate) async fn sandbox_quote<T: DeserializeOwned>(&self) -> Result<T> {
+        ensure!(
+            self.root == "https://sandbox.kite.trade/oms",
+            "Sandbox quote requires sandbox client"
+        );
+        self.get_at("https://sandbox.kite.trade/oms/quote?i=MCX%3ACRUDEOIL26SEPFUT")
+            .await
+    }
     pub(crate) async fn get<T: DeserializeOwned>(&self, endpoint: Endpoint) -> Result<T> {
-        self.get_at(&format!("https://api.kite.trade{}", endpoint.path()))
+        self.get_at(&format!("{}{}", self.root, endpoint.path()))
             .await
     }
     #[cfg(test)]
@@ -66,6 +85,10 @@ impl ReadClient {
         self
     }
     pub(crate) async fn charges<T: DeserializeOwned>(&self, payload: Vec<u8>) -> Result<T> {
+        ensure!(
+            self.root == "https://api.kite.trade",
+            "Sandbox charge calculations are unavailable"
+        );
         let url = "https://api.kite.trade/charges/orders";
         #[cfg(test)]
         let url = self.charge_test_url.as_deref().unwrap_or(url);
@@ -85,19 +108,34 @@ impl ReadClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<T> {
+        let mut next = self.pace.lock().await;
+        tokio::time::sleep_until(*next).await;
+        *next = tokio::time::Instant::now() + Duration::from_millis(150);
         let mut response = request
             .header("X-Kite-Version", "3")
             .header(AUTHORIZATION, self.authorization.clone())
             .send()
             .await
-            .map_err(|_| anyhow!("Kite read request failed"))?;
-        ensure!(
-            !matches!(
-                response.status(),
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-            ),
-            "Kite session rejected; renew the token in Redis"
-        );
+            .map_err(|_| anyhow!(ReadFailure::Transient))?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err(anyhow!(ReadFailure::SessionExpired));
+        }
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            let seconds = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(10)
+                .clamp(10, 86400);
+            return Err(anyhow!(ReadFailure::RateLimited(seconds * 1000)));
+        }
+        if response.status().is_server_error() {
+            return Err(anyhow!(ReadFailure::Transient));
+        }
         ensure!(
             response.status().is_success(),
             "Kite read service returned an unsuccessful status"
@@ -106,7 +144,7 @@ impl ReadClient {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| anyhow!("Kite response read failed"))?
+            .map_err(|_| anyhow!(ReadFailure::Transient))?
         {
             ensure!(
                 body.len() + chunk.len() <= 8 * 1024 * 1024,
@@ -136,6 +174,16 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sandbox_read_root_is_fixed_and_separate_from_production() {
+        let c = KiteCredentials::new(Some("sandbox-only".into()), Some("sandbox-token".into()))
+            .unwrap();
+        assert_eq!(
+            ReadClient::sandbox(&c).unwrap().root,
+            "https://sandbox.kite.trade/oms"
+        );
+        assert_eq!(ReadClient::new(&c).unwrap().root, "https://api.kite.trade");
+    }
     #[test]
     fn rejects_malformed_missing_and_error_without_payload() {
         for bytes in [

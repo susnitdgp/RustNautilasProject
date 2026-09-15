@@ -131,6 +131,7 @@ async fn observe_impl(
         summary.last_exchange_timestamp = None;
         on_event(FeedEvent::Connected { generation });
         let mut last_frame = Instant::now();
+        let mut last_usable = Instant::now();
         loop {
             let message = tokio::select! {
                 biased;
@@ -138,7 +139,7 @@ async fn observe_impl(
                     transport::close(&mut socket).await;
                     break 'connections;
                 }
-                message = transport::next(&mut socket, last_frame + Duration::from_secs(10)) => message,
+                message = transport::next(&mut socket, (last_frame + Duration::from_secs(10)).min(last_usable+Duration::from_secs(10))) => message,
             };
             match message {
                 Ok(Some(Message::Binary(bytes))) => {
@@ -148,6 +149,12 @@ async fn observe_impl(
                     {
                         transport::close(&mut socket).await;
                         return Err(error);
+                    }
+                    if market_data::is_fresh(
+                        summary.last_exchange_timestamp,
+                        Utc::now().timestamp(),
+                    ) {
+                        last_usable = Instant::now();
                     }
                 }
                 Ok(Some(Message::Text(text))) => {
@@ -397,6 +404,25 @@ pub async fn observe_connected(
         duration,
         on_event,
         "wss://ws.kite.trade",
+        Some(socket),
+    )
+    .await
+}
+
+pub async fn observe_sandbox_connected(
+    credentials: &KiteCredentials,
+    user_id: &str,
+    token: u32,
+    duration: Duration,
+    on_event: impl FnMut(FeedEvent),
+    socket: transport::Socket,
+) -> Result<Summary> {
+    observe_impl(
+        credentials,
+        token,
+        duration,
+        on_event,
+        &transport::sandbox_endpoint(user_id)?,
         Some(socket),
     )
     .await

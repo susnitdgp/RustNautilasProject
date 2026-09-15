@@ -32,6 +32,7 @@ pub struct State {
     pub cache: Option<Rc<RefCell<Cache>>>,
     pub ticks: u64,
     pub signals: u64,
+    pub signal_counts: std::collections::BTreeMap<String, u64>,
     pub fills: u64,
     pub cancelled: u64,
     pub denied: u64,
@@ -119,9 +120,15 @@ impl NativeStrategy {
             return Ok(());
         }
         let now = self.clock().timestamp_ns().as_u64();
+        let position = self.position();
+        let mut quality = self.config.clone();
+        // Wide spreads block entries, but must not suppress an otherwise valid reducing exit.
+        if position != 0.0 {
+            quality.max_spread_rupees = u32::MAX;
+        }
         if let Some(reason) = crate::paper_flow::diagnostics::quote_reason(
             q,
-            &self.config,
+            &quality,
             self.last_source,
             self.last_received,
             now,
@@ -140,25 +147,37 @@ impl NativeStrategy {
             state.ticks += 1;
             state.position = position;
         }
-        let signal = match full {
+        let strategy_signal = match full {
             Some(tick) => self.policy.on_full_tick(tick, position)?,
             None => self.policy.on_quote(q, position)?,
         };
         if self.pending.is_some() {
             return Ok(());
         }
-        let Some(side) = signal else {
+        let entry = self
+            .cache()
+            .positions_open(
+                None,
+                Some(&self.instrument),
+                self.strategy_id().as_ref(),
+                None,
+                None,
+            )
+            .first()
+            .map_or(0.0, |p| p.avg_px_open);
+        let signal =
+            super::signals::protection(q, position, entry, &self.config)?.or(strategy_signal);
+        let Some(signal) = signal else {
             return Ok(());
         };
-        if side == OrderSide::Buy && self.state.borrow().entries >= self.config.max_entries {
+        if !signal.is_exit() && self.state.borrow().entries >= self.config.max_entries {
             return Ok(());
         }
-        if !((side == OrderSide::Buy && position == 0.0)
-            || (side == OrderSide::Sell && position == 1.0))
-        {
+        if !signal.valid(position, self.config.enable_short) {
             self.reject("position_limit");
             return Ok(());
         }
+        let side = signal.side();
         let price = if side == OrderSide::Buy {
             q.ask_price
         } else {
@@ -172,7 +191,7 @@ impl NativeStrategy {
             Some(TimeInForce::Day),
             None,
             None,
-            Some(side == OrderSide::Sell),
+            Some(signal.is_exit()),
             None,
             None,
             None,
@@ -184,7 +203,13 @@ impl NativeStrategy {
         );
         self.pending = Some(order.client_order_id());
         self.state.borrow_mut().signals += 1;
-        if side == OrderSide::Buy {
+        *self
+            .state
+            .borrow_mut()
+            .signal_counts
+            .entry(signal.name().into())
+            .or_default() += 1;
+        if position == 0.0 {
             self.state.borrow_mut().entries += 1;
         }
         self.submit_order(order, None, None, None)?;
@@ -252,6 +277,15 @@ impl DataActor for NativeStrategy {
             }
         }
         if let Some(full) = data.data.as_any().downcast_ref::<KiteFullTick>() {
+            if self.state.borrow().history.len() >= 100000 {
+                self.enabled = false;
+                self.state
+                    .borrow_mut()
+                    .errors
+                    .push("Full tick capture capacity exceeded".into());
+                self.done.store(true, Ordering::Release);
+                return Ok(());
+            }
             self.state.borrow_mut().last_full = Some(full.clone());
             self.state.borrow_mut().history.push(full.clone());
             if full.snapshot.connection_generation != self.generation {

@@ -49,6 +49,10 @@ impl KiteOrderTransport {
         );
         self.send_at(command, "https://api.kite.trade").await
     }
+    pub(crate) async fn execute_sandbox(&self, command: &Command) -> Result<Outcome> {
+        self.send_at(command, "https://sandbox.kite.trade/oms")
+            .await
+    }
     async fn send_at(&self, command: &Command, base: &str) -> Result<Outcome> {
         command.validate()?;
         let (method, path, fields) = command.wire();

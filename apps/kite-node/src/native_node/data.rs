@@ -38,6 +38,8 @@ pub struct Config {
     pub token: u32,
     pub seconds: u64,
     pub synthetic_tick_ms: u64,
+    pub short_fixture: bool,
+    pub sandbox_user: Option<String>,
     pub credentials: Option<Arc<KiteCredentials>>,
 }
 impl ClientConfig for Config {
@@ -135,18 +137,32 @@ impl Client {
         let tx = get_data_event_sender();
         self.task = Some(tokio::spawn(async move {
             if let Some(credentials) = config.credentials {
-                let outcome = supervisor::observe_connected(
-                    &credentials,
-                    config.token,
-                    Duration::from_secs(config.seconds),
-                    |e| match e {
-                        FeedEvent::Connected { generation } => status(&tx, "connected", generation),
-                        FeedEvent::Gap { generation } => status(&tx, "gap", generation),
-                        FeedEvent::Snapshot(s) => emit(&tx, *s, &config.instrument),
-                    },
-                    socket.expect("live socket connected"),
-                )
-                .await;
+                let on_event = |e| match e {
+                    FeedEvent::Connected { generation } => status(&tx, "connected", generation),
+                    FeedEvent::Gap { generation } => status(&tx, "gap", generation),
+                    FeedEvent::Snapshot(s) => emit(&tx, *s, &config.instrument),
+                };
+                let socket = socket.expect("live socket connected");
+                let outcome = if let Some(user) = config.sandbox_user {
+                    supervisor::observe_sandbox_connected(
+                        &credentials,
+                        &user,
+                        config.token,
+                        Duration::from_secs(config.seconds),
+                        on_event,
+                        socket,
+                    )
+                    .await
+                } else {
+                    supervisor::observe_connected(
+                        &credentials,
+                        config.token,
+                        Duration::from_secs(config.seconds),
+                        on_event,
+                        socket,
+                    )
+                    .await
+                };
                 status(
                     &tx,
                     if outcome.is_ok_and(|s| s.final_source_fresh) {
@@ -165,7 +181,11 @@ impl Client {
                     tokio::time::sleep(Duration::from_millis(config.synthetic_tick_ms)).await;
                     emit(
                         &tx,
-                        crate::paper_flow::simulation::full_snapshot(p, now(), 1),
+                        crate::paper_flow::simulation::full_snapshot(
+                            if config.short_fixture { 12000 - p } else { p },
+                            now(),
+                            1,
+                        ),
                         &config.instrument,
                     );
                 }
@@ -175,7 +195,7 @@ impl Client {
         Ok(())
     }
     fn cancel(&mut self) {
-        if let Some(task) = self.task.take() {
+        if let Some(task) = &self.task {
             task.abort();
         }
         self.socket = None;
@@ -218,10 +238,17 @@ impl DataClient for Client {
     }
     async fn connect(&mut self) -> Result<()> {
         if let Some(credentials) = &self.config.credentials {
-            kite_adapter::auth::session::validate(credentials, "MCX").await?;
-            self.socket = Some(
-                transport::connect(credentials, Instant::now() + Duration::from_secs(10)).await?,
-            );
+            self.socket = Some(if let Some(user) = &self.config.sandbox_user {
+                transport::connect_sandbox(
+                    credentials,
+                    user,
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .await?
+            } else {
+                kite_adapter::auth::session::validate(credentials, "MCX").await?;
+                transport::connect(credentials, Instant::now() + Duration::from_secs(10)).await?
+            });
         }
         get_data_event_sender()
             .send(DataEvent::Instrument(InstrumentAny::FuturesContract(
@@ -233,6 +260,9 @@ impl DataClient for Client {
     }
     async fn disconnect(&mut self) -> Result<()> {
         self.cancel();
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
         Ok(())
     }
     fn subscribe(&mut self, cmd: SubscribeCustomData) -> Result<()> {

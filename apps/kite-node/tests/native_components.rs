@@ -102,7 +102,12 @@ fn native_nodes_matching_algorithms_catalog_and_redis_reconstruction() {
         .join("../../config/strategy-crossover.toml")
         .canonicalize()
         .unwrap();
-    for cmd in ["native-backtest", "native-node-sim", "native-kite-mock"] {
+    for cmd in [
+        "native-backtest",
+        "native-node-sim",
+        "native-kite-mock",
+        "native-kite-mock-short",
+    ] {
         let result = redis.run(&[cmd, config.to_str().unwrap()]);
         assert_eq!(result["strategy_ticks"], 15);
         assert_eq!(result["signals"], 2, "{cmd}: {result}");
@@ -124,7 +129,15 @@ fn native_nodes_matching_algorithms_catalog_and_redis_reconstruction() {
             assert_eq!(replay["fills"], 2);
             assert_eq!(replay["open_contracts"].as_f64(), Some(0.0));
         }
-        if cmd == "native-kite-mock" {
+        if cmd.starts_with("native-kite-mock") {
+            let health = redis.run(&["native-kite-status", "MOCK"]);
+            assert_eq!(health["state"], "Clean");
+            let review = redis.run(&["native-kite-review", result["namespace"].as_str().unwrap()]);
+            assert_eq!(review["unresolved"], 0);
+            assert_eq!(review["journal_exposure"], "0");
+            let audit = redis.run(&["native-full-audit", result["catalog"].as_str().unwrap()]);
+            assert_eq!(audit["packets"], 15);
+            assert_eq!(audit["full_fields_present"], true);
             assert_eq!(result["native_kite_execution_client"], true);
             assert_eq!(result["native_kite_mock_broker"], true);
             assert_eq!(result["native_matching_engine"], false);
@@ -151,6 +164,19 @@ fn native_nodes_matching_algorithms_catalog_and_redis_reconstruction() {
                 assert!(r["broker_id"].as_str().is_some());
                 assert_eq!(r["tag"].as_str().unwrap().len(), 20);
             }
+        }
+        if cmd == "native-kite-mock-short" {
+            assert_eq!(result["signal_counts"]["SELL"], 1);
+            assert_eq!(result["signal_counts"]["SELL_EXIT"], 1);
+            let replay = redis.run(&[
+                "native-backtest",
+                config.to_str().unwrap(),
+                result["catalog"].as_str().unwrap(),
+            ]);
+            assert_eq!(replay["signal_counts"]["SELL"], 1);
+            assert_eq!(replay["signal_counts"]["SELL_EXIT"], 1);
+            assert_eq!(replay["fills"], 2);
+            assert_eq!(replay["open_contracts"].as_f64(), Some(0.0));
         }
         let recovered = redis.run(&["native-recover", result["namespace"].as_str().unwrap()]);
         assert_eq!(recovered["orders"], 2);
@@ -187,4 +213,54 @@ fn native_nodes_matching_algorithms_catalog_and_redis_reconstruction() {
         .unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("paper execution remains enforced"));
+}
+
+#[test]
+fn sigterm_drains_native_node_and_leaves_flat_account_restartable() {
+    let redis = Redis::start();
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/strategy-crossover.toml")
+        .canonicalize()
+        .unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+        .args(["native-kite-mock", config.to_str().unwrap()])
+        .env("KITE_REDIS_URL", &redis.url)
+        .current_dir(redis.dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut c = redis::Client::open(redis.url.as_str())
+        .unwrap()
+        .get_connection()
+        .unwrap();
+    let key = "susanta:nautilus:native-kite:account:{MOCK}";
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let state: Option<String> = redis::cmd("HGET")
+            .arg(key)
+            .arg("state")
+            .query(&mut c)
+            .unwrap();
+        if state.as_deref() == Some("Running") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(redis.run(&["native-kite-status", "MOCK"])["state"], "Clean");
 }

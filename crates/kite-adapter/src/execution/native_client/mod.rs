@@ -1,7 +1,12 @@
+pub mod coordination;
 mod dispatch;
 mod fees;
 mod ledger;
 pub mod mock;
+pub(crate) mod outage;
+pub mod recovery;
+pub mod sandbox;
+mod shutdown;
 // Native Kite client. Real mutations remain disabled at this boundary.
 mod broker;
 mod reports;
@@ -17,6 +22,7 @@ use nautilus_common::{
     messages::{ExecutionEvent, execution::*},
 };
 use nautilus_core::{Params, UnixNanos};
+use nautilus_model::orders::Order;
 use nautilus_model::{
     accounts::{AccountAny, MarginAccount},
     enums::*,
@@ -90,6 +96,7 @@ pub struct Client {
     factory: OrderEventFactory,
     id: ClientId,
     connected: bool,
+    stop_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
     account: RefCell<Option<AccountAny>>,
     dispatcher: Option<Arc<tokio::sync::Mutex<dispatch::Dispatcher>>>,
     cache: Option<CacheView>,
@@ -121,6 +128,7 @@ impl Client {
             ),
             id: ClientId::from(name),
             connected: false,
+            stop_signal: None,
             account: RefCell::new(None),
             dispatcher: None,
             cache: None,
@@ -139,8 +147,8 @@ impl Client {
             .map_err(|_| anyhow!("Native execution event channel closed"))
     }
     async fn snapshot(&self) -> Result<Snapshot> {
-        ensure!(self.connected, "Native Kite client disconnected");
-        self.broker.snapshot().await
+        ensure!(self.is_connected(), "Native Kite client disconnected");
+        outage::snapshot(self.broker.as_ref()).await
     }
     fn instrument(&self, id: Option<InstrumentId>) -> Result<()> {
         ensure!(
@@ -253,7 +261,7 @@ impl ExecutionClient for Client {
             "Native execution event channel unavailable"
         );
         self.broker.verify().await?;
-        let snapshot = self.broker.snapshot().await?;
+        let snapshot = outage::snapshot(self.broker.as_ref()).await?;
         reports::positions(
             &snapshot,
             self.account_id(),
@@ -270,19 +278,26 @@ impl ExecutionClient for Client {
         if let Some(dispatcher) = &self.dispatcher {
             let dispatcher = dispatcher.clone();
             let active = self.active.clone();
+            let stop_signal = self.stop_signal.clone();
             let tx = try_get_exec_event_sender()
                 .ok_or_else(|| anyhow!("Native event channel unavailable"))?;
             self.poll = Some(tokio::spawn(async move {
                 while active.load(std::sync::atomic::Ordering::Acquire) {
-                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     if !active.load(std::sync::atomic::Ordering::Acquire) {
                         break;
                     }
                     let mut service = dispatcher.lock().await;
-                    if service.has_unresolved()
-                        && let Err(e) = service.refresh(&tx).await
-                    {
+                    if let Err(e) = service.refresh(&tx).await {
+                        service.fault();
                         active.store(false, std::sync::atomic::Ordering::Release);
+                        if let Some(signal) = &stop_signal {
+                            signal.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({"event":"native_execution_fault","requires_review":true,"live_orders_enabled":false})
+                        );
                         return Err(e);
                     }
                 }
@@ -292,21 +307,25 @@ impl ExecutionClient for Client {
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<()> {
-        let tasks = std::mem::take(&mut *self.tasks.borrow_mut());
-        let mut failure = None;
-        for task in tasks {
-            match task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => failure = Some(e),
-                Err(_) => failure = Some(anyhow!("Native dispatch task failed")),
-            }
-        }
         self.stop()?;
-        if let Some(poll) = self.poll.take() {
-            match poll.await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => failure = Some(e),
-                Err(_) => failure = Some(anyhow!("Native broker polling failed")),
+        let tasks = std::mem::take(&mut *self.tasks.borrow_mut());
+        let mut failure = shutdown::drain(tasks, std::time::Duration::from_secs(15))
+            .await
+            .err();
+        if let Some(poll) = self.poll.take()
+            && let Err(e) = shutdown::drain(vec![poll], std::time::Duration::from_secs(15)).await
+        {
+            failure = Some(e);
+        }
+        if let Some(d) = &self.dispatcher {
+            let tx = try_get_exec_event_sender()
+                .ok_or_else(|| anyhow!("Native event channel unavailable during shutdown"))?;
+            let mut service = d.lock().await;
+            if failure.is_some() {
+                service.fault();
+            }
+            if let Err(e) = service.finish(&tx, failure.is_some()).await {
+                failure = Some(e);
             }
         }
         if let Some(e) = failure {
@@ -315,7 +334,7 @@ impl ExecutionClient for Client {
         Ok(())
     }
     fn submit_order(&self, cmd: SubmitOrder) -> Result<()> {
-        ensure!(self.connected, "Native Kite client disconnected");
+        ensure!(self.is_connected(), "Native Kite client disconnected");
         ensure!(
             cmd.trader_id == self.factory.trader_id()
                 && cmd.order_init.trader_id == cmd.trader_id
@@ -343,23 +362,36 @@ impl ExecutionClient for Client {
             );
             let dispatcher = dispatcher.clone();
             let active = self.active.clone();
+            let stop_signal = self.stop_signal.clone();
             let tx = try_get_exec_event_sender()
                 .ok_or_else(|| anyhow!("Native event channel unavailable"))?;
             tokio::runtime::Handle::try_current()
                 .map_err(|_| anyhow!("Native runtime unavailable"))?;
+            ensure!(
+                self.tasks.borrow().len() < 256,
+                "Native task admission capacity exhausted"
+            );
             self.tasks.borrow_mut().push(tokio::spawn(async move {
                 ensure!(
                     active.load(std::sync::atomic::Ordering::Acquire),
                     "Native client stopped"
                 );
                 let mut service = dispatcher.lock().await;
+                ensure!(
+                    active.load(std::sync::atomic::Ordering::Acquire),
+                    "Native client stopped before dispatch"
+                );
                 let result = async {
                     service.submit(order, position as i64, &tx).await?;
                     service.refresh(&tx).await
                 }
                 .await;
                 if result.is_err() {
+                    service.fault();
                     active.store(false, std::sync::atomic::Ordering::Release);
+                    if let Some(signal) = &stop_signal {
+                        signal.store(true, std::sync::atomic::Ordering::Release);
+                    }
                 }
                 result
             }));
@@ -396,6 +428,11 @@ impl ExecutionClient for Client {
         let tx = try_get_exec_event_sender()
             .ok_or_else(|| anyhow!("Native event channel unavailable"))?;
         let active = self.active.clone();
+        let stop_signal = self.stop_signal.clone();
+        ensure!(
+            self.tasks.borrow().len() < 256,
+            "Native task admission capacity exhausted"
+        );
         tokio::runtime::Handle::try_current().map_err(|_| anyhow!("Native runtime unavailable"))?;
         self.tasks.borrow_mut().push(tokio::spawn(async move {
             ensure!(
@@ -403,6 +440,10 @@ impl ExecutionClient for Client {
                 "Native client stopped"
             );
             let mut service = dispatcher.lock().await;
+            ensure!(
+                active.load(std::sync::atomic::Ordering::Acquire),
+                "Native client stopped before dispatch"
+            );
             let result = async {
                 service
                     .cancel(cmd.client_order_id, cmd.command_id, &tx)
@@ -411,14 +452,53 @@ impl ExecutionClient for Client {
             }
             .await;
             if result.is_err() {
+                service.fault();
                 active.store(false, std::sync::atomic::Ordering::Release);
+                if let Some(signal) = &stop_signal {
+                    signal.store(true, std::sync::atomic::Ordering::Release);
+                }
             }
             result
         }));
         Ok(())
     }
-    fn cancel_all_orders(&self, _: CancelAllOrders) -> Result<()> {
-        bail!("Real Kite order cancellation is disabled")
+    fn cancel_all_orders(&self, cmd: CancelAllOrders) -> Result<()> {
+        ensure!(self.is_connected(), "Native Kite client disconnected");
+        ensure!(
+            self.dispatcher.is_some(),
+            "Real Kite order cancellation is disabled"
+        );
+        ensure!(
+            cmd.trader_id == self.factory.trader_id(),
+            "Native cancellation trader mismatch"
+        );
+        let cache = self
+            .cache
+            .as_ref()
+            .ok_or_else(|| anyhow!("Native cache unavailable"))?
+            .borrow();
+        let orders = cache.orders_open(
+            None,
+            Some(&cmd.instrument_id),
+            Some(&cmd.strategy_id),
+            Some(&self.account_id()),
+            cmd.order_side,
+        );
+        for o in orders {
+            self.cancel_order(CancelOrder::new(
+                cmd.trader_id,
+                cmd.client_id,
+                cmd.strategy_id,
+                cmd.instrument_id,
+                o.client_order_id(),
+                o.venue_order_id(),
+                nautilus_core::UUID4::new(),
+                Self::now(),
+                None,
+                None,
+            ))?;
+        }
+        Ok(())
     }
     fn batch_cancel_orders(&self, _: BatchCancelOrders) -> Result<()> {
         bail!("Real Kite order cancellation is disabled")
@@ -597,3 +677,9 @@ mod dispatch_tests;
 
 #[cfg(test)]
 mod fee_tests;
+
+#[cfg(test)]
+mod coordination_tests;
+
+#[cfg(test)]
+mod outage_tests;

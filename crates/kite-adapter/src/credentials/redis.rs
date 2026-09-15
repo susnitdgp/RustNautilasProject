@@ -20,6 +20,13 @@ pub fn load_from_env() -> Result<KiteCredentials> {
 
 /// Reads both keys in one MGET. Never returns Redis error bodies or connection URLs.
 pub fn load_from_url(url: &str) -> Result<KiteCredentials> {
+    load_keys(url, API_KEY, ACCESS_TOKEN_KEY)
+}
+pub fn load_sandbox() -> Result<KiteCredentials> {
+    let url = kite_journal::connection::url_from_env()?;
+    load_sandbox_at(&url).map_err(|_| anyhow!("Sandbox Redis credentials missing or invalid"))
+}
+fn load_keys(url: &str, api_key_name: &str, token_name: &str) -> Result<KiteCredentials> {
     let client = ::redis::Client::open(url)
         .map_err(|_| anyhow!("Invalid Redis connection configuration"))?;
     let mut connection = client
@@ -32,9 +39,14 @@ pub fn load_from_url(url: &str) -> Result<KiteCredentials> {
         .set_write_timeout(Some(TIMEOUT))
         .map_err(|_| anyhow!("Could not set Redis write timeout"))?;
     let (api_key, access_token): (Option<String>, Option<String>) = ::redis::cmd("MGET")
-        .arg(API_KEY)
-        .arg(ACCESS_TOKEN_KEY)
+        .arg(api_key_name)
+        .arg(token_name)
         .query(&mut connection)
         .map_err(|_| anyhow!("Redis credential read failed"))?;
     KiteCredentials::new(api_key, access_token)
+}
+
+pub(crate) fn load_sandbox_at(url: &str) -> Result<KiteCredentials> {
+    load_keys(url, "sandbox:kite_api_key", "sandbox:kite_access_token")
+        .map_err(|_| anyhow!("Sandbox Redis credentials missing or invalid"))
 }

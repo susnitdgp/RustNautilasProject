@@ -1,0 +1,22 @@
+{
+  "date": "2026-09-15",
+  "removed_redis_keys": 18,
+  "removed_namespaces": [
+    "66d1a0df-4850-448a-a3cb-e4d7a237fae7",
+    "67998215-ecb1-4ec2-a07d-714f14ca1c3a",
+    "a8923740-531f-4c2a-ba27-468016ae9f2d",
+    "af2a1e68-965c-4870-994e-dcca6bd7c417",
+    "c9b72408-9ab5-48c3-aafb-cc5905e33cfa",
+    "ae436a16-893e-4646-bb02-2a52c7fd1a12"
+  ],
+  "reason": "Completed flat simulation state, no native events, empty journals already removed",
+  "preserved_redis_keys": 154,
+  "credential_keys_preserved": 4,
+  "account_locks_and_budgets_preserved": true,
+  "unfinished_runs_preserved": true,
+  "removed_obsolete_logs_this_turn": [
+    "kite-hardening-check.log",
+    "kite-hardening-adapter-tests.log",
+    "kite-hardening-native-tests.log"
+  ]
+}

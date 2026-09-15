@@ -254,3 +254,29 @@ async fn cancellation_ack_is_not_canceled_until_observed_and_repeat_is_blocked()
     assert!(d.cancel(id, UUID4::new(), &tx).await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn short_entry_cover_and_contract_cap_are_enforced_at_dispatch() {
+    let (mut d, calls, _) = fixture(false, false);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    d.submit(order(OrderSide::Sell, 2, false), 0, &tx)
+        .await
+        .unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    d.submit(order(OrderSide::Sell, 1, false), 0, &tx)
+        .await
+        .unwrap();
+    d.refresh(&tx).await.unwrap();
+    drain(&mut rx);
+    d.submit(order(OrderSide::Sell, 1, false), -1, &tx)
+        .await
+        .unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
+    d.submit(order(OrderSide::Buy, 1, true), -1, &tx)
+        .await
+        .unwrap();
+    d.refresh(&tx).await.unwrap();
+    d.finish(&tx, false).await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}

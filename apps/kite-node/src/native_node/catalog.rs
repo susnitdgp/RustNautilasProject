@@ -74,6 +74,46 @@ pub fn read_full(path: &Path) -> Result<Vec<kite_adapter::data::full_tick::KiteF
         .collect()
 }
 
+/// Audit complete decoded fields without exposing raw market/account payloads.
+pub fn audit(path: &Path) -> Result<()> {
+    let ticks = read_full(path)?;
+    ensure!(!ticks.is_empty(), "No full packets in catalog");
+    let mut timestamped = 0;
+    let mut populated_depth = 0;
+    for tick in &ticks {
+        let raw = tick
+            .snapshot
+            .raw
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Raw tick missing"))?;
+        let full = raw
+            .full
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Full fields missing"))?;
+        ensure!(
+            raw.quote_fields.is_some()
+                && raw.last_quantity.is_some()
+                && raw.cumulative_volume.is_some(),
+            "Quote/trade snapshot fields missing"
+        );
+        ensure!(
+            raw.instrument_token == tick.snapshot.instrument_token,
+            "Tick identity mismatch"
+        );
+        if full.last_trade_timestamp.is_some() && full.exchange_timestamp.is_some() {
+            timestamped += 1;
+        }
+        if full.bids.iter().all(|l| l.quantity > 0) && full.asks.iter().all(|l| l.quantity > 0) {
+            populated_depth += 1;
+        }
+    }
+    println!(
+        "{}",
+        serde_json::json!({"event":"native_full_tick_audit","catalog":path,"packets":ticks.len(),"full_fields_present":true,"bid_levels":5,"ask_levels":5,"packets_with_timestamps":timestamped,"packets_with_all_depth_levels_populated":populated_depth,"available_fields":["ltp","last_quantity","cumulative_volume","average_price","total_buy_quantity","total_sell_quantity","OHLC","OI","OI_day_high","OI_day_low","last_trade_timestamp","exchange_timestamp","depth_price_quantity_order_count","receive_time","connection_generation"],"unique_trade_ids":false,"aggressor_side":false,"exchange_order_deltas":false,"live_orders_enabled":false})
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,11 +126,25 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, p)| {
-                let snapshot = crate::paper_flow::simulation::full_snapshot(
+                let mut snapshot = crate::paper_flow::simulation::full_snapshot(
                     p,
                     ts.as_u64() + (i as u64 + 1) * 1_000_000_000,
                     1,
                 );
+                let raw = snapshot.raw.as_mut().unwrap();
+                let full = raw.full.as_mut().unwrap();
+                full.open_interest_day_high = 98765;
+                full.open_interest_day_low = 12345;
+                for (j, level) in full.bids.iter_mut().enumerate() {
+                    level.orders = 10 + j as u16;
+                    level.quantity = 100 + j as u32;
+                }
+                for (j, level) in full.asks.iter_mut().enumerate() {
+                    level.orders = 20 + j as u16;
+                    level.quantity = 200 + j as u32;
+                }
+                raw.quote_fields.as_mut().unwrap().total_buy_quantity = 34567;
+                raw.quote_fields.as_mut().unwrap().total_sell_quantity = 45678;
                 let quote = kite_adapter::mapping::quotes::map(&snapshot, &instrument)?.unwrap();
                 Ok(kite_adapter::data::full_tick::KiteFullTick { snapshot, quote })
             })

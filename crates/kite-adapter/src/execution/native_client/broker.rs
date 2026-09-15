@@ -62,10 +62,25 @@ pub(crate) struct KiteBroker {
     orders: KiteOrderTransport,
     user_id: String,
     product: String,
+    sandbox: bool,
 }
 impl KiteBroker {
+    pub(crate) fn sandbox(
+        credentials: &KiteCredentials,
+        user_id: String,
+        product: String,
+    ) -> Result<Self> {
+        Ok(Self {
+            read: ReadClient::sandbox(credentials)?,
+            orders: KiteOrderTransport::new(credentials)?,
+            user_id,
+            product,
+            sandbox: true,
+        })
+    }
     pub fn new(credentials: &KiteCredentials, user_id: String, product: String) -> Result<Self> {
         Ok(Self {
+            sandbox: false,
             read: ReadClient::new(credentials)?,
             orders: KiteOrderTransport::new(credentials)?,
             user_id,
@@ -81,11 +96,24 @@ impl Broker for KiteBroker {
         product: &str,
         token: u32,
     ) -> Result<super::fees::Fees> {
-        super::fees::calculate(&self.read, snapshot, product, token).await
+        if self.sandbox {
+            // Explicit sandbox estimate: the sandbox has no virtual contract notes.
+            let mut result = super::fees::Fees::new();
+            for trades in super::fees::groups(snapshot, product, token)?.values() {
+                result.extend(super::fees::allocate(Decimal::ZERO, trades)?);
+            }
+            Ok(result)
+        } else {
+            super::fees::calculate(&self.read, snapshot, product, token).await
+        }
     }
 
     async fn execute(&self, command: &Command) -> Result<Outcome> {
-        self.orders.execute(command).await
+        if self.sandbox {
+            self.orders.execute_sandbox(command).await
+        } else {
+            self.orders.execute(command).await
+        }
     }
 
     async fn verify(&self) -> Result<()> {
@@ -118,10 +146,7 @@ impl Broker for KiteBroker {
         let mut orders = orders;
         first.sort_by(|a, b| a.order_id.cmp(&b.order_id));
         orders.sort_by(|a, b| a.order_id.cmp(&b.order_id));
-        ensure!(
-            first == orders,
-            "Kite snapshot changed while reading; retry reconciliation"
-        );
+        ensure!(first == orders, super::outage::ReadFailure::Transient);
         Ok(Snapshot {
             orders,
             trades,

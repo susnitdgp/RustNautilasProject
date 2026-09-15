@@ -141,7 +141,7 @@ pub fn run(strategy_path: &str, catalog_path: Option<&str>) -> Result<()> {
     let output = serde_json::json!({"event":"native_backtest_complete","namespace":run_id,"catalog":path,
   "native_backtest_node":true,"native_backtest_engine":true,"native_matching_engine":true,
   "native_redis_cache":true,"native_indicators":true,"full_packet_replay":full_replay,"replayed_full_packets":full_ticks.len(),"strategy_ticks":s.ticks,"audit_quotes":audit.get(),
-  "signals":s.signals,"fills":s.fills,"denied":s.denied,"open_contracts":net,"results":results,
+  "signal_counts":s.signal_counts,"signals":s.signals,"fills":s.fills,"denied":s.denied,"open_contracts":net,"results":results,
   "live_orders_enabled":false,"broker_accessed":false});
     drop(cache);
     drop(s);

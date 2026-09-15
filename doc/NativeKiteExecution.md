@@ -1,8 +1,10 @@
 # Native Kite adapter integration
 
+Latest hardening, short trading, explicit signals, local protection and official sandbox status: [NativeHardening.md](NativeHardening.md). Real orders remain disabled.
+
 Updated 15 September 2026. Kite native APIs only. Real broker orders stay disabled.
 The supported LIMIT/DAY execution flow is integrated and tested through LiveNode
-with a deterministic Kite broker fixture. Production hardening has not started.
+with a deterministic Kite broker fixture. The requested hardening is implemented; see NativeHardening.md for the current review checkpoint.
 
 ## Run the integrated adapter fixture
 
@@ -15,7 +17,7 @@ strategy/risk/execution engines, persists command ownership and native events in
 Redis, and captures complete packets in the native catalog. It does not load real
 credentials or contact a broker. The mock broker supplies deterministic fills at
 requested limits; use native-backtest for the native matching-engine backtest.
-Synthetic ticks are paced at 1.5 seconds so Redis AOF acknowledgements complete
+Synthetic mock ticks are paced at 3 seconds so Redis AOF acknowledgements complete
 before the fixture's next crossover. Other simulation commands retain 500 ms ticks.
 
 The verified fixture produces 15 ticks, two signals, two fills and a flat position.
@@ -54,8 +56,7 @@ both orders. A separate command journal verifies both durable broker-ID/tag mapp
 
 The real Factory creates a read-only client: native submit emits Denied and all
 real broker mutations remain unavailable. Its Config holds the expected user ID,
-MIS/NRML product, resolved instrument token and redacted credentials. Only the
-explicit MockFactory attaches a dispatcher to a runnable client. Enabling the old
+MIS/NRML product, resolved instrument token and redacted credentials. MockFactory and the separate fixed-host SandboxFactory attach a dispatcher to a runnable client. Enabling the old
 adapter live-orders Cargo feature does not enable real orders in this native client.
 
 The usual native-node-sim/native-node-paper commands continue to use
@@ -67,8 +68,7 @@ configuration file. Keep these gates closed during subsequent hardening.
 Strategy edit point: apps/kite-node/src/native_node/strategy.rs.
 UserStrategy.on_full_tick receives full data; quote-only replay uses on_quote.
 Parameters: config/strategy-crossover.toml. Contract: config/crudeoil-september.toml.
-The strategy scope remains one long contract, one pending order, LIMIT/DAY and an
-entry cap. Modification, batches, market/stop orders and new products are outside
+The native strategy scope is now one long OR short contract, one pending order, LIMIT/DAY and an entry cap. Modification, batches, market/stop orders and new products are outside
 this adapter's current execution scope; unsupported commands fail explicitly.
 Synchronous query_account/query_order are not exposed; use the native asynchronous
 report methods. Current-position reports reject historical time ranges. Broker
@@ -107,10 +107,9 @@ Latest retained logs:
 - /tmp/kite-upstream-twap-tests.log
 
 Native event compatibility fixes and upstream gates: NativeEventCompatibility.md.
-The next phase is production hardening: account-wide command fencing/rate budgets,
-operational reconciliation and restart review, bounded read retry/health handling,
-shutdown behavior under outages and broader order types only if required. Real-order
-activation and verification still require separate user authorization.
+The next step is manual code review and authenticated official sandbox validation.
+See NativeHardening.md for the implemented controls, verification and remaining
+operational limits. Real-order activation remains separately disabled.
 
 Primary API contracts:
 - https://kite.trade/docs/connect/v3/orders/

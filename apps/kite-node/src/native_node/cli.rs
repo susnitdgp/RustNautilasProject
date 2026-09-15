@@ -6,6 +6,30 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match (command, &args[1..]) {
+        ("native-kite-sandbox-preflight", []) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|r| r.block_on(kite_adapter::execution::native_client::sandbox::preflight()))
+            .map(|v| println!("{}", v)),
+        ("native-kite-sandbox", []) => super::runner::run_kite_sandbox(
+            "config/kite-sandbox.toml",
+            "config/strategy-crossover.toml",
+        ),
+        ("native-kite-sandbox", [settings, strategy]) => {
+            super::runner::run_kite_sandbox(settings, strategy)
+        }
+        ("native-kite-review", [namespace]) => {
+            kite_adapter::execution::native_client::recovery::review(namespace)
+                .map(|v| println!("{}", v))
+        }
+        ("native-full-audit", [catalog]) => super::catalog::audit(std::path::Path::new(catalog)),
+        ("native-kite-status", [account]) => {
+            kite_adapter::execution::native_client::coordination::status(account)
+                .map(|v| println!("{}", v))
+        }
+        ("native-kite-mock-short", []) => {
+            super::runner::run_kite_mock_short("config/strategy-crossover.toml")
+        }
+        ("native-kite-mock-short", [strategy]) => super::runner::run_kite_mock_short(strategy),
         ("native-kite-mock", []) => super::runner::run_kite_mock("config/strategy-crossover.toml"),
         ("native-kite-mock", [strategy]) => super::runner::run_kite_mock(strategy),
         ("native-node-sim", []) => super::runner::run(None, "config/strategy-crossover.toml", 30),

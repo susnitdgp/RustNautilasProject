@@ -26,6 +26,7 @@ use std::{
 #[derive(Debug)]
 pub struct MockConfig {
     pub namespace: String,
+    pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
     pub product: String,
     pub instrument_token: u32,
 }
@@ -71,12 +72,13 @@ impl ExecutionClientFactory for MockFactory {
         )?;
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
-            Box::new(RedisStore::create(&cfg.namespace)?),
+            Box::new(RedisStore::coordinated(&cfg.namespace, "MOCK")?),
             client.factory.clone(),
             cfg.product.clone(),
             cfg.instrument_token,
         ))));
         client.cache = Some(cache);
+        client.stop_signal = Some(cfg.stop_signal.clone());
         Ok(Box::new(client))
     }
 }

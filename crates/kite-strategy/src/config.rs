@@ -3,6 +3,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub enable_short: bool,
+    #[serde(default = "default_stop")]
+    pub stop_loss_rupees: u32,
+    #[serde(default = "default_target")]
+    pub target_rupees: u32,
     pub fast: usize,
     pub slow: usize,
     pub max_spread_rupees: u32,
@@ -17,7 +23,9 @@ impl Config {
     }
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.fast > 0
+            (1..=10000).contains(&self.stop_loss_rupees)
+                && (1..=10000).contains(&self.target_rupees)
+                && self.fast > 0
                 && self.fast < self.slow
                 && self.slow <= 1000
                 && (1..=10).contains(&self.max_spread_rupees)
@@ -27,4 +35,11 @@ impl Config {
         );
         Ok(())
     }
+}
+
+fn default_stop() -> u32 {
+    30
+}
+fn default_target() -> u32 {
+    60
 }

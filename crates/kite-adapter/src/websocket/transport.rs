@@ -74,3 +74,32 @@ pub async fn close(socket: &mut Socket) {
 pub async fn connect(credentials: &KiteCredentials, deadline: Instant) -> Result<Socket> {
     connect_at(credentials, deadline, "wss://ws.kite.trade").await
 }
+
+pub(crate) fn sandbox_endpoint(user_id: &str) -> Result<String> {
+    ensure!(
+        !user_id.is_empty()
+            && user_id.len() <= 32
+            && user_id.bytes().all(|b| b.is_ascii_alphanumeric()),
+        "Invalid sandbox user ID"
+    );
+    Ok(format!("wss://ws-sandbox.kite.trade?user_id={user_id}"))
+}
+pub async fn connect_sandbox(
+    credentials: &KiteCredentials,
+    user_id: &str,
+    deadline: Instant,
+) -> Result<Socket> {
+    connect_at(credentials, deadline, &sandbox_endpoint(user_id)?).await
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    #[test]
+    fn sandbox_endpoint_keeps_user_on_separate_host_and_rejects_query_injection() {
+        assert_eq!(
+            super::sandbox_endpoint("SBX123").unwrap(),
+            "wss://ws-sandbox.kite.trade?user_id=SBX123"
+        );
+        assert!(super::sandbox_endpoint("id&access_token=other").is_err());
+    }
+}

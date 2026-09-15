@@ -1,17 +1,16 @@
 //! USER STRATEGY: edit signal decisions here. Runtime, orders and persistence live elsewhere.
+use super::signals::Signal;
 use anyhow::Result;
 use kite_strategy::config::Config;
 use nautilus_indicators::{average::sma::SimpleMovingAverage, indicator::Indicator};
-use nautilus_model::{
-    data::QuoteTick,
-    enums::{OrderSide, PriceType},
-};
+use nautilus_model::{data::QuoteTick, enums::PriceType};
 
 #[derive(Debug)]
 pub struct UserStrategy {
     fast: SimpleMovingAverage,
     slow: SimpleMovingAverage,
     previous: Option<bool>,
+    enable_short: bool,
 }
 impl UserStrategy {
     pub fn new(config: &Config) -> Self {
@@ -19,11 +18,12 @@ impl UserStrategy {
             fast: SimpleMovingAverage::new(config.fast, Some(PriceType::Mid)),
             slow: SimpleMovingAverage::new(config.slow, Some(PriceType::Mid)),
             previous: None,
+            enable_short: config.enable_short,
         }
     }
-    /// Return a desired order side, or None to wait. Position is native net contracts.
-    /// The runtime separately enforces one long contract and one pending order.
-    pub fn on_quote(&mut self, quote: &QuoteTick, position: f64) -> Result<Option<OrderSide>> {
+    /// Return BUY, BUY_EXIT, SELL or SELL_EXIT, or None to wait. Position is native net contracts.
+    /// The runtime separately enforces one contract in either direction and one pending order.
+    pub fn on_quote(&mut self, quote: &QuoteTick, position: f64) -> Result<Option<Signal>> {
         self.fast.handle_quote(quote)?;
         self.slow.handle_quote(quote)?;
         if !self.fast.initialized() || !self.slow.initialized() {
@@ -32,8 +32,10 @@ impl UserStrategy {
         let above = self.fast.value > self.slow.value;
         let prior = self.previous.replace(above);
         Ok(match prior {
-            Some(false) if above && position == 0.0 => Some(OrderSide::Buy),
-            Some(true) if !above && position == 1.0 => Some(OrderSide::Sell),
+            Some(false) if above && position == -1.0 => Some(Signal::SellExit),
+            Some(false) if above && position == 0.0 => Some(Signal::Buy),
+            Some(true) if !above && position == 1.0 => Some(Signal::BuyExit),
+            Some(true) if !above && position == 0.0 && self.enable_short => Some(Signal::Sell),
             _ => None,
         })
     }
@@ -43,7 +45,7 @@ impl UserStrategy {
         &mut self,
         tick: &kite_adapter::data::full_tick::KiteFullTick,
         position: f64,
-    ) -> Result<Option<OrderSide>> {
+    ) -> Result<Option<Signal>> {
         self.on_quote(&tick.quote, position)
     }
 

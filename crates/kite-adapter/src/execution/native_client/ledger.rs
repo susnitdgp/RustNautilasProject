@@ -15,14 +15,36 @@ pub(crate) struct Record {
 }
 pub(crate) trait Store: Send {
     fn save(&mut self, id: &str, record: &Record) -> Result<()>;
+    fn reserve(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn cooldown(&mut self, _: u64) -> Result<()> {
+        Ok(())
+    }
+    fn health(&mut self, _: &str, _: usize, _: i64) -> Result<()> {
+        Ok(())
+    }
+    fn finish(&mut self, _: bool, _: usize, _: i64) -> Result<()> {
+        Ok(())
+    }
 }
 pub(crate) struct RedisStore {
+    account: Option<super::coordination::Account>,
     connection: redis::Connection,
     key: String,
     previous: BTreeMap<String, String>,
     poisoned: bool,
 }
 impl RedisStore {
+    pub fn coordinated(namespace: &str, account: &str) -> Result<Self> {
+        let mut store = Self::create(namespace)?;
+        store.account = Some(super::coordination::Account::acquire(
+            &kite_journal::connection::url_from_env()?,
+            account,
+            namespace,
+        )?);
+        Ok(store)
+    }
     pub fn create(namespace: &str) -> Result<Self> {
         ensure!(
             !namespace.is_empty()
@@ -47,6 +69,7 @@ impl RedisStore {
         );
         kite_journal::connection::sync(&mut connection)?;
         Ok(Self {
+            account: None,
             connection,
             key,
             previous: BTreeMap::new(),
@@ -55,6 +78,30 @@ impl RedisStore {
     }
 }
 impl Store for RedisStore {
+    fn reserve(&mut self) -> Result<()> {
+        if let Some(a) = &mut self.account {
+            a.reserve()?;
+        }
+        Ok(())
+    }
+    fn cooldown(&mut self, ms: u64) -> Result<()> {
+        if let Some(a) = &mut self.account {
+            a.cooldown(ms)?;
+        }
+        Ok(())
+    }
+    fn health(&mut self, s: &str, u: usize, p: i64) -> Result<()> {
+        if let Some(a) = &mut self.account {
+            a.update(s, u, p)?;
+        }
+        Ok(())
+    }
+    fn finish(&mut self, clean: bool, u: usize, p: i64) -> Result<()> {
+        if let Some(a) = &mut self.account {
+            a.finish(clean, u, p)?;
+        }
+        Ok(())
+    }
     fn save(&mut self, id: &str, record: &Record) -> Result<()> {
         ensure!(
             !self.poisoned,

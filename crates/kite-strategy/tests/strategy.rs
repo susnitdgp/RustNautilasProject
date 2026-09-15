@@ -20,6 +20,9 @@ fn config() -> Config {
         max_spread_rupees: 2,
         max_age_seconds: 10,
         max_entries: 20,
+        enable_short: false,
+        stop_loss_rupees: 30,
+        target_rupees: 60,
     }
 }
 fn quote(index: u64, bid: i64) -> QuoteTick {
