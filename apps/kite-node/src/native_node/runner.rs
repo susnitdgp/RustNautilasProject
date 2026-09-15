@@ -25,6 +25,17 @@ use std::{
     time::Duration,
 };
 pub fn run(instrument_path: Option<&str>, strategy_path: &str, seconds: u64) -> Result<()> {
+    run_with_backend(instrument_path, strategy_path, seconds, false)
+}
+pub fn run_kite_mock(strategy_path: &str) -> Result<()> {
+    run_with_backend(None, strategy_path, 30, true)
+}
+fn run_with_backend(
+    instrument_path: Option<&str>,
+    strategy_path: &str,
+    seconds: u64,
+    kite_mock: bool,
+) -> Result<()> {
     let strategy = kite_strategy::config::Config::parse(&std::fs::read_to_string(strategy_path)?)?;
     let (instrument, token, credentials) = if let Some(path) = instrument_path {
         let config = crate::preflight_command::read_config(path)?;
@@ -49,17 +60,21 @@ pub fn run(instrument_path: Option<&str>, strategy_path: &str, seconds: u64) -> 
    instance_id:Some(instance),cache:Some(persistence::cache_config()),save_state:true,load_state:false,
    shutdown_on_error:true,delay_post_stop:Duration::from_secs(2),..Default::default()};
   config.logging=LoggerConfig{stdout_level:log::LevelFilter::Warn,is_colored:false,..Default::default()};
-  config.exec_engine.reconciliation=false;
+  config.exec_engine.reconciliation=kite_mock;
   config.risk_engine.max_notional_per_order.insert(instrument.id.to_string(),"2000000".into());
   let sandbox=SandboxExecutionClientConfig{
    venue:Venue::from("MCX"),account_id:"MCX-PAPER".into(),base_currency:Some(Currency::INR()),
    starting_balances:vec![Money::new(1_000_000.0,Currency::INR())],..Default::default()
   };
-  let mut node=nautilus_live::builder::LiveNodeBuilder::from_config(config)?
+  let builder=nautilus_live::builder::LiveNodeBuilder::from_config(config)?
    .with_cache_database_factory(Box::new(super::redis_cache::Factory(redis)))
-   .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token,seconds,credentials}))?
-   .add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(sandbox))?
-   .build()?;
+   .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token,seconds,credentials,synthetic_tick_ms:if kite_mock{1500}else{500}}))?
+   ;
+  let builder=if kite_mock {
+   use kite_adapter::execution::native_client::mock::{MockFactory,MockConfig};
+   builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:instance.to_string(),product:"NRML".into(),instrument_token:token}))?
+  }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(sandbox))?};
+  let mut node=builder.build()?;
   node.add_strategy(NativeStrategy::new(strategy,instrument.id,true,state.clone(),done.clone()))?;
   node.add_actor(AuditActor::new(instrument.id,audit.clone()))?;
   node.add_exec_algorithm(TwapAlgorithm::new(ExecutionAlgorithmConfig{exec_algorithm_id:Some("TWAP".into()),..Default::default()}))?;
@@ -75,7 +90,7 @@ pub fn run(instrument_path: Option<&str>, strategy_path: &str, seconds: u64) -> 
   println!("{}",serde_json::json!({"event":"native_node_started","namespace":instance.to_string(),"runtime":"LiveNode","live_orders_enabled":false}));
   let run=node.run().await;
   watcher.abort();
-  let output=report(&state,audit.get(),live_data,instance.to_string());
+  let output=report(&state,audit.get(),live_data,instance.to_string(),kite_mock);
   node.dispose();
   run?;
   output
@@ -98,6 +113,7 @@ fn report(
     audit: u64,
     live_data: bool,
     namespace: String,
+    kite_mock: bool,
 ) -> Result<serde_json::Value> {
     let state = state.borrow();
     ensure!(
@@ -117,7 +133,7 @@ fn report(
         serde_json::json!({"event":"native_node_complete","namespace":namespace,"runtime":"LiveNode",
  "native_kernel":true,"native_trader":true,"native_live_clock":true,"native_actor":true,
  "native_strategy":true,"native_data_engine":true,"native_risk_engine":true,"native_execution_engine":true,
- "native_matching_engine":true,"native_portfolio":true,"native_redis_cache":true,
+ "native_matching_engine":!kite_mock,"native_kite_execution_client":kite_mock,"native_kite_mock_broker":kite_mock,"native_portfolio":true,"native_redis_cache":true,
  "twap_registered":true,"data_mode":"full","market_data_source":if live_data {"kite_live"}else{"synthetic"},
  "strategy_ticks":state.ticks,"audit_quotes":audit,"signals":state.signals,"fills":state.fills,
  "denied":state.denied,"cancelled":state.cancelled,"orders":orders.len(),"open_contracts":net,

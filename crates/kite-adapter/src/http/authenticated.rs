@@ -1,4 +1,4 @@
-//! GET-only authenticated transport with fixed endpoint allowlist and redacted failures.
+//! Authenticated reads and fixed virtual-contract-note calculation; no order mutation endpoints.
 use crate::credentials::KiteCredentials;
 use anyhow::{Result, anyhow, ensure};
 use reqwest::{
@@ -14,6 +14,7 @@ pub(crate) enum Endpoint {
     Positions,
     Orders,
     Trades,
+    CommodityMargins,
 }
 impl Endpoint {
     fn path(&self) -> &'static str {
@@ -22,10 +23,13 @@ impl Endpoint {
             Self::Positions => "/portfolio/positions",
             Self::Orders => "/orders",
             Self::Trades => "/trades",
+            Self::CommodityMargins => "/user/margins/commodity",
         }
     }
 }
 pub(crate) struct ReadClient {
+    #[cfg(test)]
+    charge_test_url: Option<String>,
     client: Client,
     authorization: HeaderValue,
 }
@@ -46,6 +50,8 @@ impl ReadClient {
             .build()
             .map_err(|_| anyhow!("Kite read client initialization failed"))?;
         Ok(Self {
+            #[cfg(test)]
+            charge_test_url: None,
             client,
             authorization,
         })
@@ -54,10 +60,32 @@ impl ReadClient {
         self.get_at(&format!("https://api.kite.trade{}", endpoint.path()))
             .await
     }
+    #[cfg(test)]
+    pub(crate) fn charges_test_url(mut self, url: String) -> Self {
+        self.charge_test_url = Some(url);
+        self
+    }
+    pub(crate) async fn charges<T: DeserializeOwned>(&self, payload: Vec<u8>) -> Result<T> {
+        let url = "https://api.kite.trade/charges/orders";
+        #[cfg(test)]
+        let url = self.charge_test_url.as_deref().unwrap_or(url);
+
+        self.read_response(
+            self.client
+                .post(url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(payload),
+        )
+        .await
+    }
     async fn get_at<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        let mut response = self
-            .client
-            .get(url)
+        self.read_response(self.client.get(url)).await
+    }
+    async fn read_response<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<T> {
+        let mut response = request
             .header("X-Kite-Version", "3")
             .header(AUTHORIZATION, self.authorization.clone())
             .send()

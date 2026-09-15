@@ -1,0 +1,37 @@
+--- a/src/matching_engine/mod.rs
++++ b/src/matching_engine/mod.rs
+@@ -3374,6 +3374,4 @@
+-            if self
+-                .cache
+-                .borrow_mut()
+-                .add_order(order.clone(), None, None, false)
+-                .is_err()
+-                && let Err(e) = self.cache.borrow_mut().replace_order(order)
++            // Local integration patch: lifecycle events own canonical cache updates.
++            // Replacing the cached order here persists Accepted ahead of queued
++            // Submitted/Accepted notifications in Sandbox. Keep only non-event
++            // liquidity metadata in the existing cache and fill from our local snapshot.
+@@ -3381,3 +3379,11 @@
+-                log::debug!("Failed to update order in cache: {e}");
+-            }
+-            self.fill_limit_order(order.client_order_id());
++                let mut cache = self.cache.borrow_mut();
++                if cache.order_exists(&order.client_order_id()) {
++                    if let Some(mut cached) = cache.order_mut(&order.client_order_id()) {
++                        cached.set_liquidity_side(LiquiditySide::Taker);
++                    }
++                } else if let Err(e) = cache.add_order(order.clone(), None, None, false) {
++                    log::error!("Failed to cache limit order: {e}");
++                    return;
++                }
++            }
++            self.fill_limit_order_snapshot(order.clone());
+@@ -4422 +4428 @@
+-        let mut order = match self
++        let order = match self
+@@ -4434,0 +4441,5 @@
++        self.fill_limit_order_snapshot(order);
++    }
++
++    fn fill_limit_order_snapshot(&mut self, mut order: OrderAny) {
++        let client_order_id = order.client_order_id();

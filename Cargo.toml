@@ -48,3 +48,8 @@ nautilus-persistence = { version = "=0.63.0", default-features = false }
 nautilus-infrastructure = { version = "=0.63.0", default-features = false, features = ["redis"] }
 
 nautilus-sandbox = { version = "=0.63.0", default-features = false }
+
+# Narrow integration fixes, documented in vendor/README.md.
+[patch.crates-io]
+nautilus-execution = { path = "vendor/nautilus-execution-0.63.0" }
+nautilus-trading = { path = "vendor/nautilus-trading-0.63.0" }

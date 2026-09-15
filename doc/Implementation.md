@@ -1,12 +1,16 @@
 # Implementation stages
 
+Latest Kite-only checkpoint: [NativeKiteExecution.md](NativeKiteExecution.md).
+Native Kite dispatch, event mapping and mass reconciliation are tested with a
+deterministic broker fixture. Real API execution remains disabled.
+
 ## Current native integration status (15 September 2026)
 
 [NativeIntegration.md](NativeIntegration.md) is the current architecture and
 verification record. LiveNode, BacktestNode, the native engines, Sandbox, Redis
 cache, full-packet catalog replay, native indicators, OrderEmulator and TWAP
-are integrated and exercised. Native live Kite execution and Sandbox event
-dispatch compatibility are still open. Hardening has not started.
+are integrated and exercised. Native Kite adapter execution is fixture-tested; real orders remain disabled. See NativeEventCompatibility.md for
+the completed immediate LIMIT event-order and TWAP startup fixes. Hardening has not started.
 
 The stage descriptions below record earlier checkpoints; statements that
 LiveNode or the native catalog are pending describe those historical stages.

@@ -37,6 +37,7 @@ pub struct Config {
     pub instrument: FuturesContract,
     pub token: u32,
     pub seconds: u64,
+    pub synthetic_tick_ms: u64,
     pub credentials: Option<Arc<KiteCredentials>>,
 }
 impl ClientConfig for Config {
@@ -161,7 +162,7 @@ impl Client {
                     6008, 6006, 6004, 6002, 6000, 6002, 6004, 6006, 6005, 6005, 6003, 6003, 6001,
                     5999, 6000,
                 ] {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(config.synthetic_tick_ms)).await;
                     emit(
                         &tx,
                         crate::paper_flow::simulation::full_snapshot(p, now(), 1),

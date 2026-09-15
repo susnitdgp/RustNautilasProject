@@ -1,97 +1,92 @@
 # Native Nautilus integration handoff
 
-Updated 15 September 2026 after continuation and verification.
-Project: /home/ubuntu/RustNautilasProject on ip-172-31-36-59.
-Remote Desktop Commander device: 90c36da5-2611-4429-93f0-fbde579cdcb9.
-Branch main. This checkpoint follows de56cfd and is included in the native
-integration commit. Use git log -1 for the current commit identifier.
+Updated 15 September 2026. Project: /home/ubuntu/RustNautilasProject.
+Branch main; use git log -1 for the current checkpoint commit.
 
-## User instructions
+## Scope and safety
 
-Integrate applicable native Nautilus components before hardening.
-Run tests/checks autonomously. Keep real orders disabled.
-Use Redis for order and application state; historical data may use Parquet.
-Keep components in separate modules. Do not commit/push until requested.
-Finally identify the strategy edit point and live execution configuration honestly.
+The supported Kite-native LIMIT/DAY integration is complete and fixture-tested.
+Real broker orders remain disabled. No webhook integration is included.
+Production hardening is the next phase; this checkpoint is not production-ready.
+Redis owns order/application state; historical packets use the native catalog.
+User authorized committing/pushing this checkpoint and cleaning obsolete logs/keys.
 
-## Current implementation and verification
+Read NativeKiteExecution.md for the adapter, supported scope and limitations.
+Read NativeIntegration.md for the broader component map, and
+NativeEventCompatibility.md plus vendor/README.md for upstream patch provenance.
 
-Read doc/NativeIntegration.md first for the full current component map and evidence.
-Nautilus crates are pinned =0.63.0; Rust 1.98.0. No upstream source modifications.
-Native modules are in apps/kite-node/src/native_node.
-LiveNode/Kernel/Trader owns lifecycle; native DataClient routes full Kite packets
-plus quotes/status; native Strategy/AuditActor, risk/execution engines, Sandbox,
-portfolio/accounts, Redis cache, BacktestNode, OrderEmulator and TWAP are exercised.
+## Integrated components
 
-Continuation fixed full-codec Arrow decoding: DataFusion returns Utf8View where
-the initial decoder expected StringArray. Normalize payload to Utf8 and validate
-both native timestamps. Full packet and quote equality now pass a real native
-catalog write/read test. Node writes verify all captured packets by native readback.
+Nautilus 0.63.0 LiveNode, Kernel, Trader, DataClient, Strategy, AuditActor,
+risk/execution engines, portfolio/accounts, native Redis cache, native catalog,
+BacktestNode/BacktestEngine, matching engine, OrderEmulator, SMA and TWAP.
+Two minimal vendored patches fix immediate LIMIT event ordering and TWAP startup.
+Full Kite packets and quotes survive catalog roundtrip and native backtest replay.
 
-BacktestNode full-packet replay is implemented: read catalog custom packets into
-the built node's native BacktestEngine and run one-shot with quotes preceding their
-full packets. Feed generation changes initialize status. Quote-only catalogs retain
-streaming data configuration. This is not exact replay of every transport-gap event.
+The native Kite ExecutionClient provides translation, validated broker events,
+Redis-owned submit/cancel dispatch, lost-ack correlation, delayed-update polling,
+and owned order/fill/position/mass reports. Actual Kite API bindings include
+read-only account/position/order/trade reads and virtual-contract-note charges.
+Tests use local HTTP fixtures and a deterministic broker, with no real requests.
+The real factory remains read-only; only MockFactory attaches the dispatcher.
+Calculated fees are allocations, not settled per-fill broker commissions.
+No automatic restart/resume or command resubmission is implemented.
 
-User edit point: apps/kite-node/src/native_node/strategy.rs.
-UserStrategy::on_full_tick receives complete data; default delegates to on_quote.
-Quote-only backtests use on_quote. Full catalog replay uses on_full_tick.
-Runtime still restricts one long contract, one pending order, LIMIT/DAY and entry cap.
-Parameters: config/strategy-crossover.toml. Instrument: config/crudeoil-september.toml.
-Native live configuration is in native_node/runner.rs: Environment::Sandbox and
-SandboxExecutionClientFactory only. native_node/cli.rs rejects native-node-live.
-There is NO usable native live-order enable flag. The adapter live-orders feature
-is disabled and alone would not connect native execution to Kite.
+## User entry points
 
-## Verified results
+Strategy: apps/kite-node/src/native_node/strategy.rs, UserStrategy.on_full_tick
+and on_quote. Parameters: config/strategy-crossover.toml.
+Instrument: config/crudeoil-september.toml, CRUDEOIL26SEPFUT.MCX.
+Scope: one long contract, one pending order, LIMIT/DAY, bounded entries.
 
-cargo test --locked --workspace -j 2: 133 passed, 0 failed, one top-level ignored
-abrupt_exit_child fixture that is exercised by its passing parent crash test.
-cargo clippy --locked --workspace --all-targets -j 2 -- -D warnings: passed.
-cargo fmt --all -- --check: passed. git diff --check: passed.
-cargo tree --locked -e features -i kite-adapter: default only; live-orders absent.
+Execution selection: apps/kite-node/src/native_node/runner.rs.
+Native simulation/paper uses Environment::Sandbox and SandboxExecutionClientFactory.
+Native-kite-mock uses the new MockFactory. Real-client configuration is in
+crates/kite-adapter/src/execution/native_client/mod.rs.
+Native-node-live is rejected by native_node/cli.rs. There is no usable real-order
+configuration file or enable flag. The legacy live-orders feature cannot activate
+the native real client. Real-order activation requires separate authorization.
 
-Synthetic LiveNode and BacktestNode: 15 ticks, 2 signals, 2 fills, flat.
-Full synthetic capture/replay: 15 complete packets, 2 signals, 2 fills, flat.
-Native Redis reconstruction: orders/accounts/positions loaded, no resubmissions.
-OrderEmulator: 1 trigger, 2 fills, flat. TWAP: child orders, 3 fills, flat.
+    cargo run --locked -p kite-node -- native-backtest config/strategy-crossover.toml
+    cargo run --locked -p kite-node -- native-kite-mock config/strategy-crossover.toml
 
-Bounded native-node-paper LIVE DATA runs used simulated execution only:
-- cbf0a145-c68c-4b4b-a6b0-c8562689d60c: 32 audit quotes, 16 accepted ticks,
-  1 simulated fill, one SIMULATED long remaining. Redis recovery reproduced it
-  with requires_review=true, zero resubmissions. Do not treat this as a real position.
-- fc63b2f5-56e1-4fda-8d54-7914e8517c72: 28 complete packets/quotes,
-  16 accepted ticks, no signals/fills, flat. All 28 full packets read back exactly.
-  Full BacktestNode replay reproduced 28 audit quotes and 16 accepted ticks.
-Both reported live_orders_enabled=false and broker_orders_accessed=false.
-Native persistence is asynchronous, without old journal per-command WAITAOF barriers.
-No automatic resume. Shutdown cancels pending orders but does not invent flattening fills.
+Both verified synthetic runs produce 15 ticks, two signals, two fills and flat
+positions. The mock tests adapter plumbing; backtest uses native matching.
+Latest standalone mock namespace: 89493f0b-7182-4ee6-b37d-4c6c92ab798c.
 
-## Logs
+## Verification
 
-/tmp/kite-native-final-tests.log
-/tmp/kite-native-final-clippy.log
-/tmp/kite-native-paper-check.log
-/tmp/kite-native-paper-final.log
-/tmp/kite-native-live-replay.log
-/tmp/kite-native-live-recovery.log
-/tmp/kite-native-live-position-recovery.log
+- cargo test --locked --workspace -j 2: 159 passed, zero failed.
+- One ignored child-process fixture is exercised by its passing parent crash test.
+- Feature-enabled native-client tests: 16 passed, zero failed.
+- Upstream patched execution: 1152 passed; one existing ignored trailing-stop test.
+- Upstream patched TWAP: 39 passed.
+- Workspace Clippy all-targets with -D warnings, rustfmt and diff checks passed.
+- Native event histories assert Initialized, Submitted, Accepted, Filled exactly.
+- Full packet catalog replay, emulator, TWAP, recovery and live rejection passed.
 
-## Remaining integration work (NOT COMPLETE)
+Logs retained in /tmp: kite-native-only-tests.log, kite-native-only-clippy.log,
+kite-native-client-feature-tests.log, kite-upstream-execution-tests.log,
+kite-upstream-twap-tests.log, kite-native-patched-backtest.log,
+kite-native-patched-sim.log, kite-native-kite-mock.log, kite-native-paper-final.log.
 
-1. Implement/register native Kite ExecutionClient/factory with broker command,
-   order/fill event, native account/position report and reconciliation integration.
-   Existing guarded HTTP services and simulated journal reports are not this client.
-   Keep actual submissions disabled and validate with fixtures/mock transport first.
-2. Resolve Sandbox 0.63.0 queued event compatibility. Immediate LIMIT matching applies
-   Accepted locally and refreshes cached state before queued Submitted/Accepted events
-   reach ExecutionEngine, causing InvalidStateTrigger warnings. Existing Redis adapter
-   suppresses exact duplicate persistence notifications but does not fix event dispatch.
-   Investigated a public-API wrapper restoring order snapshots: unsuitable because
-   Cache::replace_order also refreshes Redis persistence and can corrupt event chronology.
-   No wrapper or upstream patch was applied; warnings remain visible.
-3. Controller registration and tearsheets are Python-only in the supported official
-   capability matrix: https://nautilustrader.io/docs/latest/concepts/rust/ . Do not
-   present placeholders as pure-Rust native integration.
-4. Only after native integration gaps are closed proceed to hardening. No hardening
-   phase or real-order verification was performed in this continuation.
+## Redis and log cleanup
+
+Removed 104 obsolete Redis keys: seven flat historical native namespaces and eight
+empty simulation journals. Preserved all other 170 keys, including credentials,
+latest verification runs, unfinished simulated runs and order budgets.
+No credential values were read. No database flush or Redis configuration changes.
+Removed 91 obsolete project log files from /tmp across this continuation.
+Exact cleanup counts/namespaces: NativeCleanup.json. Catalogs remain available.
+
+The historical live-data simulation cbf0a145-c68c-4b4b-a6b0-c8562689d60c has a
+simulated long requiring review; preserve its evidence. This is not a real position.
+Latest bounded paper run fc63b2f5-56e1-4fda-8d54-7914e8517c72 was flat, with 28 full
+packets roundtripped. Both had real orders disabled. Native cache writes remain
+asynchronous; the separate new command journal adds explicit WAITAOF barriers.
+
+## Next phase
+
+Harden account-wide command fencing/rate budgets, operational reconciliation,
+restart review, bounded read retries/health handling and shutdown during outages.
+Keep real orders disabled throughout. Unsupported order types fail explicitly.

@@ -6,6 +6,8 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match (command, &args[1..]) {
+        ("native-kite-mock", []) => super::runner::run_kite_mock("config/strategy-crossover.toml"),
+        ("native-kite-mock", [strategy]) => super::runner::run_kite_mock(strategy),
         ("native-node-sim", []) => super::runner::run(None, "config/strategy-crossover.toml", 30),
         ("native-node-sim", [strategy]) => super::runner::run(None, strategy, 30),
         ("native-node-paper", []) => super::runner::run(
@@ -32,13 +34,13 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-twap-sim", []) => super::components::run(true),
         ("native-recover", [namespace]) => super::recovery::run(namespace),
         ("native-node-live", _) => Err(anyhow::anyhow!(
-            "Live broker execution is not integrated into this native node; paper execution remains enforced"
+            "Real Kite broker orders remain disabled; paper execution remains enforced. Use native-kite-mock for adapter integration tests"
         )),
         _ => usage(),
     })
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }

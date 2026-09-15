@@ -8,8 +8,12 @@ actor, DataEngine/RiskEngine/ExecutionEngine, Sandbox matching, portfolio/accoun
 Redis cache, ParquetDataCatalog, BacktestNode/BacktestEngine, SMA indicators,
 OrderEmulator and TWAP are exercised. Full Kite packets reach the user strategy,
 roundtrip through the native catalog, and replay through BacktestNode.
-Real Kite broker execution is still not wired into the native node; real orders
-remain disabled. Native Sandbox event dispatch warnings remain unresolved.
+Native Kite ExecutionClient/factory, Redis-owned command dispatch, delayed broker
+updates and calculated-fee mass reconciliation are now integrated and fixture-tested; see [Kite continuation](doc/NativeKiteExecution.md).
+Run native-kite-mock to exercise this adapter through LiveNode. The real broker
+client remains read-only and real orders remain disabled. Native startup and immediate LIMIT event-order warnings are
+fixed with two pinned local Nautilus patches; see
+[event compatibility verification](doc/NativeEventCompatibility.md).
 See [native architecture and verification](doc/NativeIntegration.md) for exact
 scope, test evidence, commands and remaining integration work.
 
@@ -36,7 +40,7 @@ See [Step 5D verification](doc/Step5DVerification.md) for native Nautilus order/
 See [Step 6 verification](doc/Step6Verification.md) for the reference crossover
 strategy, paper replay, and guarded Kite HTTP/service modules.
 Native LiveNode paper integration is now implemented. Production risk controls
-and native live broker execution remain incomplete. Earlier stage commands use
+and real broker activation remain pending. Earlier stage commands use
 the previous Session/paper runtime and do not validate the new native node.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 
@@ -55,11 +59,12 @@ automatic roll. Token, lot size and tick size come from the downloaded master.
 The reported broker lot size is NOT the monetary multiplier. The September
 standard crude-oil contract now has a source-verified 100-barrel multiplier.
 MIS/NRML profile mapping and broker quantity checks are implemented.
-Margin, fees, native account reports and order handling remain later work.
+Native account/order/fill/position reports and Redis-owned mock dispatch are
+implemented. Real broker execution stays disabled pending hardening and authorization.
 
 Nautilus dependencies are LGPL-3.0-only; review upstream license obligations
-before redistribution. This project consumes published crates rather than
-modifying upstream engine sources.
+before redistribution. This project pins published crates and carries two documented local compatibility
+patches; see vendor/README.md.
 
 ### Native Nautilus paper execution (Step 7)
 

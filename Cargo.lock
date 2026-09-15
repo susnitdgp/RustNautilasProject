@@ -2876,8 +2876,6 @@ dependencies = [
 [[package]]
 name = "nautilus-execution"
 version = "0.63.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f426d04dc58c801532d2fb6c97813d19574f2224a19f469a6cc6ee8c0e4e6892"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3199,8 +3197,6 @@ dependencies = [
 [[package]]
 name = "nautilus-trading"
 version = "0.63.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81c6ab8899bc6df9d533f136939ddbdbf422ea7b243d0895a2f22345174501de"
 dependencies = [
  "ahash",
  "anyhow",

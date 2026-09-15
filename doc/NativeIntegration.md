@@ -1,9 +1,14 @@
 # Native Nautilus integration: architecture and verification
 
+Latest Kite-only checkpoint: [NativeKiteExecution.md](NativeKiteExecution.md).
+Native Kite dispatch, event mapping and mass reconciliation are tested with a
+deterministic broker fixture. Real API execution remains disabled.
+
 Verified on 15 September 2026 in `/home/ubuntu/RustNautilasProject` on
 `ip-172-31-36-59`, with Rust 1.98.0 and published Nautilus crates pinned to 0.63.0.
-The integration is **not complete**: native live Kite execution and Sandbox
-event-dispatch compatibility remain open. No hardening phase was started.
+The integration is **not complete**: native live Kite execution remains open.
+The native startup and immediate LIMIT event-order issues were subsequently fixed;
+see [NativeEventCompatibility.md](NativeEventCompatibility.md). No hardening phase was started.
 Real orders remain disabled. See Git history for the integration commit; the
 verification results below were recorded before that commit.
 
@@ -53,9 +58,9 @@ database 0 with AOF enabled; credentials retain the existing Redis mechanism.
 Native Redis writes are asynchronous. The old journal's per-command WAITAOF
 barrier is not a guarantee of this new runtime. Automatic resume is disabled.
 
-`redis_cache.rs` removes identical repeated order-event notifications before
-native persistence. It does not repair the Sandbox engine's event-ordering issue
-and must not be described as doing so.
+`redis_cache.rs` now uses the native Redis adapter without event filtering.
+The local matching-engine patch fixes immediate LIMIT ordering at its source;
+reconstruction tests assert the exact persisted lifecycle sequence.
 
 On orderly completion, full packets are written through the registered Arrow
 codec and read back through the native catalog. Exact equality includes the raw
@@ -168,25 +173,21 @@ Raw logs are in `/tmp/kite-native-final-tests.log`,
 `/tmp/kite-native-live-recovery.log`, and
 `/tmp/kite-native-live-position-recovery.log` on the remote host.
 
-## Remaining integration work before hardening
+## Native Kite adapter checkpoint
 
-1. Implement and register native Kite ExecutionClient/factory, with command
-   translation, native order/fill events, broker account/position reports and
-   reconciliation. Existing guarded HTTP commands and simulated journal reports
-   are not a complete native broker adapter. Keep real dispatch disabled while
-   validating this path against fixtures/mock transport.
-2. Resolve native Sandbox 0.63.0 event dispatch compatibility. The matching engine
-   mutates cached order state before its queued Submitted/Accepted notifications
-   are processed, producing InvalidStateTrigger warnings. The existing Redis
-   deduplication adapter only addresses repeated persistence events. No upstream
-   sources have been edited, and the warnings have not been suppressed.
-   Investigation localized the immediate LIMIT issue to matching-engine
-   process_limit_order: accept_order applies Accepted locally, then cache
-   add_order/replace_order refreshes that snapshot before Sandbox's queued
-   Submitted/Accepted events are consumed. A client wrapper that restores the
-   previous snapshot is unsuitable because public cache replace_order also
-   refreshes Redis persistence; it can corrupt event chronology. No such wrapper
-   was added. A coordinated matching-engine/dispatch change is still required.
-3. Only after these integration gaps are closed, proceed to production hardening
-   and separately authorized real-order verification. Current tests establish
-   paper/backtest integration, not readiness to send broker orders.
+NativeKiteExecution.md documents the integrated LIMIT/DAY adapter, Redis-owned
+mock dispatch, native delayed-update polling, calculated-fee reports and mass
+reconciliation. native-kite-mock registers the adapter through LiveNode and verifies
+two fills, flat position and both native-cache and command-journal reconstruction.
+The real client remains read-only. No real orders or hardening have been performed.
+
+Native Sandbox immediate LIMIT event ordering and TWAP startup hooks are fixed by
+pinned local patches. NativeEventCompatibility.md records upstream test results and
+the existing ignored upstream test. Controller registration/tearsheets remain outside
+the supported pure-Rust capability matrix; no placeholders are claimed implemented.
+
+The next phase is production hardening within the documented supported scope.
+Keep all real-order gates disabled. Broader order types need their own integration
+coverage before strategy exposure. Real-order verification requires authorization.
+Older temporary verification logs were removed at the user's request; retained
+latest logs are listed in NativeKiteExecution.md and NativeIntegrationHandoff.md.

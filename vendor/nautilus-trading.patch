@@ -1,0 +1,7 @@
+--- a/src/algorithm/twap.rs
++++ b/src/algorithm/twap.rs
+@@ -97,0 +98,4 @@
++    fn on_start(&mut self) -> anyhow::Result<()> {
++        ExecutionAlgorithm::on_start(self)
++    }
++

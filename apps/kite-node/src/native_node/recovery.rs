@@ -17,11 +17,30 @@ pub fn run(namespace: &str) -> Result<()> {
     ensure!(!map.instruments.is_empty(), "Native Redis run not found");
     let open_orders = map.orders.values().filter(|o| !o.is_closed()).count();
     let net: f64 = map.positions.values().map(|p| p.signed_qty).sum();
+    let sequences: std::collections::BTreeMap<_, _> = map
+        .orders
+        .iter()
+        .map(|(id, order)| {
+            let events: Vec<_> = order
+                .events()
+                .into_iter()
+                .map(|e| match e {
+                    nautilus_model::events::OrderEventAny::Initialized(_) => "Initialized",
+                    nautilus_model::events::OrderEventAny::Submitted(_) => "Submitted",
+                    nautilus_model::events::OrderEventAny::Accepted(_) => "Accepted",
+                    nautilus_model::events::OrderEventAny::Filled(_) => "Filled",
+                    nautilus_model::events::OrderEventAny::Canceled(_) => "Canceled",
+                    _ => "Other",
+                })
+                .collect();
+            (id.to_string(), events)
+        })
+        .collect();
     println!(
         "{}",
         serde_json::json!({"event":"native_redis_recovery_complete","namespace":namespace,
   "instruments":map.instruments.len(),"accounts":map.accounts.len(),"orders":map.orders.len(),
-  "positions":map.positions.len(),"open_orders":open_orders,"open_contracts":net,
+  "order_event_sequences":sequences,"positions":map.positions.len(),"open_orders":open_orders,"open_contracts":net,
   "requires_review":open_orders>0||net!=0.0,"resubmissions":0,"automatic_resume_enabled":false,
   "live_orders_enabled":false})
     );
