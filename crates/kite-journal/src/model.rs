@@ -47,6 +47,10 @@ impl Intent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub enum Event {
+    Management {
+        id: String,
+        action: crate::actions::Action,
+    },
     Intent {
         intent: Intent,
     },
@@ -79,7 +83,8 @@ impl Event {
     pub fn id(&self) -> &str {
         match self {
             Self::Intent { intent } => &intent.id,
-            Self::Dispatch { id }
+            Self::Management { id, .. }
+            | Self::Dispatch { id }
             | Self::Acknowledged { id, .. }
             | Self::Unknown { id }
             | Self::Rejected { id }

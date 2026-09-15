@@ -135,4 +135,4 @@ Pending: production account/date ownership, reconciliation of ambiguous
 submissions, native Nautilus execution reports, real place/modify/cancel
 translation and transport, live dispatch scheduling, strategy and risk controls.
 
-Changes are left uncommitted for the user's manual verification.
+User verification passed; committed and pushed as 4d2c75f.

@@ -19,6 +19,7 @@ pub struct Order {
     pub status: Status,
     pub broker_id: Option<String>,
     pub filled: u32,
+    pub commands: crate::actions::Commands,
     trades: BTreeMap<String, (u32, i64)>,
 }
 #[derive(Default, Clone)]
@@ -49,10 +50,18 @@ impl State {
                     status: Status::Prepared,
                     broker_id: None,
                     filled: 0,
+                    commands: crate::actions::Commands::default(),
                     trades: BTreeMap::new(),
                 },
             );
             return Ok(true);
+        }
+        if let Event::Management { id, action } = event {
+            let order = self
+                .orders
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("Unknown local intent"))?;
+            return crate::actions::apply(order, action);
         }
         let binding = match event {
             Event::Acknowledged { broker_id, .. }
@@ -194,6 +203,7 @@ impl State {
                 );
                 order.status = Status::Cancelled;
             }
+            Event::Management { .. } => unreachable!(),
             Event::Intent { .. } => bail!("Unexpected intent"),
         }
         Ok(true)

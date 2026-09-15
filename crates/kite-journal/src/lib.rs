@@ -1,4 +1,5 @@
 //! Redis-backed simulation journal; no broker credential access.
+pub mod actions;
 pub mod connection;
 pub mod model;
 pub mod state;
