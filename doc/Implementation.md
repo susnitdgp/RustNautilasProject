@@ -1,6 +1,7 @@
 # Implementation stages
 
-Project: /root/RustNautilasProject on vmi3506951.
+Current project: /home/ubuntu/RustNautilasProject on ip-172-31-36-59.
+Original Step 1 host: vmi3506951.
 Target changed from the initial NSE proposal to standard MCX CRUDEOIL September
 2026 futures at the user's direction. Live execution remains disabled.
 
@@ -18,6 +19,7 @@ empty placeholders are not presented as finished components.
 | Nautilus identity mapping | crates/kite-adapter/src/mapping/identity.rs | 1 |
 | Read-only preflight orchestration | crates/kite-adapter/src/preflight.rs | 1 |
 | CLI entrypoint | apps/kite-node/src/main.rs | 1 |
+| Redis credential loading | adapter credentials/redis module | Implemented |
 | Session lifecycle | adapter auth module | 2 |
 | Binary frame parsing | adapter websocket parser module | 2 |
 | Socket/reconnect/subscriptions | adapter websocket transport module | 2 |

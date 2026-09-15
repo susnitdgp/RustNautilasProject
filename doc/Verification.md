@@ -1,9 +1,11 @@
 # Step 1 manual verification
 
-Run on vmi3506951:
+Run from the cloned repository on the active development server.
+Preflight requires the two Redis keys described in doc/RedisCredentials.md.
+The current clone is /home/ubuntu/RustNautilasProject:
 
 ```bash
-cd /root/RustNautilasProject
+cd /home/ubuntu/RustNautilasProject
 cargo test --locked --workspace
 cargo run --locked -p kite-node -- preflight config/crudeoil-september.toml --download
 ```

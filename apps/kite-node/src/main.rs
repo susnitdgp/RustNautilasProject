@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{FixedOffset, Utc};
-use kite_adapter::{config::Config, http::instruments, preflight};
+use kite_adapter::{config::Config, credentials::redis, http::instruments, preflight};
 use std::{env, fs, io::Read};
 
 fn main() -> Result<()> {
@@ -15,6 +15,7 @@ fn main() -> Result<()> {
         "Only read-only preflight is available"
     );
     let config = Config::parse(&fs::read_to_string(&args[1]).context("Read configuration")?)?;
+    let _credentials = redis::load_from_env()?;
     let (bytes, source) = match args[2].as_str() {
         "--download" if args.len() == 3 => (instruments::download()?, "kite_live_download"),
         "--csv" if args.len() == 4 => {
@@ -41,6 +42,8 @@ fn main() -> Result<()> {
         "source": source,
         "checked_at_utc": now,
         "report": report,
+        "credentials_loaded": true,
+        "kite_session_validated": false,
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())

@@ -14,7 +14,8 @@ cargo run --locked -p kite-node -- preflight config/crudeoil-september.toml --do
 cargo test --locked --workspace
 ```
 
-No API keys or login are needed for the public instrument master.
+Preflight loads the API key and access token from Redis before downloading the
+public instrument master. See [Redis credentials](doc/RedisCredentials.md).
 Configuration requires an explicit expiry. Expired targets fail; there is no
 automatic roll. Token, lot size and tick size come from the downloaded master.
 
