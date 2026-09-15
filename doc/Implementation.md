@@ -33,7 +33,7 @@ empty placeholders are not presented as finished components.
 | Redis order journal | separate kite-journal crate | 5A implemented, simulation scope |
 | Order command translation | kite-execution translation module | 5A regular LIMIT/DAY simulation |
 | Persist-before-submit and mock broker | kite-execution coordinator/mock modules | 5A implemented |
-| Account-wide rate limiting | adapter rate_limit module | 5 |
+| Shared order-request budgets | kite-execution rate_limit modules | 5B simulation implemented; production dispatcher pending |
 | Strategy | separate strategies crate | 6 |
 | Application trading controls | separate risk-controls crate | 6 |
 
@@ -81,3 +81,6 @@ This stage does not hydrate the Nautilus execution engine or enable orders.
 Step 5A journal and offline mock execution checks passed; see doc/Step5Verification.md.
 The rest of Step 5 remains pending, including production ownership, execution
 reports, rate limiting, cancel/modify requests and live transport.
+
+Step 5B shared Redis order-budget tests passed; see doc/Step5BVerification.md.
+Strategy logic and real Kite order execution are not implemented.

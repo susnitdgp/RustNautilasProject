@@ -148,12 +148,12 @@ fn mock_rejection_is_terminal_and_does_not_retry() {
     let mut j = Journal::create_at(&dir.url, &dir.namespace()).unwrap();
     prepare(&mut j, "Rejected");
     let mut broker = MockBroker::new(Outcome::Rejected);
-    coordinator::submit(&mut j, &mut broker, "Rejected").unwrap();
+    coordinator::submit(&mut j, &mut broker, "Rejected", &mut limit(&dir)).unwrap();
     assert_eq!(
         j.state().order("Rejected").unwrap().status,
         Status::Rejected
     );
-    assert!(coordinator::submit(&mut j, &mut broker, "Rejected").is_err());
+    assert!(coordinator::submit(&mut j, &mut broker, "Rejected", &mut limit(&dir)).is_err());
     assert_eq!(broker.calls, 1);
 }
 #[test]
@@ -185,8 +185,8 @@ fn stale_writer_is_rejected_before_a_second_mock_submission() {
     prepare(&mut first, "One");
     let mut second = Journal::open_at(&dir.url, &path).unwrap();
     let mut broker = MockBroker::new(Outcome::Accepted("Broker1".into()));
-    coordinator::submit(&mut first, &mut broker, "One").unwrap();
-    assert!(coordinator::submit(&mut second, &mut broker, "One").is_err());
+    coordinator::submit(&mut first, &mut broker, "One", &mut limit(&dir)).unwrap();
+    assert!(coordinator::submit(&mut second, &mut broker, "One", &mut limit(&dir)).is_err());
     assert_eq!(broker.calls, 1);
 }
 #[test]
@@ -232,6 +232,13 @@ fn durable_dispatch_survives_process_exit_without_destructors() {
         Status::Dispatching
     );
     let mut broker = MockBroker::new(Outcome::Accepted("Never".into()));
-    assert!(coordinator::submit(&mut j, &mut broker, "Interrupted").is_err());
+    assert!(coordinator::submit(&mut j, &mut broker, "Interrupted", &mut limit(&dir)).is_err());
     assert_eq!(broker.calls, 0);
+}
+
+fn limit(dir: &TestRedis) -> kite_execution::rate_limit::Limiter {
+    use kite_execution::rate_limit::{Limiter, policy::Policy};
+    Limiter::create_at(&dir.url, "execution-tests", Policy::default())
+        .or_else(|_| Limiter::open_at(&dir.url, "execution-tests", Policy::default()))
+        .unwrap()
 }

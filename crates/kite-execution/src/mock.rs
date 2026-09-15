@@ -1,6 +1,7 @@
 use crate::translation::LimitRequest;
 #[derive(Clone)]
 pub enum Outcome {
+    RateLimited { retry_after_ms: u64 },
     Accepted(String),
     AmbiguousTimeout,
     Rejected,

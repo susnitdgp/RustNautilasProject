@@ -38,10 +38,15 @@ pub fn run(namespace: &str) -> Result<Summary> {
     run_at(&kite_journal::connection::url_from_env()?, namespace)
 }
 pub fn run_at(url: &str, namespace: &str) -> Result<Summary> {
+    let mut limiter = crate::rate_limit::Limiter::create_at(
+        url,
+        namespace,
+        crate::rate_limit::policy::Policy::default(),
+    )?;
     let mut journal = Journal::create_at(url, namespace)?;
     journal.append(intent("MockFilled"))?;
     let mut accepted = MockBroker::new(Outcome::Accepted("MockBroker1".into()));
-    coordinator::submit(&mut journal, &mut accepted, "MockFilled")?;
+    coordinator::submit(&mut journal, &mut accepted, "MockFilled", &mut limiter)?;
     let fill = Event::Fill {
         id: "MockFilled".into(),
         broker_id: "MockBroker1".into(),
@@ -60,7 +65,7 @@ pub fn run_at(url: &str, namespace: &str) -> Result<Summary> {
     })?;
     journal.append(intent("MockTimeout"))?;
     let mut timeout = MockBroker::new(Outcome::AmbiguousTimeout);
-    coordinator::submit(&mut journal, &mut timeout, "MockTimeout")?;
+    coordinator::submit(&mut journal, &mut timeout, "MockTimeout", &mut limiter)?;
     journal.append(intent("MockInterrupted"))?;
     journal.append(Event::Dispatch {
         id: "MockInterrupted".into(),
@@ -69,9 +74,9 @@ pub fn run_at(url: &str, namespace: &str) -> Result<Summary> {
     let mut journal = Journal::open_at(url, namespace)?;
     let mut retry = MockBroker::new(Outcome::Accepted("MustNotRun".into()));
     let ambiguous_retry_blocked_after_restart =
-        coordinator::submit(&mut journal, &mut retry, "MockTimeout").is_err();
+        coordinator::submit(&mut journal, &mut retry, "MockTimeout", &mut limiter).is_err();
     let interrupted_retry_blocked_after_restart =
-        coordinator::submit(&mut journal, &mut retry, "MockInterrupted").is_err();
+        coordinator::submit(&mut journal, &mut retry, "MockInterrupted", &mut limiter).is_err();
     ensure!(
         retry.calls == 0
             && duplicate_fill_ignored

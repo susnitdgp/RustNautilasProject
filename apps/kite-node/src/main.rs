@@ -2,12 +2,14 @@ mod cli;
 mod execution_command;
 mod market_data_command;
 mod preflight_command;
+mod rate_limit_command;
 mod reconciliation_command;
 mod runtime;
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match cli::parse(&args)? {
+        cli::Command::RateLimitSim => rate_limit_command::run(),
         cli::Command::ExecutionSim { namespace } => execution_command::run(namespace.as_deref()),
         cli::Command::Reconcile { config } => reconciliation_command::run(&config),
         cli::Command::Capture {

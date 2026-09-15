@@ -9,7 +9,7 @@ pub fn url_from_env() -> Result<Zeroizing<String>> {
         Err(_) => return Err(anyhow!("Invalid KITE_REDIS_URL")),
     }))
 }
-pub(crate) fn connect(url: &str) -> Result<redis::Connection> {
+pub fn connect(url: &str) -> Result<redis::Connection> {
     let client =
         redis::Client::open(url).map_err(|_| anyhow!("Invalid Redis journal configuration"))?;
     let mut connection = client
@@ -33,7 +33,7 @@ pub(crate) fn connect(url: &str) -> Result<redis::Connection> {
     sync(&mut connection)?;
     Ok(connection)
 }
-pub(crate) fn sync(connection: &mut redis::Connection) -> Result<()> {
+pub fn sync(connection: &mut redis::Connection) -> Result<()> {
     let (local, _replicas): (u32, u32) = redis::cmd("WAITAOF")
         .arg(1)
         .arg(0)

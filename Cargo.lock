@@ -1091,6 +1091,7 @@ dependencies = [
  "kite-journal",
  "redis",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 
