@@ -3,10 +3,13 @@
 Rust workspace for a modular Kite integration. First target: standard MCX
 CRUDEOIL September 2026 futures (not CRUDEOILM).
 
-**Implemented:** modular instrument preflight, Redis credentials, session validation
-and bounded WebSocket market-data diagnostics using Nautilus model 0.63.0.
-See [Step 2 verification](doc/Step2Verification.md) for live data commands.
-The Nautilus engine runtime, strategies and order APIs are not implemented yet.
+**Implemented:** modular preflight, Redis credentials, session validation,
+WebSocket diagnostics, a Nautilus DataClient/factory and DataEngine quote runner,
+plus Parquet recording and offline quote replay. Nautilus is pinned to 0.63.0.
+See [Step 3 verification](doc/Step3Verification.md) for capture/replay commands
+and [Step 2 verification](doc/Step2Verification.md) for sample price display.
+Full LiveNode trading, strategies, account reconciliation and order APIs are
+not implemented yet.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 
 Run from this repository:
@@ -21,9 +24,9 @@ public instrument master. See [Redis credentials](doc/RedisCredentials.md).
 Configuration requires an explicit expiry. Expired targets fail; there is no
 automatic roll. Token, lot size and tick size come from the downloaded master.
 
-The reported broker lot size is NOT a contract monetary multiplier. Contract
-specifications, quantity semantics, margin and product mappings require separate
-validation before orders can be implemented.
+The reported broker lot size is NOT the monetary multiplier. The September
+standard crude-oil contract now has a source-verified 100-barrel multiplier.
+Margin, fees, product/account mappings and order handling remain later work.
 
 Nautilus dependencies are LGPL-3.0-only; review upstream license obligations
 before redistribution. This project consumes published crates rather than

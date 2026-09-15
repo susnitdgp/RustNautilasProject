@@ -24,9 +24,9 @@ empty placeholders are not presented as finished components.
 | Binary frame parsing | adapter websocket/parser module | Implemented |
 | Socket/reconnect/subscriptions | adapter websocket transport/supervisor/subscription modules | Implemented |
 | Quote/depth observations | adapter mapping/market_data module | Implemented; Nautilus event mapping next |
-| Nautilus DataClient/factory | adapter data/factories modules | 3 |
-| Node lifecycle | application runtime module | 3 |
-| Recording | separate recorder crate | 3 |
+| Nautilus DataClient/factory | adapter data/factories modules | Implemented for quotes |
+| DataEngine runner lifecycle | application runtime modules | Implemented; full LiveNode later |
+| Recording and quote replay | separate kite-recorder crate | Implemented |
 | Account and product mapping | adapter account module | 4 |
 | Broker snapshot reconciliation | adapter reconciliation module | 4 |
 | Durable order journal | separate journal crate | 5 |
@@ -69,3 +69,6 @@ blocking downloader from Nautilus's event loop.
 
 Step 2 automated and live diagnostic checks have passed; manual verification
 is described in doc/Step2Verification.md. Session renewal is not implemented.
+
+Step 3 capture and replay verification passed; see doc/Step3Verification.md.
+The current artifact format is application Parquet, not the native Nautilus catalog.

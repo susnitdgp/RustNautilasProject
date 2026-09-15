@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+nautilus-common.workspace = true
+nautilus-core.workspace = true
+async-trait.workspace = true
 chrono.workspace = true
 csv.workspace = true
 nautilus-model.workspace = true

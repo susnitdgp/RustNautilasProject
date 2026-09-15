@@ -102,24 +102,30 @@ pub async fn observe(
     .await
 }
 
-async fn observe_at(
+async fn observe_impl(
     credentials: &KiteCredentials,
     token: u32,
     duration: Duration,
     mut on_event: impl FnMut(FeedEvent),
     endpoint: &str,
+    initial_socket: Option<transport::Socket>,
 ) -> Result<Summary> {
     ensure!(token > 0, "Zero subscription token");
     ensure!(
         (1..=300).contains(&duration.as_secs()),
         "Duration must be 1..300 seconds"
     );
+    let mut initial_socket = initial_socket;
     let deadline = Instant::now() + duration;
     let mut summary = Summary::default();
     'connections: loop {
         summary.connection_generations += 1;
         let generation = summary.connection_generations;
-        let mut socket = transport::connect_at(credentials, deadline, endpoint).await?;
+        let mut socket = if let Some(socket) = initial_socket.take() {
+            socket
+        } else {
+            transport::connect_at(credentials, deadline, endpoint).await?
+        };
         transport::subscribe(&mut socket, token, deadline).await?;
         summary.current_generation_has_full = false;
         summary.last_exchange_timestamp = None;
@@ -367,4 +373,31 @@ mod connection_tests {
         assert_eq!(summary.heartbeats, 1);
         assert!(!summary.final_source_fresh);
     }
+}
+
+async fn observe_at(
+    credentials: &KiteCredentials,
+    token: u32,
+    duration: Duration,
+    on_event: impl FnMut(FeedEvent),
+    endpoint: &str,
+) -> Result<Summary> {
+    observe_impl(credentials, token, duration, on_event, endpoint, None).await
+}
+pub async fn observe_connected(
+    credentials: &KiteCredentials,
+    token: u32,
+    duration: Duration,
+    on_event: impl FnMut(FeedEvent),
+    socket: transport::Socket,
+) -> Result<Summary> {
+    observe_impl(
+        credentials,
+        token,
+        duration,
+        on_event,
+        "wss://ws.kite.trade",
+        Some(socket),
+    )
+    .await
 }

@@ -2,6 +2,8 @@
 pub mod auth;
 pub mod config;
 pub mod credentials;
+pub mod data;
+pub mod factories;
 pub mod http;
 pub mod instruments;
 pub mod mapping;

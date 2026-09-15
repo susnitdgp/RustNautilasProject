@@ -1,13 +1,48 @@
 use anyhow::{Result, bail, ensure};
 
 pub enum Command {
-    Preflight { config: String, csv: Option<String> },
-    SessionCheck { config: String },
-    Stream { config: String, seconds: u64 },
+    Capture {
+        config: String,
+        seconds: u64,
+        output: String,
+    },
+    Replay {
+        input: String,
+    },
+    Preflight {
+        config: String,
+        csv: Option<String>,
+    },
+    SessionCheck {
+        config: String,
+    },
+    Stream {
+        config: String,
+        seconds: u64,
+    },
 }
 
 pub fn parse(args: &[String]) -> Result<Command> {
     match args {
+        [command, input] if command == "replay" => Ok(Command::Replay {
+            input: input.clone(),
+        }),
+        [command, config, flag, seconds, out_flag, output]
+            if command == "capture" && flag == "--seconds" && out_flag == "--output" =>
+        {
+            let seconds = seconds
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("Invalid duration"))?;
+            ensure!(
+                (1..=300).contains(&seconds),
+                "Duration must be 1..300 seconds"
+            );
+            Ok(Command::Capture {
+                config: config.clone(),
+                seconds,
+                output: output.clone(),
+            })
+        }
         [command, config, source] if command == "preflight" && source == "--download" => {
             Ok(Command::Preflight {
                 config: config.clone(),

@@ -16,6 +16,8 @@ pub struct Snapshot {
     pub ltp: String,
     pub bid: Option<String>,
     pub ask: Option<String>,
+    pub bid_size: Option<u32>,
+    pub ask_size: Option<u32>,
     pub cumulative_volume: Option<u32>,
     pub open_interest: Option<u32>,
     pub exchange_timestamp: Option<u32>,
@@ -44,6 +46,8 @@ pub fn snapshot(tick: &Tick, received: DateTime<Utc>, generation: u32) -> Snapsh
             .full
             .as_ref()
             .and_then(|f| (f.asks[0].quantity > 0).then(|| mcx_price(f.asks[0].price_paise))),
+        bid_size: tick.full.as_ref().map(|f| f.bids[0].quantity),
+        ask_size: tick.full.as_ref().map(|f| f.asks[0].quantity),
         cumulative_volume: tick.cumulative_volume,
         open_interest: tick.full.as_ref().map(|f| f.open_interest),
         exchange_timestamp: source,

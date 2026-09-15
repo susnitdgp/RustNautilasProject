@@ -7,6 +7,11 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+nautilus-common.workspace = true
+nautilus-core.workspace = true
+nautilus-data.workspace = true
+nautilus-model.workspace = true
+kite-recorder = { path = "../../crates/kite-recorder" }
 chrono.workspace = true
 kite-adapter = { path = "../../crates/kite-adapter" }
 serde_json.workspace = true
