@@ -1,2 +1,3 @@
-//! Read-only HTTP transport; contains no order or credential endpoints.
+//! Read-only HTTP transport; no broker mutation endpoints.
+pub(crate) mod authenticated;
 pub mod instruments;

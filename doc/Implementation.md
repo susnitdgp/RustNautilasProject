@@ -27,8 +27,9 @@ empty placeholders are not presented as finished components.
 | Nautilus DataClient/factory | adapter data/factories modules | Implemented for quotes |
 | DataEngine runner lifecycle | application runtime modules | Implemented; full LiveNode later |
 | Recording and quote replay | separate kite-recorder crate | Implemented |
-| Account and product mapping | adapter account module | 4 |
-| Broker snapshot reconciliation | adapter reconciliation module | 4 |
+| Account and product mapping | adapter account module | Implemented read-only; native account reports deferred |
+| Orders, trades and positions | separate adapter orders/trades/positions modules | Implemented read-only |
+| Broker snapshot reconciliation | adapter reconciliation module | Implemented target quantity consistency |
 | Durable order journal | separate journal crate | 5 |
 | Order command translation | adapter execution module | 5 |
 | Account-wide rate limiting | adapter rate_limit module | 5 |
@@ -72,3 +73,6 @@ is described in doc/Step2Verification.md. Session renewal is not implemented.
 
 Step 3 capture and replay verification passed; see doc/Step3Verification.md.
 The current artifact format is application Parquet, not the native Nautilus catalog.
+
+Step 4 automated and live read-only checks passed; see doc/Step4Verification.md.
+This stage does not hydrate the Nautilus execution engine or enable orders.

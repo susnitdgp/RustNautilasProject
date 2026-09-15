@@ -5,11 +5,12 @@ CRUDEOIL September 2026 futures (not CRUDEOILM).
 
 **Implemented:** modular preflight, Redis credentials, session validation,
 WebSocket diagnostics, a Nautilus DataClient/factory and DataEngine quote runner,
-plus Parquet recording and offline quote replay. Nautilus is pinned to 0.63.0.
+plus Parquet recording, offline quote replay and read-only broker reconciliation. Nautilus is pinned to 0.63.0.
 See [Step 3 verification](doc/Step3Verification.md) for capture/replay commands
 and [Step 2 verification](doc/Step2Verification.md) for sample price display.
-Full LiveNode trading, strategies, account reconciliation and order APIs are
-not implemented yet.
+See [Step 4 verification](doc/Step4Verification.md) for the read-only reconcile command.
+Full LiveNode trading, strategies, native execution reports and order submission
+are not implemented yet.
 See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
 
 Run from this repository:
@@ -26,7 +27,8 @@ automatic roll. Token, lot size and tick size come from the downloaded master.
 
 The reported broker lot size is NOT the monetary multiplier. The September
 standard crude-oil contract now has a source-verified 100-barrel multiplier.
-Margin, fees, product/account mappings and order handling remain later work.
+MIS/NRML profile mapping and broker quantity checks are implemented.
+Margin, fees, native account reports and order handling remain later work.
 
 Nautilus dependencies are LGPL-3.0-only; review upstream license obligations
 before redistribution. This project consumes published crates rather than

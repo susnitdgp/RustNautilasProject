@@ -1,6 +1,9 @@
 use anyhow::{Result, bail, ensure};
 
 pub enum Command {
+    Reconcile {
+        config: String,
+    },
     Capture {
         config: String,
         seconds: u64,
@@ -24,6 +27,9 @@ pub enum Command {
 
 pub fn parse(args: &[String]) -> Result<Command> {
     match args {
+        [command, config] if command == "reconcile" => Ok(Command::Reconcile {
+            config: config.clone(),
+        }),
         [command, input] if command == "replay" => Ok(Command::Replay {
             input: input.clone(),
         }),
@@ -72,7 +78,7 @@ pub fn parse(args: &[String]) -> Result<Command> {
             })
         }
         _ => bail!(
-            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15"
+            "Usage: kite-node preflight CONFIG --download | preflight CONFIG --csv FILE | session-check CONFIG | stream CONFIG --seconds 15 | capture CONFIG --seconds 15 --output FILE | replay FILE | reconcile CONFIG"
         ),
     }
 }
