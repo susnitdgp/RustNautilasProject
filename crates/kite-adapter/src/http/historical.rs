@@ -24,11 +24,18 @@ struct Response {
     candles: Vec<(String, f64, f64, f64, f64, u64, u64)>,
 }
 pub async fn fetch(token: u32, date: NaiveDate) -> Result<Vec<Candle>> {
+    fetch_window(token, date, 7).await
+}
+pub async fn fetch_window(token: u32, date: NaiveDate, days: i64) -> Result<Vec<Candle>> {
+    ensure!(
+        (1..=30).contains(&days),
+        "Historical lookback must be 1..30 calendar days"
+    );
     ensure!(token > 0, "Invalid instrument token");
     let credentials = crate::credentials::redis::load_from_env()?;
     let client = super::authenticated::ReadClient::new(&credentials)?;
     let from = date
-        .checked_sub_signed(Duration::days(7))
+        .checked_sub_signed(Duration::days(days))
         .ok_or_else(|| anyhow::anyhow!("Date overflow"))?;
     let response: Response = client.historical(token, from, date).await?;
     let candles: Vec<_> = response

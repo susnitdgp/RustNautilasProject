@@ -16,6 +16,9 @@ pub struct Input {
     pub candles: Vec<Candle>,
 }
 pub fn load(date: NaiveDate, path: Option<&str>) -> Result<Input> {
+    load_window(date, path, 7)
+}
+pub fn load_window(date: NaiveDate, path: Option<&str>, days: i64) -> Result<Input> {
     if let Some(path) = path {
         ensure!(
             std::fs::metadata(path)?.len() <= 8 * 1024 * 1024,
@@ -29,7 +32,7 @@ pub fn load(date: NaiveDate, path: Option<&str>) -> Result<Input> {
     let master = kite_adapter::http::instruments::download()?;
     let report = kite_adapter::preflight::run(&config, master.as_slice(), date)?;
     let candles = tokio::runtime::Runtime::new()?.block_on(
-        kite_adapter::http::historical::fetch(report.instrument_token, date),
+        kite_adapter::http::historical::fetch_window(report.instrument_token, date, days),
     )?;
     Ok(Input {
         instrument_id: report.instrument_id,

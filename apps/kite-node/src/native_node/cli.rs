@@ -53,6 +53,11 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                     super::runner::run(Some(instrument), strategy, seconds)
                 })
         }
+        ("native-vwap-backtest", [date]) => super::vwap_batch::run(date, None),
+        ("native-vwap-backtest", [date, path]) => super::vwap_batch::run(date, Some(path)),
+        ("native-vwap-session", [date, path, folder]) => {
+            super::vwap_backtest::run(date, path, folder)
+        }
         ("native-supertrend-backtest", [date]) => super::supertrend_backtest::run(date, None),
         ("native-supertrend-backtest", [date, path]) => {
             super::supertrend_backtest::run(date, Some(path))
@@ -71,7 +76,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 

@@ -109,3 +109,14 @@ The 15 September historical run completed with 174 session bars, 774 warmup bars
 Reports and reproducible input are saved under backtest_results per run UUID.
 Fees/spread/slippage are excluded. Real orders remain disabled.
 The existing native-backtest command now saves its summary there too.
+
+## VWAP / EMA / MACD seven-session backtest
+
+See [VwapEmaMacdBacktest.md](VwapEmaMacdBacktest.md). Run native-vwap-backtest 2026-09-15.
+Uses native session VWAP, EMA 9/21 cross, MACD 12/26/9 confirmation, ATR(14) Wilder
+and a fixed 1.5 ATR simulated stop-market order. Entries use next-open prices;
+all positions close daily. Includes September 14's evening-only holiday session.
+The seven-session run (September 7–15) produced nine trades and INR 97,700 gross
+P&L before fees/spread/slippage. All 1,122 requested bars validated; fills were audited.
+Reports, per-day traces and offline replay input are retained in backtest_results.
+Real broker orders remain disabled.
