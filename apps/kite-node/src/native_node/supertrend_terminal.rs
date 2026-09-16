@@ -251,7 +251,8 @@ impl Snapshot {
             "simulated MARKET / DAY"
         };
 
-        let mut output = heading('┌', '┐', "CRUDEOIL LIVE STRATEGY");
+        let title = format!("CRUDEOIL LIVE STRATEGY | {} IST", ist_title(self.now));
+        let mut output = heading('┌', '┐', &title);
         output.push_str(&row("Status", self.phase));
         output.push_str(&row("Run", &display.id));
         output.push_str(&section("Configuration"));
@@ -272,7 +273,11 @@ impl Snapshot {
         output.push_str(&row("Quote", &self.price));
         output.push_str(&row(
             "Market",
-            &format!("spread {spread} | age {age} | bar {}", ist(self.bar)),
+            &format!(
+                "spread {spread} | age {age} | bar {} | next candle {}",
+                ist(self.bar),
+                candle_countdown(self.now)
+            ),
         ));
         output.push_str(&row(
             "Price / ST",
@@ -452,6 +457,21 @@ fn truncate(value: &str, width: usize) -> String {
     let clean = clean(value);
     clean.chars().take(width).collect()
 }
+fn candle_countdown(now: u64) -> String {
+    const FIVE_MINUTES_NS: u64 = 300_000_000_000;
+    const ONE_SECOND_NS: u64 = 1_000_000_000;
+    let remaining_ns = FIVE_MINUTES_NS - now % FIVE_MINUTES_NS;
+    let seconds = remaining_ns.div_ceil(ONE_SECOND_NS);
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn ist_title(ts: u64) -> String {
+    chrono::DateTime::from_timestamp_nanos(ts as i64)
+        .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+        .format("%d-%m-%Y %H:%M:%S")
+        .to_string()
+}
+
 fn ist(ts: u64) -> String {
     if ts == 0 {
         return "--".into();
@@ -521,5 +541,9 @@ mod tests {
         assert_eq!(row("Status", "OK").chars().count(), 87);
         assert_eq!(direction(Some(-1)), "SHORT");
         assert_eq!(truncate("123456", 4), "1234");
+        assert_eq!(candle_countdown(300_000_000_000), "05:00");
+        assert_eq!(candle_countdown(60_000_000_000), "04:00");
+        assert_eq!(candle_countdown(299_200_000_000), "00:01");
+        assert_eq!(ist_title(0), "01-01-1970 05:30:00");
     }
 }
