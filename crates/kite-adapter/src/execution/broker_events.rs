@@ -25,6 +25,8 @@ pub struct BrokerOrder {
     pub transaction_type: String,
     pub variety: String,
     pub order_type: String,
+    #[serde(default)]
+    pub market_protection: Option<Decimal>,
     pub validity: String,
     pub status: String,
     pub quantity: u32,
@@ -135,7 +137,9 @@ pub fn reconcile(
         "Kite order contract/product mismatch"
     );
     ensure!(
-        broker.variety == "regular" && broker.order_type == "LIMIT" && broker.validity == "DAY",
+        broker.variety == "regular"
+            && matches!(broker.order_type.as_str(), "LIMIT" | "MARKET")
+            && broker.validity == "DAY",
         "Unsupported Kite order instructions"
     );
     ensure!(
@@ -146,10 +150,21 @@ pub fn reconcile(
         broker.quantity > 0 && broker.filled_quantity <= broker.quantity,
         "Invalid Kite order quantities"
     );
+    let market = current.order_type() == nautilus_model::enums::OrderType::Market;
+    if market {
+        ensure!(
+            broker.market_protection.is_some_and(
+                |p| p == Decimal::from(-1) || (p > Decimal::ZERO && p <= Decimal::from(100))
+            ),
+            "Protected market acknowledgement missing protection"
+        );
+    } else {
+        ensure!(broker.order_type == "LIMIT", "Broker order type changed");
+    }
     // Modification requires its separately persisted ownership/intent before support.
     ensure!(
         Quantity::from(broker.quantity) == current.quantity()
-            && Some(price(broker.price)?) == current.price(),
+            && (market || Some(price(broker.price)?) == current.price()),
         "Unconfirmed Kite order modification"
     );
     let last = timestamp(
@@ -370,6 +385,7 @@ mod tests {
             transaction_type: "BUY".into(),
             variety: "regular".into(),
             order_type: "LIMIT".into(),
+            market_protection: None,
             validity: "DAY".into(),
             status: "OPEN".into(),
             quantity: 2,
@@ -516,5 +532,72 @@ mod tests {
         );
         assert!(timestamp("10:00:00").is_err());
         assert!(timestamp("1960-01-01 00:00:00").is_err());
+    }
+    #[test]
+    fn protected_market_conversion_requires_protection_and_handles_partial_cancel() {
+        let (_, events, mut broker, trade) = fixture();
+        let mut factory = OrderFactory::new(
+            "SUSANTA-001".into(),
+            "CROSSOVER-001".into(),
+            None,
+            None,
+            Rc::new(RefCell::new(TestClock::new())),
+            false,
+            false,
+        );
+        let mut order = factory.market(
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            OrderSide::Buy,
+            2.into(),
+            Some(TimeInForce::Day),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        order
+            .apply(
+                events.generate_order_submitted(&order, timestamp("2026-09-15 10:00:00").unwrap()),
+            )
+            .unwrap();
+        assert!(
+            reconcile(
+                &order,
+                &owner(),
+                &broker,
+                std::slice::from_ref(&trade),
+                &events,
+                now()
+            )
+            .is_err()
+        );
+        broker.market_protection = Some(Decimal::ZERO);
+        assert!(
+            reconcile(
+                &order,
+                &owner(),
+                &broker,
+                std::slice::from_ref(&trade),
+                &events,
+                now()
+            )
+            .is_err()
+        );
+        broker.market_protection = Some(Decimal::from(-1));
+        broker.status = "CANCELLED".into();
+        let mapped = reconcile(
+            &order,
+            &owner(),
+            &broker,
+            std::slice::from_ref(&trade),
+            &events,
+            now(),
+        )
+        .unwrap();
+        process(&mut order, mapped);
+        assert_eq!(order.status(), OrderStatus::Canceled);
+        assert_eq!(order.filled_qty(), Quantity::from(1));
     }
 }

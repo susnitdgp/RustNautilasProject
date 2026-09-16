@@ -47,8 +47,9 @@ fn translate(
         "Closed native order cannot be submitted"
     );
     ensure!(
-        order.order_type() == OrderType::Limit && order.time_in_force() == TimeInForce::Day,
-        "Native Kite submission supports regular LIMIT/DAY only"
+        matches!(order.order_type(), OrderType::Limit | OrderType::Market)
+            && order.time_in_force() == TimeInForce::Day,
+        "Native Kite submission supports LIMIT or protected MARKET/DAY"
     );
     ensure!(
         !order.is_post_only()
@@ -61,6 +62,25 @@ fn translate(
         "Contingent or emulated order must be resolved before Kite submission"
     );
     let quantity = order.quantity().as_decimal();
+    if order.order_type() == OrderType::Market {
+        ensure!(quantity.fract().is_zero(), "Fractional market quantity");
+        let command = Command::ProtectedMarket {
+            symbol: "CRUDEOIL26SEPFUT".into(),
+            side: if order.order_side() == OrderSide::Buy {
+                "BUY".into()
+            } else {
+                "SELL".into()
+            },
+            product: product.into(),
+            quantity: quantity
+                .to_u32()
+                .ok_or_else(|| anyhow!("Market quantity out of range"))?,
+            tag: persisted_tag.into(),
+            market_protection: -1,
+        };
+        command.validate()?;
+        return Ok(command);
+    }
     let price = order
         .price()
         .ok_or_else(|| anyhow!("Native limit price missing"))?
@@ -192,6 +212,12 @@ mod tests {
             None,
             None,
         );
-        assert!(submit(&market, "NRML", "Test1").is_err());
+        assert!(matches!(
+            submit(&market, "NRML", "Test1").unwrap(),
+            Command::ProtectedMarket {
+                market_protection: -1,
+                ..
+            }
+        ));
     }
 }

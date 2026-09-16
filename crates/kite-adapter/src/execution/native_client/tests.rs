@@ -198,6 +198,7 @@ async fn fill_reports_refuse_to_invent_missing_commission() {
         transaction_type: "BUY".into(),
         variety: "regular".into(),
         order_type: "LIMIT".into(),
+        market_protection: None,
         validity: "DAY".into(),
         status: "COMPLETE".into(),
         quantity: 1,

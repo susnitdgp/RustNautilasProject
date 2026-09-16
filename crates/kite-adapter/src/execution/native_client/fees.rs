@@ -64,7 +64,7 @@ pub(crate) fn groups<'a>(
                 && o.instrument_token == token
                 && o.product == product
                 && o.variety == "regular"
-                && o.order_type == "LIMIT"
+                && matches!(o.order_type.as_str(), "LIMIT" | "MARKET")
                 && o.validity == "DAY",
             "Trade/order scope mismatch"
         );
@@ -159,7 +159,7 @@ pub(crate) async fn calculate(
         let avg = average(&trades)?;
         let number = serde_json::Number::from_str(&avg.to_string())
             .map_err(|_| anyhow!("Invalid charge calculation price"))?;
-        let payload = serde_json::json!([{"order_id":id,"exchange":"MCX","tradingsymbol":o.tradingsymbol,"transaction_type":o.transaction_type,"variety":"regular","product":product,"order_type":"LIMIT","quantity":o.filled_quantity,"average_price":number}]);
+        let payload = serde_json::json!([{"order_id":id,"exchange":"MCX","tradingsymbol":o.tradingsymbol,"transaction_type":o.transaction_type,"variety":"regular","product":product,"order_type":o.order_type,"quantity":o.filled_quantity,"average_price":number}]);
         let response: Vec<ChargeResponse> = read.charges(serde_json::to_vec(&payload)?).await?;
         ensure!(
             response.len() == 1,
@@ -172,7 +172,7 @@ pub(crate) async fn calculate(
                 && r.transaction_type == o.transaction_type
                 && r.variety == "regular"
                 && r.product == product
-                && r.order_type == "LIMIT"
+                && r.order_type == o.order_type
                 && r.quantity == o.filled_quantity
                 && r.price.round_dp(8) == avg.round_dp(8),
             "Charge calculation identity mismatch"

@@ -8,7 +8,7 @@ use nautilus_common::{
 use nautilus_model::{
     data::{Bar, BarType, CustomData, DataType, QuoteTick},
     enums::{OrderSide, TimeInForce},
-    events::{OrderDenied, OrderFilled, OrderRejected},
+    events::{OrderCanceled, OrderDenied, OrderFilled, OrderRejected},
     identifiers::InstrumentId,
 };
 use nautilus_trading::{
@@ -21,8 +21,10 @@ use std::{cell::RefCell, rc::Rc};
 pub struct State {
     pub cache: Option<Rc<RefCell<Cache>>>,
     pub live_quotes: u64,
+    pub last_accepted_quote: Option<QuoteTick>,
     pub rejected_quotes: u64,
     pub blocked_direction: i8,
+    pub rebuilds: Vec<serde_json::Value>,
     pub indicators: Vec<serde_json::Value>,
     pub signals: Vec<serde_json::Value>,
     pub fills: Vec<serde_json::Value>,
@@ -132,7 +134,14 @@ impl DataActor for BarStrategy {
                 .downcast_ref::<super::status::FeedStatus>(),
         ) {
             match status.kind.as_str() {
-                "gap" | "failed" => control.fail("Kite quote feed interrupted"),
+                "connected" => {
+                    control.online.store(true, Ordering::Release);
+                }
+                "gap" => {
+                    control.online.store(false, Ordering::Release);
+                    control.pause();
+                }
+                "failed" => control.fail("Kite quote reconnect attempts exhausted"),
                 "complete" => control.stop(),
                 _ => {}
             }
@@ -140,7 +149,7 @@ impl DataActor for BarStrategy {
         Ok(())
     }
     fn on_save(&self) -> Result<indexmap::IndexMap<String, Vec<u8>>> {
-        let summary = serde_json::json!({"last_bar":self.last_bar,"direction":self.target,"allowed":self.allowed,"position":self.position(),"automatic_resume_enabled":false,"paper_only":self.live.is_some(),"live_orders_enabled":false});
+        let summary = serde_json::json!({"last_bar":self.last_bar,"direction":self.target,"allowed":self.allowed,"position":self.position(),"automatic_resume_enabled":false,"paper_only":self.live.is_some(),"live_orders_enabled":self.live.as_ref().is_some_and(|c|c.real)});
         Ok(indexmap::IndexMap::from([(
             "supertrend_state".into(),
             serde_json::to_vec(&summary)?,
@@ -185,6 +194,35 @@ impl DataActor for BarStrategy {
                 || q.ask_price < q.bid_price
             {
                 self.state.borrow_mut().rejected_quotes += 1;
+                return Ok(());
+            }
+        }
+        if self.live.is_some() {
+            self.state.borrow_mut().last_accepted_quote = Some(*q);
+        }
+        if let Some(control) = self.live.clone() {
+            let rebuild = control.rebuild.lock().expect("rebuild lock").take();
+            if let Some((epoch, bars)) = rebuild
+                && epoch == control.epoch.load(Ordering::Acquire)
+                && control.online.load(Ordering::Acquire)
+            {
+                let previous = self.last_bar;
+                self.indicator = Supertrend::new();
+                self.confirmation = super::supertrend_confirmation::Confirmation::new();
+                self.last_bar = 0;
+                self.target = 0;
+                self.allowed = 0;
+                self.state.borrow_mut().indicators.clear();
+                for bar in bars {
+                    self.on_bar(&bar)?;
+                }
+                self.state.borrow_mut().rebuilds.push(serde_json::json!({"epoch":epoch,"previous_bar":previous,"rebuilt_bar":self.last_bar,"received_ns":q.ts_init.as_u64(),"past_orders_replayed":false}));
+                control.recoveries.fetch_add(1, Ordering::AcqRel);
+                if epoch == control.epoch.load(Ordering::Acquire) {
+                    control.paused.store(false, Ordering::Release);
+                }
+            }
+            if control.paused.load(Ordering::Acquire) && !control.stopping.load(Ordering::Acquire) {
                 return Ok(());
             }
         }
@@ -236,7 +274,7 @@ impl DataActor for BarStrategy {
             self.instrument(),
             side,
             1.into(),
-            Some(TimeInForce::Gtc),
+            Some(TimeInForce::Day),
             Some(exit),
             None,
             None,
@@ -248,6 +286,10 @@ impl DataActor for BarStrategy {
         if let Some(control) = &self.live {
             control.flat.store(false, Ordering::Release);
         }
+        if let Some(c) = &self.live {
+            c.order_deadline
+                .store(super::data::now() + 10_000_000_000, Ordering::Release);
+        }
         self.pending = true;
         self.submit_order(order, None, None, None)?;
         Ok(())
@@ -256,13 +298,25 @@ impl DataActor for BarStrategy {
 nautilus_strategy!(BarStrategy, {
     fn on_order_filled(&mut self, event: &OrderFilled) {
         self.pending = false;
+        if let Some(c) = &self.live {
+            c.order_deadline.store(0, Ordering::Release);
+        }
         if let Some(control) = &self.live {
             control.flat.store(self.position() == 0., Ordering::Release);
         }
         self.state.borrow_mut().fills.push(serde_json::json!({"timestamp_ns":event.ts_event.as_u64(),"client_order_id":event.client_order_id.to_string(),"side":event.order_side.to_string(),"quantity":event.last_qty.to_string(),"price":event.last_px.to_string(),"commission":event.commission.map(|v|v.to_string())}));
     }
+    fn on_order_canceled(&mut self, _: &OrderCanceled) {
+        self.pending = false;
+        if let Some(c) = &self.live {
+            c.order_deadline.store(0, Ordering::Release);
+        }
+    }
     fn on_order_denied(&mut self, _: OrderDenied) {
         self.pending = false;
+        if let Some(c) = &self.live {
+            c.order_deadline.store(0, Ordering::Release);
+        }
         self.state.borrow_mut().errors.push("Order denied".into());
         if let Some(control) = &self.live {
             control.fail("Order denied");
@@ -270,6 +324,9 @@ nautilus_strategy!(BarStrategy, {
     }
     fn on_order_rejected(&mut self, _: OrderRejected) {
         self.pending = false;
+        if let Some(c) = &self.live {
+            c.order_deadline.store(0, Ordering::Release);
+        }
         self.state.borrow_mut().errors.push("Order rejected".into());
         if let Some(control) = &self.live {
             control.fail("Order rejected");

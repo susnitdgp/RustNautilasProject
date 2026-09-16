@@ -23,7 +23,7 @@ destination.mkdir(parents=True,exist_ok=False)
 for directory in ["bin","config","doc"]:(destination/directory).mkdir()
 shutil.copy2(binary,destination/"bin/kite-node")
 shutil.copy2(selection,destination/"config/production-supertrend.json")
-for name in ["ProductionDeployment.md","SupertrendConfirmationReview.md","SupertrendLiveNode.md"]:
+for name in ["ProductionDeployment.md","SupertrendConfirmationReview.md","SupertrendLiveNode.md","ProductionSession.md"]:
     shutil.copy2(root/"doc"/name,destination/"doc"/name)
 names=git("ls-files","--cached","--others","--exclude-standard","-z").decode().split("\0")
 with tarfile.open(destination/"source.tar.gz","w:gz") as archive:
@@ -39,6 +39,6 @@ manifest={"status":"CANDIDATE_NOT_ACTIVATED","created_utc":stamp,"git_head":head
     "configuration_sha256":digest(destination/"config/production-supertrend.json"),
     "selection":settings,"build_command":"cargo build --locked --release -p kite-node -j 3",
     "live_service_installed":False,"live_orders_enabled":False,
-    "blocker":"Real orders disabled; bounded LiveNode paper connection exists in current source, but continuous operation, revision recovery and broker validation remain; rebuild binary before packaging"}
+    "blocker":"Real orders disabled; session paper operation, revision recovery and protected-market native dispatch implemented; manual review, full-session qualification and controlled broker validation remain"}
 (destination/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
 print(destination)

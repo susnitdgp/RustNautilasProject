@@ -4,12 +4,15 @@ pub struct Lease {
     con: redis::Connection,
     key: String,
     owner: String,
+    real: bool,
 }
 impl Lease {
-    pub fn acquire(owner: &str, sim: bool) -> Result<Self> {
+    pub fn acquire(owner: &str, sim: bool, real: bool) -> Result<Self> {
         let mut con = redis::Client::open(kite_journal::connection::url_from_env()?.as_str())?
             .get_connection()?;
-        let key = if sim {
+        let key = if real {
+            "kite:production:supertrend:CRUDEOIL26SEPFUT:owner".into()
+        } else if sim {
             format!("kite:paper:supertrend:sim:{owner}:owner")
         } else {
             "kite:paper:supertrend:CRUDEOIL26SEPFUT:owner".into()
@@ -27,10 +30,18 @@ impl Lease {
             con,
             key,
             owner: owner.into(),
+            real,
         })
     }
+    pub fn monitor(
+        &self,
+        control: super::supertrend_live_control::Control,
+    ) -> tokio::task::JoinHandle<()> {
+        super::supertrend_owner_monitor::start(self.key.clone(), self.owner.clone(), control)
+    }
     pub fn finish(&mut self, clean: bool, position: f64) -> Result<()> {
-        let record = format!("kite:paper:supertrend:{}:health", self.owner);
+        let kind = if self.real { "production" } else { "paper" };
+        let record = format!("kite:{kind}:supertrend:{}:health", self.owner);
         redis::cmd("HSET")
             .arg(record)
             .arg("state")
@@ -40,7 +51,7 @@ impl Lease {
             .arg("owner_key")
             .arg(&self.key)
             .arg("live_orders_enabled")
-            .arg("false")
+            .arg(if self.real { "true" } else { "false" })
             .query::<()>(&mut self.con)?;
         if clean {
             let n:i64=redis::cmd("EVAL").arg("if redis.call('GET',KEYS[1]) == ARGV[1] then return redis.call('DEL',KEYS[1]) else return 0 end").arg(1).arg(&self.key).arg(&self.owner).query(&mut self.con)?;

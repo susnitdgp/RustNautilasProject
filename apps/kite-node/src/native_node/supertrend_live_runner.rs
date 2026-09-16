@@ -1,4 +1,4 @@
-//! Selected five-minute strategy in LiveNode with Sandbox execution only.
+//! Selected strategy: paper, native mock, or explicitly gated production execution.
 use super::{
     data, persistence,
     supertrend_actor::{BarStrategy, State},
@@ -54,14 +54,49 @@ fn synthetic() -> Result<(Vec<Candle>, Vec<Candle>)> {
     Ok((candles, live))
 }
 pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
+    run_with_execution(config, seconds, sim, false)
+}
+pub fn run_with_execution(config: &str, seconds: u64, sim: bool, kite_mock: bool) -> Result<()> {
+    run_backend(config, seconds, sim, kite_mock, None, false)
+}
+pub fn run_recovery_fixture(config: &str) -> Result<()> {
+    run_backend(config, 30, true, false, None, true)
+}
+pub fn run_broker(config: &str, settings: &str) -> Result<()> {
+    let settings: kite_adapter::execution::native_client::production::Settings =
+        serde_json::from_str(&std::fs::read_to_string(settings)?)?;
+    settings.validate()?;
+    run_backend(
+        config,
+        super::supertrend_session::duration(data::now())?,
+        false,
+        false,
+        Some(settings),
+        false,
+    )
+}
+fn run_backend(
+    config: &str,
+    seconds: u64,
+    sim: bool,
+    kite_mock: bool,
+    production: Option<kite_adapter::execution::native_client::production::Settings>,
+    recovery_fixture: bool,
+) -> Result<()> {
+    let real = production.is_some();
+    if let Some(s) = &production {
+        s.validate()?;
+    }
+    super::supertrend_terminal::step("Checking strategy selection and duration");
     let _ = super::production::Selection::load(config)?;
     ensure!(
-        (5..=290).contains(&seconds),
-        "Paper duration must be 5..290 seconds"
+        (5..=86360).contains(&seconds),
+        "Paper duration must be 5..86360 seconds"
     );
     let date = chrono::Utc::now()
         .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
         .date_naive();
+    super::supertrend_terminal::step("Resolving instrument and data credentials");
     let (instrument, token, credentials) = if sim {
         (crate::paper_flow::simulation::fixture()?.0, 144870151, None)
     } else {
@@ -73,6 +108,7 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
             Some(Arc::new(kite_adapter::credentials::redis::load_from_env()?)),
         )
     };
+    super::supertrend_terminal::step("Loading completed five-minute candles for warmup");
     let (warmup, simulated) = if sim {
         synthetic()?
     } else {
@@ -80,7 +116,7 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
             .block_on(kite_adapter::http::historical::fetch_window(token, date, 7))?;
         (bars::completed(raw, data::now())?, Vec::new())
     };
-    let _ = bars::Tracker::new(&warmup)?;
+    ensure!(warmup.len() >= 100, "Insufficient indicator warmup");
     if !sim {
         bars::validate_warmup(&warmup, date, data::now())?;
     }
@@ -94,21 +130,31 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
         );
         (data::now(), end)
     };
+    let seconds = if sim {
+        seconds
+    } else {
+        seconds.min((end.saturating_sub(data::now()) / 1_000_000_000).saturating_sub(60))
+    };
+    ensure!(seconds >= 5, "Too close to session end to start");
+    super::supertrend_terminal::step("Checking Redis persistence and strategy ownership");
     let redis = persistence::redis_config()?;
     let id = UUID4::new();
-    let control = Control::new(sim);
+    let mut control = Control::new(sim);
+    control.real = real;
+    control.recovery_fixture = recovery_fixture;
     let state = Rc::new(RefCell::new(State::default()));
-    let mut lease = Lease::acquire(&id.to_string(), sim)?;
+    let mut lease = Lease::acquire(&id.to_string(), sim, real)?;
     let feed_config = feed::Config {
         instrument: instrument.clone(),
         token,
         date,
+        synthetic_delay_ms: if kite_mock { 180 } else { 60 },
         warmup: warmup.clone(),
         simulated,
         control: control.clone(),
     };
     let outcome=tokio::runtime::Runtime::new()?.block_on(async {
-        let mut cfg=LiveNodeConfig{environment:Environment::Sandbox,trader_id:"SUSANTA-001".into(),instance_id:Some(id),
+        let mut cfg=LiveNodeConfig{environment:if real {Environment::Live}else{Environment::Sandbox},trader_id:"SUSANTA-001".into(),instance_id:Some(id),
             cache:Some(persistence::cache_config()),save_state:true,load_state:false,shutdown_on_error:true,
             delay_post_stop:Duration::from_secs(2),..Default::default()};
         cfg.logging=LoggerConfig{stdout_level:log::LevelFilter::Warn,is_colored:false,..Default::default()};
@@ -123,12 +169,21 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
         }
         let simulation=SandboxExecutionClientConfig{venue:"MCX".into(),account_id:"MCX-PAPER".into(),base_currency:Some(Currency::INR()),
             bar_execution:false,starting_balances:vec![Money::new(1_000_000.,Currency::INR())],..Default::default()};
-        let mut node=builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?.build()?;
+        let mut node=if let Some(settings)=production.clone() {
+            use kite_adapter::execution::native_client::production::{Factory,LiveConfig};
+            builder.add_exec_client(Some("MCX".into()),Box::new(Factory),Box::new(LiveConfig{settings,namespace:id.to_string(),stop_signal:control.done.clone()}))?.build()?
+        }else if kite_mock {
+            use kite_adapter::execution::native_client::mock::{MockFactory,MockConfig};
+            builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"NRML".into(),instrument_token:token}))?.build()?
+        }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?.build()?};
         let bt:BarType=format!("{}-5-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(BarStrategy::new(bt,start,end,state.clone()).with_confirmation(true).with_live(control.clone()))?;
+        let owner_monitor=lease.monitor(control.clone());
         let handle=node.handle();let ctl=control.clone();
         let watcher=tokio::spawn(async move {
-            tokio::select!{_=super::lifecycle::wait(ctl.done.clone(),seconds)=>{},_=tokio::time::sleep(Duration::from_secs(seconds))=>{}}
+            tokio::select!{_=super::lifecycle::wait(ctl.done.clone(),seconds)=>{},_=tokio::time::sleep(Duration::from_secs(seconds))=>{},_=async {
+                loop {tokio::time::sleep(Duration::from_millis(100)).await;let deadline=ctl.order_deadline.load(Ordering::Acquire);if deadline>0 && data::now()>=deadline {ctl.fail("Order fill deadline exceeded; cancellation and review required");break;}}
+            }=>{}}
             ctl.stop();
             tokio::time::sleep(Duration::from_millis(250)).await;
             for _ in 0..50 {
@@ -137,12 +192,34 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
             }
             handle.stop();
         });
-        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","simulated_feed":sim,"execution":"Nautilus Sandbox","warmup_bars":warmup.len(),"live_orders_enabled":false}));
-        let result=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted).await;watcher.abort();
+        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"live_orders_enabled":real}));
+        let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock);
+        let result={
+            let run=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted);
+            tokio::pin!(run);
+            let mut refresh=tokio::time::interval(Duration::from_secs(5));
+            refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {tokio::select! {
+                result=&mut run => break result,
+                _=refresh.tick()=>display.render(&state.borrow(),&control),
+            }}
+        };
+        display.render(&state.borrow(),&control);
+        watcher.abort();owner_monitor.abort();
         let position=state.borrow().cache.as_ref().map(|cache|cache.borrow().positions_open(None,None,None,None,None).iter().map(|p|p.signed_qty).sum::<f64>()).unwrap_or(0.);
         let pending=state.borrow().cache.as_ref().map(|cache|cache.borrow().orders_open(None,None,None,None,None).len()+cache.borrow().orders_inflight(None,None,None,None,None).len()).unwrap_or(0);
         node.dispose();result?;Ok::<_,anyhow::Error>((position,pending))
     });
+    if kite_mock || real {
+        let scope = production
+            .as_ref()
+            .map(|s| s.expected_user_id.as_str())
+            .unwrap_or("MOCK");
+        match kite_adapter::execution::native_client::coordination::status(scope) {
+            Ok(health) if health["state"] == "Clean" => {}
+            _ => control.fail("Native account reconciliation requires review"),
+        }
+    }
     let fault = control.fault.lock().expect("fault lock").clone();
     let (position, pending) = outcome.as_ref().copied().unwrap_or((f64::NAN, 1));
     let clean = outcome.is_ok()
@@ -158,14 +235,16 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
     super::backtest_report::json(&folder, "indicators.json", &s.indicators)?;
     super::backtest_report::json(&folder, "signals.json", &s.signals)?;
     super::backtest_report::json(&folder, "fills.json", &s.fills)?;
+    super::backtest_report::json(&folder, "recoveries.json", &s.rebuilds)?;
     let output = serde_json::json!({"event":"supertrend_live_complete","namespace":id.to_string(),"status":if clean{"Clean"}else{"ReviewRequired"},
         "runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","contracts":1,"atr_stop_enabled":false,
-        "simulated_feed":sim,"execution":"Nautilus Sandbox","quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
+        "simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
         "bars":s.indicators.len(),"warmup_bars":warmup.len(),"signals":s.signals.len(),"fills":s.fills.len(),"open_contracts":position,
         "open_orders":pending,"errors":s.errors,"feed_fault":fault,"run_error":outcome.as_ref().err().map(ToString::to_string),
-        "automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":false,"broker_orders_sent":false});
+        "indicator_rebuilds":control.recoveries.load(Ordering::Acquire),"automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":real,"broker_orders_sent":if real {serde_json::Value::Null}else{serde_json::json!(false)}});
     super::backtest_report::json(&folder, "summary.json", &output)?;
     println!("{output}");
+    super::supertrend_terminal::finish(clean, &folder, real);
     outcome?;
     ensure!(clean, "Paper run requires recovery review");
     Ok(())

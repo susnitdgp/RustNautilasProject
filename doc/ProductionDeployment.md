@@ -1,5 +1,7 @@
 # Production deployment candidate: selected five-minute strategy
 
+Current session and broker wiring is documented in [ProductionSession.md](ProductionSession.md). The candidate-packaging instructions below remain applicable.
+
 ## Current deployment status
 
 NOT ACTIVATED. The optimized candidate is for review and offline verification.
@@ -23,9 +25,7 @@ orders are not connected to the real Kite adapter's LIMIT/DAY submission path.
 Historical-bar polling also introduces delivery latency relative to the backtest's
 next-open fills. Live paper results cannot establish identical execution.
 
-Remaining before unattended real trading: continuous session operation, controlled
-reconnect/backfill and restart reconciliation, broker-compatible execution policy,
-partial/unfilled exit handling and separately reviewed broker validation.
+Session operation, checked indicator rebuilds, protected MARKET/DAY dispatch and unresolved-order shutdown are now implemented. Remaining before unattended real trading: full-session qualification, manual review and controlled broker validation.
 Faulted paper runs retain Redis ownership and require review; they do not resume
 or silently adopt an earlier position. Real order submission remains disabled.
 

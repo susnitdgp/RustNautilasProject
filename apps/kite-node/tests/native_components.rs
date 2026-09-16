@@ -359,3 +359,36 @@ fn selected_supertrend_sigterm_flattens_before_stopping_node() {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert!(signals.iter().any(|s| s["reason"] == "shutdown"));
 }
+
+#[test]
+fn selected_strategy_uses_native_kite_protected_market_dispatch() {
+    let redis = Redis::start();
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/production-supertrend.json")
+        .canonicalize()
+        .unwrap();
+    let result = redis.run(&["native-supertrend-kite-mock", config.to_str().unwrap()]);
+    assert_eq!(result["execution"], "Kite native mock");
+    assert_eq!(result["status"], "Clean");
+    assert_eq!(result["live_orders_enabled"], false);
+    assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+    assert!(result["fills"].as_u64().unwrap() >= 4);
+    let recovered = redis.run(&["native-recover", result["namespace"].as_str().unwrap()]);
+    assert_eq!(recovered["requires_review"], false);
+    assert_eq!(recovered["orders"], result["fills"]);
+}
+
+#[test]
+fn revised_history_rebuilds_in_live_node_without_replaying_orders() {
+    let redis = Redis::start();
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/production-supertrend.json")
+        .canonicalize()
+        .unwrap();
+    let result = redis.run(&["native-supertrend-recovery-sim", config.to_str().unwrap()]);
+    assert_eq!(result["status"], "Clean");
+    assert_eq!(result["indicator_rebuilds"], 1);
+    assert_eq!(result["bars"], 160);
+    assert_eq!(result["fills"], 6);
+    assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+}

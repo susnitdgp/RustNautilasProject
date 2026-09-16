@@ -56,8 +56,8 @@ pub fn preflight(path: &str) -> Result<()> {
         "strategy":"supertrend_macd_vwap","interval":"5minute","contracts":1,"atr_stop_enabled":false,
         "live_orders_enabled":false,"ready_for_live_deployment":false,
         "live_node_paper_integrated":true,
-        "blockers":["Paper operation is bounded; continuous full-session operation and automatic recovery are not enabled",
-        "Real Kite order submission remains disabled; manual review and broker validation remain outstanding"]})
+        "blockers":["Session paper operation and indicator recovery are implemented; full-session qualification and manual review remain",
+        "Protected-market native broker wiring exists; default build/config disable submission and real broker validation remains outstanding"]})
     );
     anyhow::bail!(
         "Real production activation blocked; selected strategy supports bounded LiveNode paper operation"

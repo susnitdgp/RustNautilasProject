@@ -44,3 +44,11 @@ mod supertrend_live_control;
 mod supertrend_live_data;
 mod supertrend_live_lease;
 mod supertrend_live_runner;
+
+mod supertrend_terminal;
+
+mod supertrend_revision;
+
+mod supertrend_session;
+
+mod supertrend_owner_monitor;

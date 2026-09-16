@@ -1,11 +1,20 @@
 //! Paper-only LiveNode control and freshness checks.
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
+type Rebuild = Arc<Mutex<Option<(u64, Vec<nautilus_model::data::Bar>)>>>;
 #[derive(Debug, Clone)]
 pub struct Control {
+    pub paused: Arc<AtomicBool>,
+    pub online: Arc<AtomicBool>,
+    pub epoch: Arc<AtomicU64>,
+    pub recoveries: Arc<AtomicU64>,
+    pub rebuild: Rebuild,
+    pub order_deadline: Arc<AtomicU64>,
     pub sim: bool,
+    pub real: bool,
+    pub recovery_fixture: bool,
     pub done: Arc<AtomicBool>,
     pub stopping: Arc<AtomicBool>,
     pub flat: Arc<AtomicBool>,
@@ -14,12 +23,24 @@ pub struct Control {
 impl Control {
     pub fn new(sim: bool) -> Self {
         Self {
+            paused: Arc::new(AtomicBool::new(false)),
+            online: Arc::new(AtomicBool::new(sim)),
+            epoch: Arc::new(AtomicU64::new(0)),
+            recoveries: Arc::new(AtomicU64::new(0)),
+            rebuild: Arc::new(Mutex::new(None)),
+            order_deadline: Arc::new(AtomicU64::new(0)),
             sim,
+            real: false,
+            recovery_fixture: false,
             done: Arc::new(AtomicBool::new(false)),
             stopping: Arc::new(AtomicBool::new(false)),
             flat: Arc::new(AtomicBool::new(true)),
             fault: Arc::new(Mutex::new(None)),
         }
+    }
+    pub fn pause(&self) -> u64 {
+        self.paused.store(true, Ordering::Release);
+        self.epoch.fetch_add(1, Ordering::AcqRel) + 1
     }
     pub fn fail(&self, reason: &str) {
         *self.fault.lock().expect("fault lock") = Some(reason.into());

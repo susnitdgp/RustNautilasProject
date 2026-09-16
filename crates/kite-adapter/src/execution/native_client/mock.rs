@@ -201,11 +201,41 @@ impl Broker for MockBroker {
     }
     async fn execute(&self, command: &Command) -> Result<Outcome> {
         command.validate()?;
+        if let Command::ProtectedMarket {
+            symbol,
+            side,
+            product,
+            quantity,
+            tag,
+            ..
+        } = command
+        {
+            let translated = Command::Place {
+                symbol: symbol.clone(),
+                side: side.clone(),
+                product: product.clone(),
+                quantity: *quantity,
+                tag: tag.clone(),
+                price_rupees: 6000,
+            };
+            let outcome = self.execute(&translated).await?;
+            if let Outcome::Acknowledged { order_id } = &outcome {
+                let mut s = self.state.lock().map_err(|_| anyhow!("Mock state"))?;
+                let o = s
+                    .orders
+                    .iter_mut()
+                    .find(|o| &o.order_id == order_id)
+                    .expect("mock acknowledgement");
+                o.market_protection = Some(Decimal::from(-1));
+            }
+            return Ok(outcome);
+        }
         let mut s = self
             .state
             .lock()
             .map_err(|_| anyhow!("Mock broker state unavailable"))?;
         match command {
+            Command::ProtectedMarket { .. } => unreachable!("handled above"),
             Command::Place {
                 side,
                 product,
@@ -226,6 +256,7 @@ impl Broker for MockBroker {
                     transaction_type: side.clone(),
                     variety: "regular".into(),
                     order_type: "LIMIT".into(),
+                    market_protection: None,
                     validity: "DAY".into(),
                     status: "OPEN".into(),
                     quantity: *quantity,

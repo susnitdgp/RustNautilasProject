@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 pub struct Config {
     pub instrument: FuturesContract,
     pub token: u32,
+    pub synthetic_delay_ms: u64,
     pub date: chrono::NaiveDate,
     pub warmup: Vec<Candle>,
     pub simulated: Vec<Candle>,
@@ -100,17 +101,34 @@ impl Client {
                     emit(Data::Bar(bars::bar(bar, bt, now())?))?;
                 }
                 if c.control.sim {
-                    for bar in &c.simulated {
+                    for (index, bar) in c.simulated.iter().enumerate() {
                         if c.control.stopping.load(Ordering::Acquire) {
                             break;
                         }
                         let open = bars::close(bar)? - 300_000_000_000;
                         emit(quote(bar.open, open + 2))?;
-                        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
+                            .await;
                         emit(quote(bar.open, open + 3))?;
-                        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-                        emit(Data::Bar(bars::bar(bar, bt, now())?))?;
-                        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
+                            .await;
+                        if c.control.recovery_fixture && index == 10 {
+                            let mut corrected = c.warmup.clone();
+                            corrected.extend_from_slice(&c.simulated[..=index]);
+                            corrected[50].volume += 1;
+                            let epoch = c.control.pause();
+                            let replay = corrected
+                                .iter()
+                                .map(|b| bars::bar(b, bt, now()))
+                                .collect::<Result<Vec<_>>>()?;
+                            *c.control.rebuild.lock().expect("rebuild lock") =
+                                Some((epoch, replay));
+                        } else {
+                            emit(Data::Bar(bars::bar(bar, bt, now())?))?;
+                        }
+
+                        tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
+                            .await;
                     }
                     c.control.stop();
                     let last = c
@@ -123,16 +141,48 @@ impl Client {
                     }
                     return Ok::<_, anyhow::Error>(());
                 }
-                let mut tracker = bars::Tracker::new(&c.warmup)?;
+                let mut history = super::supertrend_revision::History::new(&c.warmup)?;
+                let mut failures = 0;
                 while !c.control.stopping.load(Ordering::Acquire) {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                     if c.control.stopping.load(Ordering::Acquire) {
                         break;
                     }
-                    let candles = historical::fetch_window(c.token, c.date, 1).await?;
-                    let completed = bars::completed(candles, now())?;
-                    for bar in tracker.append(completed)? {
-                        emit(Data::Bar(bars::bar(&bar, bt, now())?))?;
+                    let epoch = c.control.epoch.load(Ordering::Acquire);
+                    let update = async {
+                        let candles = historical::fetch_window(c.token, c.date, 7).await?;
+                        history.update(bars::completed(candles, now())?, c.date, now())
+                    }
+                    .await;
+                    let update = match update {
+                        Ok(v) => {
+                            failures = 0;
+                            v
+                        }
+                        Err(e) => {
+                            failures += 1;
+                            c.control.pause();
+                            if failures >= 6 {
+                                return Err(e);
+                            }
+                            continue;
+                        }
+                    };
+                    if c.control.epoch.load(Ordering::Acquire) != epoch {
+                        continue;
+                    }
+                    if update.revised > 0 || c.control.paused.load(Ordering::Acquire) {
+                        let epoch = c.control.pause();
+                        let rebuilt = update
+                            .all
+                            .iter()
+                            .map(|b| bars::bar(b, bt, now()))
+                            .collect::<Result<Vec<_>>>()?;
+                        *c.control.rebuild.lock().expect("rebuild lock") = Some((epoch, rebuilt));
+                    } else {
+                        for bar in update.new {
+                            emit(Data::Bar(bars::bar(&bar, bt, now())?))?;
+                        }
                     }
                 }
                 Ok(())

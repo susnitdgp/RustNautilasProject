@@ -45,7 +45,9 @@ pub fn order(
 ) -> Result<OrderStatusReport> {
     super::super::request::broker_id(&b.order_id)?;
     ensure!(
-        b.variety == "regular" && b.order_type == "LIMIT" && b.validity == "DAY",
+        b.variety == "regular"
+            && matches!(b.order_type.as_str(), "LIMIT" | "MARKET")
+            && b.validity == "DAY",
         "Unsupported broker order report type"
     );
     ensure!(
@@ -92,8 +94,15 @@ pub fn order(
         accepted <= last && last <= now,
         "Invalid broker report chronology"
     );
+    let protected = b
+        .market_protection
+        .is_some_and(|p| p == Decimal::from(-1) || (p > Decimal::ZERO && p <= Decimal::from(100)));
     ensure!(
-        b.price > Decimal::ZERO && b.price.fract().is_zero(),
+        b.order_type != "MARKET" || protected,
+        "Unprotected market report"
+    );
+    ensure!(
+        protected || b.price > Decimal::ZERO && b.price.fract().is_zero(),
         "Invalid crude oil limit price"
     );
     let mut report = OrderStatusReport::new(
@@ -102,7 +111,11 @@ pub fn order(
         client,
         VenueOrderId::from(b.order_id.as_str()),
         Some(side),
-        OrderType::Limit,
+        if protected {
+            OrderType::Market
+        } else {
+            OrderType::Limit
+        },
         TimeInForce::Day,
         status,
         Quantity::from(b.quantity),
@@ -112,8 +125,10 @@ pub fn order(
         now,
         None,
     );
-    report.price =
-        Some(Price::from_str(&b.price.normalize().to_string()).map_err(anyhow::Error::msg)?);
+    if !protected {
+        report.price =
+            Some(Price::from_str(&b.price.normalize().to_string()).map_err(anyhow::Error::msg)?);
+    }
     Ok(report)
 }
 pub fn positions(

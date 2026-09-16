@@ -5,6 +5,7 @@ mod fees;
 mod ledger;
 pub mod mock;
 pub(crate) mod outage;
+pub mod production;
 pub mod recovery;
 pub mod sandbox;
 mod shutdown;
@@ -97,6 +98,7 @@ pub struct Client {
     factory: OrderEventFactory,
     id: ClientId,
     connected: bool,
+    production: bool,
     stop_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
     account: RefCell<Option<AccountAny>>,
     dispatcher: Option<Arc<tokio::sync::Mutex<dispatch::Dispatcher>>>,
@@ -129,6 +131,7 @@ impl Client {
             ),
             id: ClientId::from(name),
             connected: false,
+            production: false,
             stop_signal: None,
             account: RefCell::new(None),
             dispatcher: None,
@@ -270,6 +273,19 @@ impl ExecutionClient for Client {
             self.config.instrument_token,
             Self::now(),
         )?;
+        if self.production {
+            ensure!(
+                snapshot.positions.iter().all(|p| p.quantity == 0),
+                "Production startup requires an account with no open positions; review existing exposure"
+            );
+            ensure!(
+                snapshot
+                    .orders
+                    .iter()
+                    .all(|o| matches!(o.status.as_str(), "COMPLETE" | "CANCELLED" | "REJECTED")),
+                "Production startup requires no open broker orders"
+            );
+        }
         let state = reports::account(&snapshot, &self.factory, Self::now())?;
         Self::emit(ExecutionEvent::Account(state.clone()))?;
         *self.account.borrow_mut() = Some(AccountAny::Margin(MarginAccount::new(state, false)));
@@ -282,6 +298,7 @@ impl ExecutionClient for Client {
             let stop_signal = self.stop_signal.clone();
             let tx = try_get_exec_event_sender()
                 .ok_or_else(|| anyhow!("Native event channel unavailable"))?;
+            let production = self.production;
             self.poll = Some(tokio::spawn(async move {
                 while active.load(std::sync::atomic::Ordering::Acquire) {
                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -297,7 +314,7 @@ impl ExecutionClient for Client {
                         }
                         eprintln!(
                             "{}",
-                            serde_json::json!({"event":"native_execution_fault","requires_review":true,"live_orders_enabled":false})
+                            serde_json::json!({"event":"native_execution_fault","requires_review":true,"live_orders_enabled":production})
                         );
                         return Err(e);
                     }
@@ -345,6 +362,12 @@ impl ExecutionClient for Client {
             "Native command identity mismatch"
         );
         let order = OrderAny::from_events(vec![OrderEventAny::Initialized(cmd.order_init)])?;
+        if self.production {
+            ensure!(
+                order.order_type() == OrderType::Market,
+                "Selected production strategy submits protected market orders only"
+            );
+        }
         if let Some(dispatcher) = &self.dispatcher {
             let cache = self
                 .cache

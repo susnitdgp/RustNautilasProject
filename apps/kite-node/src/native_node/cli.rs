@@ -6,6 +6,16 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match (command, &args[1..]) {
+        ("native-supertrend-recovery-sim", [config]) => {
+            super::supertrend_live_runner::run_recovery_fixture(config)
+        }
+        ("native-supertrend-kite-production", [config, broker]) => {
+            super::supertrend_live_runner::run_broker(config, broker)
+        }
+        ("native-supertrend-session-paper", [config]) => super::supertrend_session::run(config),
+        ("native-supertrend-kite-mock", [config]) => {
+            super::supertrend_live_runner::run_with_execution(config, 30, true, true)
+        }
         ("native-supertrend-sim", []) => {
             super::supertrend_live_runner::run("config/production-supertrend.json", 30, true)
         }
@@ -111,7 +121,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..290) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 

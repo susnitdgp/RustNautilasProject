@@ -112,8 +112,8 @@ async fn observe_impl(
 ) -> Result<Summary> {
     ensure!(token > 0, "Zero subscription token");
     ensure!(
-        (1..=300).contains(&duration.as_secs()),
-        "Duration must be 1..300 seconds"
+        (1..=86400).contains(&duration.as_secs()),
+        "Duration must be 1..86400 seconds"
     );
     let mut initial_socket = initial_socket;
     let deadline = Instant::now() + duration;

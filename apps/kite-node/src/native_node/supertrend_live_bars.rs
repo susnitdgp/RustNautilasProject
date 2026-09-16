@@ -5,6 +5,7 @@ use nautilus_model::{
     data::{Bar, BarType},
     types::{Price, Quantity},
 };
+#[cfg(test)]
 use std::collections::BTreeMap;
 const STEP: u64 = 300_000_000_000;
 pub fn close(c: &Candle) -> Result<u64> {
@@ -37,10 +38,12 @@ pub fn bar(c: &Candle, bt: BarType, received: u64) -> Result<Bar> {
         received.into(),
     ))
 }
+#[cfg(test)]
 pub struct Tracker {
     known: BTreeMap<u64, Candle>,
     last: u64,
 }
+#[cfg(test)]
 impl Tracker {
     pub fn new(candles: &[Candle]) -> Result<Self> {
         ensure!(candles.len() >= 100, "Insufficient indicator warmup");
