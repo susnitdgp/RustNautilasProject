@@ -63,8 +63,10 @@ pub fn run_recovery_fixture(config: &str) -> Result<()> {
     run_backend(config, 30, true, false, None, true)
 }
 pub fn run_broker(config: &str, settings: &str) -> Result<()> {
-    let settings: kite_adapter::execution::native_client::production::Settings =
+    let selection = super::production::Selection::load(config)?;
+    let mut settings: kite_adapter::execution::native_client::production::Settings =
         serde_json::from_str(&std::fs::read_to_string(settings)?)?;
+    settings.instrument_token = selection.instrument_token;
     settings.validate()?;
     run_backend(
         config,
@@ -89,8 +91,9 @@ fn run_backend(
     } else {
         "PAPER/MOCK"
     };
+    let symbol = super::production::Selection::load(config)?.symbol;
     alerts.emit(format!(
-        "CRUDEOIL 5m Supertrend [{mode}]: STARTING; initialization in progress"
+        "{symbol} 5m Supertrend [{mode}]: STARTING; initialization in progress"
     ));
     let result = run_backend_inner(
         config,
@@ -101,7 +104,7 @@ fn run_backend(
         recovery_fixture,
         &alerts,
     );
-    alerts.emit(format!("CRUDEOIL 5m Supertrend [{mode}]: {}", if result.is_ok() {
+    alerts.emit(format!("{symbol} 5m Supertrend [{mode}]: {}", if result.is_ok() {
         "CLEAN STOP: flat, no pending orders; inspect saved run report"
     } else {
         "FAILED / REVIEW REQUIRED: inspect terminal logs and Redis before restart; do not assume flat"
@@ -122,7 +125,7 @@ fn run_backend_inner(
         s.validate()?;
     }
     super::supertrend_terminal::step("Checking strategy selection and duration");
-    let _ = super::production::Selection::load(config)?;
+    let selection = super::production::Selection::load(config)?;
     ensure!(
         (5..=86360).contains(&seconds),
         "Paper duration must be 5..86360 seconds"
@@ -134,8 +137,17 @@ fn run_backend_inner(
     let (instrument, token, credentials) = if sim {
         (crate::paper_flow::simulation::fixture()?.0, 144870151, None)
     } else {
-        let c = crate::preflight_command::read_config("config/crudeoil-september.toml")?;
-        let report = crate::preflight_command::resolve(&c, None)?;
+        let master = kite_adapter::http::instruments::download()?;
+        let report = kite_adapter::preflight::run_selected(
+            &selection.symbol,
+            selection.instrument_token,
+            master.as_slice(),
+            date,
+        )?;
+        ensure!(
+            report.instrument_id == selection.instrument,
+            "Configured instrument ID differs from the selected Kite contract"
+        );
         (
             kite_adapter::instruments::contract::build(&report, data::now().into())?,
             report.instrument_token,
@@ -180,7 +192,7 @@ fn run_backend_inner(
     control.real = real;
     control.recovery_fixture = recovery_fixture;
     let state = Rc::new(RefCell::new(State::default()));
-    let mut lease = Lease::acquire(&id.to_string(), sim, real)?;
+    let mut lease = Lease::acquire(&id.to_string(), sim, real, &selection.symbol)?;
     let feed_config = feed::Config {
         instrument: instrument.clone(),
         token,
@@ -208,10 +220,10 @@ fn run_backend_inner(
             bar_execution:false,starting_balances:vec![Money::new(1_000_000.,Currency::INR())],..Default::default()};
         let mut node=if let Some(settings)=production.clone() {
             use kite_adapter::execution::native_client::production::{Factory,LiveConfig};
-            builder.add_exec_client(Some("MCX".into()),Box::new(Factory),Box::new(LiveConfig{settings,namespace:id.to_string(),stop_signal:control.done.clone()}))?.build()?
+            builder.add_exec_client(Some("MCX".into()),Box::new(Factory),Box::new(LiveConfig{settings,instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),namespace:id.to_string(),stop_signal:control.done.clone()}))?.build()?
         }else if kite_mock {
             use kite_adapter::execution::native_client::mock::{MockFactory,MockConfig};
-            builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"MIS".into(),instrument_token:token}))?.build()?
+            builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"MIS".into(),instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),instrument_token:token}))?.build()?
         }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?.build()?};
         let bt:BarType=format!("{}-5-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(BarStrategy::new(bt,start,end,state.clone()).with_confirmation(true).with_live(control.clone()))?;
@@ -230,9 +242,9 @@ fn run_backend_inner(
             handle.stop();
         });
         println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"live_orders_enabled":real}));
-        alerts.emit(format!("CRUDEOIL 5m: run {id} initialized; real_orders={real}"));
+        alerts.emit(format!("{} 5m: run {id} initialized; real_orders={real}", selection.symbol));
         let mut was_paused=false;
-        let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock);
+        let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock,&selection.symbol);
         let result={
             let run=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted);
             tokio::pin!(run);

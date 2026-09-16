@@ -1,6 +1,8 @@
 {
   "strategy": "supertrend_macd_vwap",
   "instrument": "CRUDEOIL26SEPFUT.MCX",
+  "symbol": "CRUDEOIL26SEPFUT",
+  "instrument_token": 144870151,
   "interval": "5minute",
   "contracts": 1,
   "supertrend_period": 7,

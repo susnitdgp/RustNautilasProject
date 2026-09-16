@@ -32,10 +32,7 @@ pub struct KiteDataClient {
 impl KiteDataClient {
     pub fn new(name: &str, config: KiteDataClientConfig, cache: CacheView) -> Result<Self> {
         ensure!(name == "KITE", "Client name must be KITE");
-        ensure!(
-            config.instrument.id.to_string() == "CRUDEOIL26SEPFUT.MCX",
-            "Unsupported contract"
-        );
+        crate::instruments::contract::symbol_from_instrument_id(&config.instrument.id.to_string())?;
         ensure!(
             config.instrument_token > 0 && (1..=300).contains(&config.duration_seconds),
             "Invalid data client configuration"

@@ -122,6 +122,8 @@ impl ExecutionClientFactory for SandboxFactory {
             Config {
                 user_id: c.user_id.clone(),
                 product: c.product.clone(),
+                instrument_id: "CRUDEOIL26SEPFUT.MCX".into(),
+                symbol: "CRUDEOIL26SEPFUT".into(),
                 instrument_token: c.instrument_token,
                 credentials,
             },
@@ -136,6 +138,8 @@ impl ExecutionClientFactory for SandboxFactory {
             client.factory.clone(),
             c.product.clone(),
             c.instrument_token,
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            "CRUDEOIL26SEPFUT".into(),
         ))));
         client.cache = Some(cache);
         client.stop_signal = Some(c.stop_signal.clone());

@@ -25,15 +25,27 @@ struct ChargeResponse {
     price: Decimal,
     charges: Charges,
 }
+#[cfg(test)]
 pub(crate) fn groups<'a>(
     snapshot: &'a Snapshot,
     product: &str,
     token: u32,
 ) -> Result<BTreeMap<String, Vec<&'a BrokerTrade>>> {
+    groups_for(snapshot, product, token, "CRUDEOIL26SEPFUT")
+}
+
+pub(crate) fn groups_for<'a>(
+    snapshot: &'a Snapshot,
+    product: &str,
+    token: u32,
+    symbol: &str,
+) -> Result<BTreeMap<String, Vec<&'a BrokerTrade>>> {
     let mut groups: BTreeMap<String, Vec<&BrokerTrade>> = BTreeMap::new();
-    for t in snapshot.trades.iter().filter(|t| {
-        t.exchange == "MCX" && t.tradingsymbol == "CRUDEOIL26SEPFUT" && t.product == product
-    }) {
+    for t in snapshot
+        .trades
+        .iter()
+        .filter(|t| t.exchange == "MCX" && t.tradingsymbol == symbol && t.product == product)
+    {
         ensure!(
             t.instrument_token == token
                 && t.quantity > 0
@@ -60,7 +72,7 @@ pub(crate) fn groups<'a>(
         let o = orders[0];
         ensure!(
             o.exchange == "MCX"
-                && o.tradingsymbol == "CRUDEOIL26SEPFUT"
+                && o.tradingsymbol == symbol
                 && o.instrument_token == token
                 && o.product == product
                 && o.variety == "regular"
@@ -147,8 +159,9 @@ pub(crate) async fn calculate(
     snapshot: &Snapshot,
     product: &str,
     token: u32,
+    symbol: &str,
 ) -> Result<Fees> {
-    let groups = groups(snapshot, product, token)?;
+    let groups = groups_for(snapshot, product, token, symbol)?;
     let mut result = Fees::new();
     for (id, trades) in groups {
         let o = snapshot

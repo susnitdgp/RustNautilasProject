@@ -40,6 +40,8 @@ use std::{any::Any, cell::RefCell, sync::Arc};
 pub struct Config {
     pub user_id: String,
     pub product: String,
+    pub instrument_id: String,
+    pub symbol: String,
     pub instrument_token: u32,
     pub credentials: Arc<crate::credentials::KiteCredentials>,
 }
@@ -59,6 +61,11 @@ impl Config {
         ensure!(
             matches!(self.product.as_str(), "MIS" | "NRML") && self.instrument_token > 0,
             "Invalid native Kite product/token"
+        );
+        crate::instruments::contract::validate_symbol(&self.symbol)?;
+        ensure!(
+            self.instrument_id == format!("{}.MCX", self.symbol),
+            "Native Kite instrument ID and symbol disagree"
         );
         Ok(())
     }
@@ -96,6 +103,8 @@ impl ExecutionClientFactory for Factory {
 pub struct Client {
     broker: Arc<dyn Broker>,
     config: Config,
+    instrument_id: InstrumentId,
+    symbol: String,
     factory: OrderEventFactory,
     id: ClientId,
     connected: bool,
@@ -121,9 +130,13 @@ impl Client {
         config.validate()?;
         ensure!(!name.is_empty(), "Native client name missing");
         let account = AccountId::from(format!("KITE-{}", config.user_id).as_str());
+        let instrument_id = config.instrument_id.parse()?;
+        let symbol = config.symbol.clone();
         Ok(Self {
             broker: Arc::from(broker),
             config,
+            instrument_id,
+            symbol,
             factory: OrderEventFactory::new(
                 trader,
                 account,
@@ -157,7 +170,7 @@ impl Client {
     }
     fn instrument(&self, id: Option<InstrumentId>) -> Result<()> {
         ensure!(
-            id.is_none_or(|x| x == InstrumentId::from("CRUDEOIL26SEPFUT.MCX")),
+            id.is_none_or(|x| x == self.instrument_id),
             "Unsupported native Kite report instrument"
         );
         Ok(())
@@ -169,13 +182,18 @@ impl Client {
         owners: &std::collections::BTreeMap<String, ClientOrderId>,
     ) -> Result<Vec<OrderStatusReport>> {
         let mut ids = std::collections::BTreeSet::new();
-        let grouped = fees::groups(snapshot, &self.config.product, self.config.instrument_token)?;
+        let grouped = fees::groups_for(
+            snapshot,
+            &self.config.product,
+            self.config.instrument_token,
+            &self.symbol,
+        )?;
         snapshot
             .orders
             .iter()
             .filter(|o| {
                 o.exchange == "MCX"
-                    && o.tradingsymbol == "CRUDEOIL26SEPFUT"
+                    && o.tradingsymbol == self.symbol
                     && o.product == self.config.product
             })
             .map(|o| {
@@ -184,10 +202,11 @@ impl Client {
                         && ids.insert(o.order_id.clone()),
                     "Invalid or duplicate Kite order identity"
                 );
-                let mut report = reports::order(
+                let mut report = reports::order_for(
                     o,
                     self.factory.account_id(),
                     owners.get(&o.order_id).copied(),
+                    &self.instrument_id.to_string(),
                     now,
                 )?;
                 // Recover native order type from owned local history, not cleared broker metadata.
@@ -280,11 +299,13 @@ impl ExecutionClient for Client {
         );
         self.broker.verify().await?;
         let snapshot = outage::snapshot(self.broker.as_ref()).await?;
-        reports::positions(
+        reports::positions_for(
             &snapshot,
             self.account_id(),
             &self.config.product,
             self.config.instrument_token,
+            &self.instrument_id.to_string(),
+            &self.symbol,
             Self::now(),
         )?;
         if self.production {
@@ -459,8 +480,7 @@ impl ExecutionClient for Client {
             .ok_or_else(|| anyhow!("Real Kite order cancellation is disabled"))?
             .clone();
         ensure!(
-            cmd.instrument_id == InstrumentId::from("CRUDEOIL26SEPFUT.MCX")
-                && cmd.trader_id == self.factory.trader_id(),
+            cmd.instrument_id == self.instrument_id && cmd.trader_id == self.factory.trader_id(),
             "Native cancel identity mismatch"
         );
         let tx = try_get_exec_event_sender()
@@ -608,15 +628,21 @@ impl ExecutionClient for Client {
                 &snapshot,
                 &self.config.product,
                 self.config.instrument_token,
+                &self.symbol,
             )
             .await?;
         let owners = self.owners().await?;
-        Ok(reports::fills(
+        let instrument_id = self.instrument_id.to_string();
+        Ok(reports::fills_for(
             &snapshot,
-            self.account_id(),
-            &self.config.product,
-            self.config.instrument_token,
-            Self::now(),
+            reports::FillScope {
+                account: self.account_id(),
+                product: &self.config.product,
+                token: self.config.instrument_token,
+                instrument_id: &instrument_id,
+                symbol: &self.symbol,
+                now: Self::now(),
+            },
             &fees,
             &owners,
         )?
@@ -638,11 +664,13 @@ impl ExecutionClient for Client {
             "Kite reports current positions only"
         );
         let snapshot = self.snapshot().await?;
-        reports::positions(
+        reports::positions_for(
             &snapshot,
             self.account_id(),
             &self.config.product,
             self.config.instrument_token,
+            &self.instrument_id.to_string(),
+            &self.symbol,
             Self::now(),
         )
     }
@@ -661,11 +689,13 @@ impl ExecutionClient for Client {
             .transpose()?;
         let owners = self.owners().await?;
         let orders = self.orders(&snapshot, now, &owners)?;
-        let positions = reports::positions(
+        let positions = reports::positions_for(
             &snapshot,
             self.account_id(),
             &self.config.product,
             self.config.instrument_token,
+            &self.instrument_id.to_string(),
+            &self.symbol,
             now,
         )?;
         let fees = self
@@ -674,14 +704,20 @@ impl ExecutionClient for Client {
                 &snapshot,
                 &self.config.product,
                 self.config.instrument_token,
+                &self.symbol,
             )
             .await?;
-        let fills = reports::fills(
+        let instrument_id = self.instrument_id.to_string();
+        let fills = reports::fills_for(
             &snapshot,
-            self.account_id(),
-            &self.config.product,
-            self.config.instrument_token,
-            now,
+            reports::FillScope {
+                account: self.account_id(),
+                product: &self.config.product,
+                token: self.config.instrument_token,
+                instrument_id: &instrument_id,
+                symbol: &self.symbol,
+                now,
+            },
             &fees,
             &owners,
         )?;

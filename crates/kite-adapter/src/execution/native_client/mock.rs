@@ -28,6 +28,8 @@ pub struct MockConfig {
     pub namespace: String,
     pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
     pub product: String,
+    pub instrument_id: String,
+    pub symbol: String,
     pub instrument_token: u32,
 }
 impl ClientConfig for MockConfig {
@@ -58,6 +60,8 @@ impl ExecutionClientFactory for MockFactory {
         let config = Config {
             user_id: "MOCK".into(),
             product: cfg.product.clone(),
+            instrument_id: cfg.instrument_id.clone(),
+            symbol: cfg.symbol.clone(),
             instrument_token: cfg.instrument_token,
             credentials: Arc::new(crate::credentials::KiteCredentials::new(
                 Some("MOCKONLY".into()),
@@ -76,6 +80,8 @@ impl ExecutionClientFactory for MockFactory {
             client.factory.clone(),
             cfg.product.clone(),
             cfg.instrument_token,
+            cfg.instrument_id.clone(),
+            cfg.symbol.clone(),
         ))));
         client.cache = Some(cache);
         client.stop_signal = Some(cfg.stop_signal.clone());
@@ -129,8 +135,9 @@ impl Broker for MockBroker {
         snapshot: &Snapshot,
         product: &str,
         token: u32,
+        symbol: &str,
     ) -> Result<super::fees::Fees> {
-        let groups = super::fees::groups(snapshot, product, token)?;
+        let groups = super::fees::groups_for(snapshot, product, token, symbol)?;
         let mut fees = super::fees::Fees::new();
         for trades in groups.values() {
             fees.extend(super::fees::allocate(Decimal::ZERO, trades)?);
@@ -238,6 +245,7 @@ impl Broker for MockBroker {
         match command {
             Command::ProtectedMarket { .. } => unreachable!("handled above"),
             Command::Place {
+                symbol,
                 side,
                 product,
                 quantity,
@@ -251,7 +259,7 @@ impl Broker for MockBroker {
                 s.orders.push(BrokerOrder {
                     order_id: id.clone(),
                     exchange: "MCX".into(),
-                    tradingsymbol: "CRUDEOIL26SEPFUT".into(),
+                    tradingsymbol: symbol.clone(),
                     instrument_token: self.token,
                     product: product.clone(),
                     transaction_type: side.clone(),

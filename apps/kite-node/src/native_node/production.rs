@@ -5,7 +5,9 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     strategy: String,
-    instrument: String,
+    pub instrument: String,
+    pub symbol: String,
+    pub instrument_token: u32,
     interval: String,
     contracts: u32,
     supertrend_period: u32,
@@ -34,7 +36,9 @@ impl Selection {
         );
         ensure!(
             self.strategy == "supertrend_macd_vwap"
-                && self.instrument == "CRUDEOIL26SEPFUT.MCX"
+                && kite_adapter::instruments::contract::validate_symbol(&self.symbol).is_ok()
+                && self.instrument == format!("{}.MCX", self.symbol)
+                && self.instrument_token > 0
                 && self.interval == "5minute"
                 && self.contracts == 1
                 && self.supertrend_period == 7
@@ -92,5 +96,25 @@ mod tests {
             let s: Selection = serde_json::from_value(modified).unwrap();
             assert!(s.validate().is_err());
         }
+    }
+
+    #[test]
+    fn selection_accepts_explicit_rollover_identity_and_rejects_mismatch() {
+        let v = include_str!("../../../../config/production-supertrend.json");
+        let mut rolled: serde_json::Value = serde_json::from_str(v).unwrap();
+        rolled["instrument"] = serde_json::json!("CRUDEOIL26OCTFUT.MCX");
+        rolled["symbol"] = serde_json::json!("CRUDEOIL26OCTFUT");
+        rolled["instrument_token"] = serde_json::json!(155_000_001);
+        let selection: Selection = serde_json::from_value(rolled.clone()).unwrap();
+        assert!(selection.validate().is_ok());
+
+        rolled["instrument"] = serde_json::json!("CRUDEOIL26SEPFUT.MCX");
+        let mismatched: Selection = serde_json::from_value(rolled.clone()).unwrap();
+        assert!(mismatched.validate().is_err());
+
+        rolled["instrument"] = serde_json::json!("CRUDEOIL26OCTFUT.MCX");
+        rolled["instrument_token"] = serde_json::json!(0);
+        let zero_token: Selection = serde_json::from_value(rolled).unwrap();
+        assert!(zero_token.validate().is_err());
     }
 }

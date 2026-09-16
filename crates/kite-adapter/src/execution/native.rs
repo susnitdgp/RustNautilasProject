@@ -5,7 +5,6 @@ use super::request::Command;
 use anyhow::{Result, anyhow, ensure};
 use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce},
-    identifiers::InstrumentId,
     orders::{Order, OrderAny},
 };
 use rust_decimal::prelude::ToPrimitive;
@@ -38,10 +37,9 @@ fn translate(
     persisted_tag: &str,
     reducing_policy_checked: bool,
 ) -> Result<Command> {
-    ensure!(
-        order.instrument_id() == InstrumentId::from("CRUDEOIL26SEPFUT.MCX"),
-        "Unsupported native instrument"
-    );
+    let instrument_id = order.instrument_id().to_string();
+    let symbol =
+        crate::instruments::contract::symbol_from_instrument_id(&instrument_id)?.to_owned();
     ensure!(
         !order.is_closed(),
         "Closed native order cannot be submitted"
@@ -65,7 +63,7 @@ fn translate(
     if order.order_type() == OrderType::Market {
         ensure!(quantity.fract().is_zero(), "Fractional market quantity");
         let command = Command::ProtectedMarket {
-            symbol: "CRUDEOIL26SEPFUT".into(),
+            symbol: symbol.clone(),
             side: if order.order_side() == OrderSide::Buy {
                 "BUY".into()
             } else {
@@ -90,7 +88,7 @@ fn translate(
         "Native quantity and rupee price must be exact integers for this contract"
     );
     let command = Command::Place {
-        symbol: "CRUDEOIL26SEPFUT".into(),
+        symbol,
         side: match order.order_side() {
             OrderSide::Buy => "BUY",
             OrderSide::Sell => "SELL",
@@ -125,9 +123,14 @@ mod tests {
             false,
         )
     }
-    fn limit(quantity: Quantity, price: Price, reduce_only: bool) -> OrderAny {
+    fn limit_for(
+        instrument_id: &str,
+        quantity: Quantity,
+        price: Price,
+        reduce_only: bool,
+    ) -> OrderAny {
         factory().limit(
-            "CRUDEOIL26SEPFUT.MCX".into(),
+            instrument_id.into(),
             OrderSide::Buy,
             quantity,
             price,
@@ -144,6 +147,9 @@ mod tests {
             None,
             None,
         )
+    }
+    fn limit(quantity: Quantity, price: Price, reduce_only: bool) -> OrderAny {
+        limit_for("CRUDEOIL26SEPFUT.MCX", quantity, price, reduce_only)
     }
     #[test]
     fn native_limit_preserves_exact_terms_and_explicit_correlation_tag() {
@@ -167,6 +173,20 @@ mod tests {
             _ => panic!("Expected place request"),
         }
     }
+    #[test]
+    fn native_submission_uses_the_rolled_contract_symbol() {
+        let order = limit_for(
+            "CRUDEOIL26OCTFUT.MCX",
+            Quantity::from(1),
+            Price::new(6001.0, 0),
+            false,
+        );
+        match submit(&order, "NRML", "KiteNative0002").unwrap() {
+            Command::Place { symbol, .. } => assert_eq!(symbol, "CRUDEOIL26OCTFUT"),
+            _ => panic!("Expected place request"),
+        }
+    }
+
     #[test]
     fn rejects_fractional_terms_instead_of_truncating() {
         assert!(

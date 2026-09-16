@@ -21,11 +21,20 @@ pub struct Display {
     real: bool,
     mock: bool,
     id: String,
+    symbol: String,
     dashboard: bool,
 }
 
 impl Display {
-    pub fn new(seconds: u64, warmup: usize, sim: bool, id: &str, real: bool, mock: bool) -> Self {
+    pub fn new(
+        seconds: u64,
+        warmup: usize,
+        sim: bool,
+        id: &str,
+        real: bool,
+        mock: bool,
+        symbol: &str,
+    ) -> Self {
         let dashboard = io::stderr().is_terminal()
             && std::env::var("KITE_TERMINAL_DASHBOARD").as_deref() != Ok("0");
         let display = Self {
@@ -36,11 +45,13 @@ impl Display {
             real,
             mock,
             id: id.into(),
+            symbol: symbol.into(),
             dashboard,
         };
         if !dashboard {
             line(&format!(
-                "SUPERTREND + MACD + VWAP | CRUDEOIL | 5m | 1 lot\nFeed: {} | Execution: {} | REAL ORDERS: {}\nRun: {id} | Limit: {seconds}s | Ctrl-C: graceful stop",
+                "SUPERTREND + MACD + VWAP | {} | 5m | 1 lot\nFeed: {} | Execution: {} | REAL ORDERS: {}\nRun: {id} | Limit: {seconds}s | Ctrl-C: graceful stop",
+                display.symbol,
                 display.feed(),
                 display.execution(),
                 display.orders()
@@ -251,7 +262,11 @@ impl Snapshot {
             "simulated MARKET / DAY"
         };
 
-        let title = format!("CRUDEOIL LIVE STRATEGY | {} IST", ist_title(self.now));
+        let title = format!(
+            "{} LIVE STRATEGY | {} IST",
+            display.symbol,
+            ist_title(self.now)
+        );
         let mut output = heading('┌', '┐', &title);
         output.push_str(&row("Status", self.phase));
         output.push_str(&row("Run", &display.id));
@@ -264,7 +279,10 @@ impl Snapshot {
             "Orders",
             &format!("{} | {order_mode}", display.orders()),
         ));
-        output.push_str(&row("Instrument", "CRUDEOIL26SEPFUT | 5-minute | 1 lot"));
+        output.push_str(&row(
+            "Instrument",
+            &format!("{} | 5-minute | 1 lot", display.symbol),
+        ));
         output.push_str(&row("Strategy", PARAMETERS));
         output.push_str(&row("Confirmation", "MACD EMA(12,26,9) + session VWAP"));
         output.push_str(&row("Entry", ENTRY_RULE));

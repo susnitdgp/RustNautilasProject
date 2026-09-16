@@ -115,10 +115,8 @@ pub fn reconcile(
             .is_none_or(|id| id == factory.account_id()),
         "Native account mismatch"
     );
-    ensure!(
-        current.instrument_id().to_string() == "CRUDEOIL26SEPFUT.MCX",
-        "Native instrument mismatch"
-    );
+    let instrument_id = current.instrument_id().to_string();
+    let symbol = crate::instruments::contract::symbol_from_instrument_id(&instrument_id)?;
     ensure!(
         current
             .venue_order_id()
@@ -131,7 +129,7 @@ pub fn reconcile(
     );
     ensure!(
         broker.exchange == "MCX"
-            && broker.tradingsymbol == "CRUDEOIL26SEPFUT"
+            && broker.tradingsymbol == symbol
             && broker.instrument_token == owner.token
             && broker.product == owner.product,
         "Kite order contract/product mismatch"

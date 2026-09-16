@@ -25,6 +25,8 @@ pub(crate) struct Dispatcher {
     factory: OrderEventFactory,
     product: String,
     token: u32,
+    instrument_id: String,
+    symbol: String,
     records: BTreeMap<String, Record>,
     poisoned: bool,
     position: i64,
@@ -108,6 +110,8 @@ impl Dispatcher {
         factory: OrderEventFactory,
         product: String,
         token: u32,
+        instrument_id: String,
+        symbol: String,
     ) -> Self {
         Self {
             broker,
@@ -115,6 +119,8 @@ impl Dispatcher {
             factory,
             product,
             token,
+            instrument_id,
+            symbol,
             records: BTreeMap::new(),
             poisoned: false,
             position: 0,
@@ -154,16 +160,18 @@ impl Dispatcher {
                     .iter()
                     .filter(|p| p.quantity != 0)
                     .all(|p| p.exchange == "MCX"
-                        && p.tradingsymbol == "CRUDEOIL26SEPFUT"
+                        && p.tradingsymbol == self.symbol
                         && p.product == self.product
                         && p.instrument_token == self.token),
                 "Unmanaged account exposure"
             );
-            let reports = super::reports::positions(
+            let reports = super::reports::positions_for(
                 &snapshot,
                 self.factory.account_id(),
                 &self.product,
                 self.token,
+                &self.instrument_id,
+                &self.symbol,
                 Self::now(),
             )?;
             let actual = reports[0].quantity.as_decimal();
@@ -281,11 +289,13 @@ impl Dispatcher {
     pub async fn refresh(&mut self, tx: &UnboundedSender<ExecutionEvent>) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
         let snapshot = self.snapshot().await?;
-        let positions = super::reports::positions(
+        let positions = super::reports::positions_for(
             &snapshot,
             self.factory.account_id(),
             &self.product,
             self.token,
+            &self.instrument_id,
+            &self.symbol,
             Self::now(),
         )?;
         use rust_decimal::prelude::ToPrimitive;
@@ -310,7 +320,7 @@ impl Dispatcher {
                 .iter()
                 .filter(|p| p.quantity != 0)
                 .all(|p| p.exchange == "MCX"
-                    && p.tradingsymbol == "CRUDEOIL26SEPFUT"
+                    && p.tradingsymbol == self.symbol
                     && p.product == self.product
                     && p.instrument_token == self.token),
             "Unmanaged account exposure during reconciliation"

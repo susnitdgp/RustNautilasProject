@@ -101,7 +101,7 @@ fn run_with_backend(
    builder.add_exec_client(Some("MCX".into()),Box::new(SandboxFactory),Box::new(SandboxConfig{namespace:instance.to_string(),user_id:settings.expected_user_id.clone(),product:settings.product.clone(),instrument_token:token,stop_signal:done.clone()}))?
   }else if kite_mock {
    use kite_adapter::execution::native_client::mock::{MockFactory,MockConfig};
-   builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:instance.to_string(),stop_signal:done.clone(),product:"NRML".into(),instrument_token:token}))?
+   builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:instance.to_string(),stop_signal:done.clone(),product:"NRML".into(),instrument_id:"CRUDEOIL26SEPFUT.MCX".into(),symbol:"CRUDEOIL26SEPFUT".into(),instrument_token:token}))?
   }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?};
   let mut node=builder.build()?;
   node.add_strategy(NativeStrategy::new(strategy,instrument.id,true,state.clone(),done.clone()))?;

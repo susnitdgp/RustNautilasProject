@@ -7,15 +7,16 @@ pub struct Lease {
     real: bool,
 }
 impl Lease {
-    pub fn acquire(owner: &str, sim: bool, real: bool) -> Result<Self> {
+    pub fn acquire(owner: &str, sim: bool, real: bool, symbol: &str) -> Result<Self> {
+        kite_adapter::instruments::contract::validate_symbol(symbol)?;
         let mut con = redis::Client::open(kite_journal::connection::url_from_env()?.as_str())?
             .get_connection()?;
         let key = if real {
-            "kite:production:supertrend:CRUDEOIL26SEPFUT:owner".into()
+            format!("kite:production:supertrend:{symbol}:owner")
         } else if sim {
             format!("kite:paper:supertrend:sim:{owner}:owner")
         } else {
-            "kite:paper:supertrend:CRUDEOIL26SEPFUT:owner".into()
+            format!("kite:paper:supertrend:{symbol}:owner")
         };
         let set: Option<String> = redis::cmd("SET")
             .arg(&key)

@@ -59,7 +59,7 @@ impl Command {
                 price_rupees,
                 tag,
             } => {
-                ensure!(symbol == "CRUDEOIL26SEPFUT", "Unsupported order symbol");
+                crate::instruments::contract::validate_symbol(symbol)?;
                 ensure!(
                     matches!(side.as_str(), "BUY" | "SELL")
                         && matches!(product.as_str(), "MIS" | "NRML"),

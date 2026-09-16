@@ -136,6 +136,8 @@ fn fixture(fail: bool, lose_ack: bool) -> (Dispatcher, Arc<AtomicUsize>, Arc<Mut
             factory,
             "NRML".into(),
             144870151,
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            "CRUDEOIL26SEPFUT".into(),
         ),
         calls,
         records,

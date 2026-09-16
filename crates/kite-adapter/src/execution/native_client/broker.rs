@@ -51,9 +51,10 @@ pub(crate) trait Broker: Send + Sync {
         snapshot: &Snapshot,
         product: &str,
         token: u32,
+        symbol: &str,
     ) -> Result<super::fees::Fees> {
         ensure!(
-            super::fees::groups(snapshot, product, token)?.is_empty(),
+            super::fees::groups_for(snapshot, product, token, symbol)?.is_empty(),
             "Kite fill commissions unavailable"
         );
         Ok(super::fees::Fees::new())
@@ -100,16 +101,17 @@ impl Broker for KiteBroker {
         snapshot: &Snapshot,
         product: &str,
         token: u32,
+        symbol: &str,
     ) -> Result<super::fees::Fees> {
         if self.sandbox {
             // Explicit sandbox estimate: the sandbox has no virtual contract notes.
             let mut result = super::fees::Fees::new();
-            for trades in super::fees::groups(snapshot, product, token)?.values() {
+            for trades in super::fees::groups_for(snapshot, product, token, symbol)?.values() {
                 result.extend(super::fees::allocate(Decimal::ZERO, trades)?);
             }
             Ok(result)
         } else {
-            super::fees::calculate(&self.read, snapshot, product, token).await
+            super::fees::calculate(&self.read, snapshot, product, token, symbol).await
         }
     }
 

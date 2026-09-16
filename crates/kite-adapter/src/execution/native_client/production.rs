@@ -46,8 +46,8 @@ impl Settings {
             "Set the exact reviewed Kite user ID"
         );
         ensure!(
-            self.product == "MIS" && self.instrument_token == 144870151,
-            "Production scope is September CRUDEOIL MIS only"
+            self.product == "MIS" && self.instrument_token > 0,
+            "Production scope requires MIS and a configured instrument token"
         );
         Ok(())
     }
@@ -55,6 +55,8 @@ impl Settings {
 #[derive(Debug)]
 pub struct LiveConfig {
     pub settings: Settings,
+    pub instrument_id: String,
+    pub symbol: String,
     pub namespace: String,
     pub stop_signal: Arc<AtomicBool>,
 }
@@ -84,6 +86,11 @@ impl ExecutionClientFactory for Factory {
             .downcast_ref::<LiveConfig>()
             .ok_or_else(|| anyhow!("Wrong production configuration"))?;
         c.settings.validate()?;
+        crate::instruments::contract::validate_symbol(&c.symbol)?;
+        ensure!(
+            c.instrument_id == format!("{}.MCX", c.symbol),
+            "Production instrument ID and symbol disagree"
+        );
         let credentials = Arc::new(crate::credentials::redis::load_from_env()?);
         let broker = KiteBroker::new(
             &credentials,
@@ -96,6 +103,8 @@ impl ExecutionClientFactory for Factory {
             Config {
                 user_id: c.settings.expected_user_id.clone(),
                 product: c.settings.product.clone(),
+                instrument_id: c.instrument_id.clone(),
+                symbol: c.symbol.clone(),
                 instrument_token: c.settings.instrument_token,
                 credentials,
             },
@@ -110,6 +119,8 @@ impl ExecutionClientFactory for Factory {
             client.factory.clone(),
             c.settings.product.clone(),
             c.settings.instrument_token,
+            c.instrument_id.clone(),
+            c.symbol.clone(),
         ))));
         client.cache = Some(cache);
         client.stop_signal = Some(c.stop_signal.clone());

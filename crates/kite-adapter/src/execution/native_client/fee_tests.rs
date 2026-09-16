@@ -112,7 +112,14 @@ async fn virtual_contract_note_http_payload_and_identity_validation() {
         let credentials =
             KiteCredentials::new(Some("test-key".into()), Some("test-token".into())).unwrap();
         let read = ReadClient::new(&credentials).unwrap().charges_test_url(url);
-        let result = fees::calculate(&read, &snapshot().await, "NRML", 144870151).await;
+        let result = fees::calculate(
+            &read,
+            &snapshot().await,
+            "NRML",
+            144870151,
+            "CRUDEOIL26SEPFUT",
+        )
+        .await;
         server.await.unwrap();
         if wrong_side {
             assert!(

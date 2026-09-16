@@ -38,10 +38,11 @@ pub fn account(
     );
     Ok(factory.generate_account_state(vec![balance], vec![], true, now, now, Some(info)))
 }
-pub fn order(
+pub fn order_for(
     b: &BrokerOrder,
     account: AccountId,
     client: Option<ClientOrderId>,
+    instrument_id: &str,
     now: UnixNanos,
 ) -> Result<OrderStatusReport> {
     super::super::request::broker_id(&b.order_id)?;
@@ -108,7 +109,7 @@ pub fn order(
     );
     let mut report = OrderStatusReport::new(
         account,
-        "CRUDEOIL26SEPFUT.MCX".into(),
+        instrument_id.into(),
         client,
         VenueOrderId::from(b.order_id.as_str()),
         Some(side),
@@ -132,17 +133,19 @@ pub fn order(
     }
     Ok(report)
 }
-pub fn positions(
+pub fn positions_for(
     snapshot: &Snapshot,
     account: AccountId,
     product: &str,
     token: u32,
+    instrument_id: &str,
+    symbol: &str,
     now: UnixNanos,
 ) -> Result<Vec<PositionStatusReport>> {
     let rows: Vec<_> = snapshot
         .positions
         .iter()
-        .filter(|p| p.exchange == "MCX" && p.tradingsymbol == "CRUDEOIL26SEPFUT")
+        .filter(|p| p.exchange == "MCX" && p.tradingsymbol == symbol)
         .collect();
     ensure!(
         rows.iter()
@@ -170,7 +173,7 @@ pub fn positions(
         .ok_or_else(|| anyhow!("Position quantity out of range"))?;
     Ok(vec![PositionStatusReport::new(
         account,
-        "CRUDEOIL26SEPFUT.MCX".into(),
+        instrument_id.into(),
         if qty > 0 {
             PositionSide::Long
         } else if qty < 0 {
@@ -187,16 +190,22 @@ pub fn positions(
     )])
 }
 
-pub(crate) fn fills(
+pub(crate) struct FillScope<'a> {
+    pub account: AccountId,
+    pub product: &'a str,
+    pub token: u32,
+    pub instrument_id: &'a str,
+    pub symbol: &'a str,
+    pub now: UnixNanos,
+}
+
+pub(crate) fn fills_for(
     snapshot: &Snapshot,
-    account: AccountId,
-    product: &str,
-    token: u32,
-    now: UnixNanos,
+    scope: FillScope<'_>,
     fees: &super::fees::Fees,
     owners: &std::collections::BTreeMap<String, ClientOrderId>,
 ) -> Result<Vec<FillReport>> {
-    let groups = super::fees::groups(snapshot, product, token)?;
+    let groups = super::fees::groups_for(snapshot, scope.product, scope.token, scope.symbol)?;
     let mut reports = vec![];
     for trades in groups.values() {
         for t in trades {
@@ -219,7 +228,7 @@ pub(crate) fn fills(
                     .unwrap_or(&order.order_timestamp),
             )?;
             ensure!(
-                accepted <= ts && ts <= last && last <= now,
+                accepted <= ts && ts <= last && last <= scope.now,
                 "Inconsistent fill chronology"
             );
             let fee = fees
@@ -231,8 +240,8 @@ pub(crate) fn fills(
                 _ => bail!("Invalid fill side"),
             };
             reports.push(FillReport::new(
-                account,
-                "CRUDEOIL26SEPFUT.MCX".into(),
+                scope.account,
+                scope.instrument_id.into(),
                 t.order_id.as_str().into(),
                 t.trade_id.as_str().into(),
                 side,
@@ -244,7 +253,7 @@ pub(crate) fn fills(
                 owners.get(&t.order_id).copied(),
                 None,
                 ts,
-                now,
+                scope.now,
                 None,
             ));
         }

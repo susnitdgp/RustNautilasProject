@@ -30,6 +30,8 @@ fn config() -> Config {
     Config {
         user_id: "TEST123".into(),
         product: "NRML".into(),
+        instrument_id: "CRUDEOIL26SEPFUT.MCX".into(),
+        symbol: "CRUDEOIL26SEPFUT".into(),
         instrument_token: 144870151,
         credentials: Arc::new(
             crate::credentials::KiteCredentials::new(
@@ -299,6 +301,8 @@ async fn native_mass_reconciliation_preserves_owned_ids_fills_and_positions() {
             c.factory.clone(),
             "NRML".into(),
             144870151,
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            "CRUDEOIL26SEPFUT".into(),
         ),
     )));
     let order = native_order();
@@ -371,6 +375,8 @@ async fn native_polling_delivers_delayed_fill_without_resubmitting() {
             c.factory.clone(),
             "NRML".into(),
             144870151,
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            "CRUDEOIL26SEPFUT".into(),
         ),
     )));
     c.connect().await.unwrap();
