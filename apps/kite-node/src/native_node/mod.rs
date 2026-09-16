@@ -52,3 +52,5 @@ mod supertrend_revision;
 mod supertrend_session;
 
 mod supertrend_owner_monitor;
+
+mod slack_alerts;

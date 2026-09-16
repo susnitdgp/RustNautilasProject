@@ -47,7 +47,9 @@ The code entry point for later controlled broker validation is native-supertrend
 
 Files: strategy supertrend_actor.rs; session/deadline supertrend_session.rs; LiveNode assembly supertrend_live_runner.rs; corrected history supertrend_revision.rs; native broker gate crates/kite-adapter/src/execution/native_client/production.rs; wire fields crates/kite-adapter/src/execution/request.rs; native translation execution/native.rs; order/fill reconciliation execution/broker_events.rs. Supertrend files are under apps/kite-node/src/native_node/.
 
-## Background paper service
+## Manual launch selected; optional service reference
+
+The user selected manual terminal launch on September 16; service installation is not a deployment requirement. Use the session-paper command above and see UnattendedValidation.md and SlackAlerts.md. The following service commands are optional reference only.
 
 The reviewed service definition is deploy/kite-supertrend-paper.service. It runs as ubuntu, does not restart automatically, and accepts SIGTERM for graceful shutdown. The service uses the ordinary release binary (real-order feature disabled). No timer or boot activation is configured. Installation and starting during trading hours:
 

@@ -83,6 +83,40 @@ fn run_backend(
     production: Option<kite_adapter::execution::native_client::production::Settings>,
     recovery_fixture: bool,
 ) -> Result<()> {
+    let alerts = super::slack_alerts::Alerts::from_env(sim)?;
+    let mode = if production.is_some() {
+        "PRODUCTION"
+    } else {
+        "PAPER/MOCK"
+    };
+    alerts.emit(format!(
+        "CRUDEOIL 5m Supertrend [{mode}]: STARTING; initialization in progress"
+    ));
+    let result = run_backend_inner(
+        config,
+        seconds,
+        sim,
+        kite_mock,
+        production,
+        recovery_fixture,
+        &alerts,
+    );
+    alerts.emit(format!("CRUDEOIL 5m Supertrend [{mode}]: {}", if result.is_ok() {
+        "CLEAN STOP: flat, no pending orders; inspect saved run report"
+    } else {
+        "FAILED / REVIEW REQUIRED: inspect terminal logs and Redis before restart; do not assume flat"
+    }));
+    result
+}
+fn run_backend_inner(
+    config: &str,
+    seconds: u64,
+    sim: bool,
+    kite_mock: bool,
+    production: Option<kite_adapter::execution::native_client::production::Settings>,
+    recovery_fixture: bool,
+    alerts: &super::slack_alerts::Alerts,
+) -> Result<()> {
     let real = production.is_some();
     if let Some(s) = &production {
         s.validate()?;
@@ -193,6 +227,8 @@ fn run_backend(
             handle.stop();
         });
         println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"live_orders_enabled":real}));
+        alerts.emit(format!("CRUDEOIL 5m: run {id} initialized; real_orders={real}"));
+        let mut was_paused=false;
         let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock);
         let result={
             let run=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted);
@@ -201,7 +237,14 @@ fn run_backend(
             refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {tokio::select! {
                 result=&mut run => break result,
-                _=refresh.tick()=>display.render(&state.borrow(),&control),
+                _=refresh.tick()=> {
+                    display.render(&state.borrow(),&control);
+                    let paused=control.paused.load(Ordering::Acquire);
+                    if paused != was_paused {
+                        alerts.emit(format!("CRUDEOIL run {id}: {}", if paused {"PAUSED: data recovery required"} else {"RESUMED: validated history rebuilt"}));
+                        was_paused=paused;
+                    }
+                },
             }}
         };
         display.render(&state.borrow(),&control);

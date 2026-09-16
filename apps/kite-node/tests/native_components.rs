@@ -392,3 +392,146 @@ fn revised_history_rebuilds_in_live_node_without_replaying_orders() {
     assert_eq!(result["fills"], 6);
     assert_eq!(result["open_contracts"].as_f64(), Some(0.));
 }
+
+#[cfg(unix)]
+mod unattended {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    fn start(redis: &Redis, command: &str) -> (Child, String) {
+        let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/production-supertrend.json")
+            .canonicalize()
+            .unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+            .args([command, config.to_str().unwrap()])
+            .env("KITE_REDIS_URL", &redis.url)
+            .current_dir(redis.dir.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        reader.read_line(&mut line).unwrap();
+        child.stdout = Some(reader.into_inner());
+        let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+        (child, event["namespace"].as_str().unwrap().to_owned())
+    }
+    fn bounded_wait(child: &mut Child) -> std::process::ExitStatus {
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("unattended fault did not stop within 40 seconds");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    #[test]
+    fn selected_owner_loss_stops_and_preserves_foreign_owner() {
+        let redis = Redis::start();
+        let (mut child, id) = start(&redis, "native-supertrend-sim");
+        let mut con = redis::Client::open(redis.url.as_str())
+            .unwrap()
+            .get_connection()
+            .unwrap();
+        let key = format!("kite:paper:supertrend:sim:{id}:owner");
+        redis::cmd("SET")
+            .arg(&key)
+            .arg("replacement-owner")
+            .query::<()>(&mut con)
+            .unwrap();
+        assert!(!bounded_wait(&mut child).success());
+        let owner: String = redis::cmd("GET").arg(&key).query(&mut con).unwrap();
+        assert_eq!(owner, "replacement-owner");
+        let summary: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                redis
+                    .dir
+                    .path()
+                    .join(format!("data/supertrend-live/{id}/summary.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(summary["status"], "ReviewRequired");
+        assert_eq!(summary["live_orders_enabled"], false);
+        assert!(
+            summary["feed_fault"]
+                .as_str()
+                .unwrap()
+                .contains("ownership")
+        );
+    }
+    #[test]
+    fn selected_hard_crash_blocks_account_restart_without_resubmission() {
+        let redis = Redis::start();
+        let (mut child, id) = start(&redis, "native-supertrend-kite-mock");
+        let mut con = redis::Client::open(redis.url.as_str())
+            .unwrap()
+            .get_connection()
+            .unwrap();
+        let key = "susanta:nautilus:native-kite:account:{MOCK}";
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let attempts: Option<u64> = redis::cmd("HGET")
+                .arg(key)
+                .arg("command_attempts")
+                .query(&mut con)
+                .unwrap();
+            if attempts.unwrap_or(0) > 0 {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("mock never dispatched");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let attempts: u64 = redis::cmd("HGET")
+            .arg(key)
+            .arg("command_attempts")
+            .query(&mut con)
+            .unwrap();
+        let health = redis.run(&["native-kite-status", "MOCK"]);
+        assert_eq!(health["restart_blocked"], true);
+        assert_eq!(health["owner"], id);
+        let (mut restarted, _) = start(&redis, "native-supertrend-kite-mock");
+        assert!(!bounded_wait(&mut restarted).success());
+        let after: u64 = redis::cmd("HGET")
+            .arg(key)
+            .arg("command_attempts")
+            .query(&mut con)
+            .unwrap();
+        assert_eq!(after, attempts, "restart submitted an additional command");
+        let health = redis.run(&["native-kite-status", "MOCK"]);
+        assert_eq!(health["owner"], id);
+        assert_eq!(health["restart_blocked"], true);
+        let recovered = redis.run(&["native-recover", &id]);
+        assert_eq!(recovered["resubmissions"], 0);
+    }
+    #[test]
+    fn selected_redis_outage_stops_without_claiming_clean_shutdown() {
+        let mut redis = Redis::start();
+        let (mut child, id) = start(&redis, "native-supertrend-sim");
+        redis.child.kill().unwrap();
+        redis.child.wait().unwrap();
+        assert!(!bounded_wait(&mut child).success());
+        let report = redis
+            .dir
+            .path()
+            .join(format!("data/supertrend-live/{id}/summary.json"));
+        if report.exists() {
+            let summary: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
+            assert_ne!(summary["status"], "Clean");
+        }
+    }
+}
