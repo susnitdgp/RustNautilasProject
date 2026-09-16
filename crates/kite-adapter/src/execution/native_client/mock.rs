@@ -103,6 +103,7 @@ impl MockBroker {
                 trades: vec![],
                 positions: vec![],
                 funds: Funds {
+                    ledger: Some("mock"),
                     enabled: true,
                     net: Decimal::from(1_000_000),
                     utilised: Utilised {

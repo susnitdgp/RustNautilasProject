@@ -83,3 +83,9 @@ The selected broker configuration and native mock now use MIS. Orders remain MAR
 At the user request, target/release/kite-node was rebuilt with kite-adapter/live-orders enabled. That binary is capable of production dispatch only after the separate account/configuration gates pass. The committed broker JSON still contains live_orders_enabled=false and expected_user_id=REPLACE_ME. No trading process was started and no real orders were sent. The build artifact is not stored in Git.
 
 Feature-enabled adapter tests, selected native MIS mock, session deadline tests, Clippy and the release build passed. Actual broker and full-session forward validation remain outstanding.
+
+## Unified funds ledger (MCX migration)
+Zerodha's August 19, 2025 notice confirms that migrated MCX trading uses the same funds as equity: https://zerodha.com/marketintel/bulletin/424026/migration-of-commodity-trading-from-zerodha-commodities-pvt-ltd-mcx .
+The native broker now reads /user/margins. After verifying the account identity and MCX/product permissions, it uses the commodity ledger when enabled; otherwise it requires the equity ledger to be enabled and uses that unified ledger. The balances are never added together. Both ledgers disabled, unverified MCX access or unsupported negative debits still fail. Sandbox keeps its separate commodity endpoint. Native account metadata identifies the chosen funds_ledger.
+Read-only diagnostic: ./target/release/kite-node native-kite-margins-check config/kite-production.json . This command only reads profile and margin endpoints; it does not acquire account ownership, place orders or clear recovery records. It checks funds selection, not full trading readiness or sufficient margin for an order.
+A prior failed run's recovery ownership must still be reviewed separately. This mapping fix does not automatically unlock or restart production.

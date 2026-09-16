@@ -6,6 +6,14 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match (command, &args[1..]) {
+        ("native-kite-margins-check", [config]) => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|r| {
+                r.block_on(kite_adapter::execution::native_client::margins::check(
+                    config,
+                ))
+            })
+            .map(|v| println!("{v}")),
         ("native-supertrend-recovery-sim", [config]) => {
             super::supertrend_live_runner::run_recovery_fixture(config)
         }

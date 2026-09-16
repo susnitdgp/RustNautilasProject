@@ -1,4 +1,4 @@
-//! Commodity account balances represent trading resources, not portfolio equity.
+//! Selected Kite ledger represents trading resources, not portfolio equity.
 use super::super::broker_events::{BrokerOrder, timestamp};
 use super::broker::Snapshot;
 use anyhow::{Result, anyhow, bail, ensure};
@@ -15,7 +15,7 @@ pub fn account(
     let funds = &snapshot.funds;
     ensure!(
         funds.enabled && funds.utilised.debits >= Decimal::ZERO,
-        "Unsupported commodity margin state"
+        "Selected trading funds ledger disabled or negative utilised debits"
     );
     let money = |v: Decimal| {
         Money::from_str(&format!("{:.2} INR", v.round_dp(2))).map_err(anyhow::Error::msg)
@@ -27,9 +27,10 @@ pub fn account(
         .ok_or_else(|| anyhow!("Kite trading balance overflow"))?;
     let balance = AccountBalance::new_checked(total, locked, free)?;
     let mut info = Params::default();
+    info.insert("funds_ledger".into(), serde_json::json!(funds.ledger));
     info.insert(
         "balance_basis".into(),
-        serde_json::json!("Kite commodity trading resources; not equity"),
+        serde_json::json!("Kite selected-ledger trading resources; not portfolio equity"),
     );
     info.insert(
         "reported_commissions_available".into(),

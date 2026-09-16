@@ -16,6 +16,7 @@ pub(crate) enum Endpoint {
     Orders,
     Trades,
     CommodityMargins,
+    Margins,
 }
 impl Endpoint {
     fn path(&self) -> &'static str {
@@ -25,6 +26,7 @@ impl Endpoint {
             Self::Orders => "/orders",
             Self::Trades => "/trades",
             Self::CommodityMargins => "/user/margins/commodity",
+            Self::Margins => "/user/margins",
         }
     }
 }

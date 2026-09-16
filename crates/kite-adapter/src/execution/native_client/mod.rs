@@ -11,6 +11,7 @@ pub mod sandbox;
 mod shutdown;
 // Native Kite client. Real mutations remain disabled at this boundary.
 mod broker;
+pub mod margins;
 mod reports;
 
 use self::broker::{Broker, KiteBroker, Snapshot};

@@ -46,6 +46,7 @@ fn snapshot() -> Snapshot {
         trades: vec![],
         positions: vec![],
         funds: Funds {
+            ledger: Some("mock"),
             enabled: true,
             net: Decimal::from(9000),
             utilised: Utilised {

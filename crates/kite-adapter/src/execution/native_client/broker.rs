@@ -22,6 +22,8 @@ pub struct BrokerPosition {
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct Funds {
+    #[serde(skip)]
+    pub ledger: Option<&'static str>,
     pub enabled: bool,
     pub net: Decimal,
     pub utilised: Utilised,
@@ -63,6 +65,7 @@ pub(crate) struct KiteBroker {
     user_id: String,
     product: String,
     sandbox: bool,
+    verified_mcx: std::sync::atomic::AtomicBool,
 }
 impl KiteBroker {
     pub(crate) fn sandbox(
@@ -76,11 +79,13 @@ impl KiteBroker {
             user_id,
             product,
             sandbox: true,
+            verified_mcx: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn new(credentials: &KiteCredentials, user_id: String, product: String) -> Result<Self> {
         Ok(Self {
             sandbox: false,
+            verified_mcx: std::sync::atomic::AtomicBool::new(false),
             read: ReadClient::new(credentials)?,
             orders: KiteOrderTransport::new(credentials)?,
             user_id,
@@ -123,6 +128,8 @@ impl Broker for KiteBroker {
             exchanges: Vec<String>,
             products: Vec<String>,
         }
+        self.verified_mcx
+            .store(false, std::sync::atomic::Ordering::Release);
         let p: Profile = self.read.get(Endpoint::Profile).await?;
         ensure!(
             p.user_id == self.user_id
@@ -130,6 +137,8 @@ impl Broker for KiteBroker {
                 && p.products.contains(&self.product),
             "Kite account identity or permissions mismatch"
         );
+        self.verified_mcx
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
     async fn snapshot(&self) -> Result<Snapshot> {
@@ -140,7 +149,16 @@ impl Broker for KiteBroker {
             net: Vec<BrokerPosition>,
         }
         let positions: Positions = self.read.get(Endpoint::Positions).await?;
-        let funds = self.read.get(Endpoint::CommodityMargins).await?;
+        let funds = if self.sandbox {
+            let mut funds: Funds = self.read.get(Endpoint::CommodityMargins).await?;
+            funds.ledger = Some("sandbox_commodity");
+            funds
+        } else {
+            super::margins::select(
+                self.read.get(Endpoint::Margins).await?,
+                self.verified_mcx.load(std::sync::atomic::Ordering::Acquire),
+            )?
+        };
         let orders: Vec<BrokerOrder> = self.read.get(Endpoint::Orders).await?;
         let mut first = first;
         let mut orders = orders;
