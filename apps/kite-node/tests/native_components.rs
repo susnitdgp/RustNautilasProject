@@ -264,3 +264,98 @@ fn sigterm_drains_native_node_and_leaves_flat_account_restartable() {
     );
     assert_eq!(redis.run(&["native-kite-status", "MOCK"])["state"], "Clean");
 }
+
+#[test]
+fn selected_supertrend_live_node_trades_both_directions_and_flattens() {
+    let redis = Redis::start();
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/production-supertrend.json")
+        .canonicalize()
+        .unwrap();
+    let result = redis.run(&["native-supertrend-sim", config.to_str().unwrap()]);
+    assert_eq!(result["status"], "Clean");
+    assert_eq!(result["runtime"], "LiveNode");
+    assert_eq!(result["live_orders_enabled"], false);
+    assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+    assert!(result["fills"].as_u64().unwrap() >= 4);
+    let folder = redis
+        .dir
+        .path()
+        .join(result["report_directory"].as_str().unwrap());
+    let signals: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(folder.join("signals.json")).unwrap())
+            .unwrap();
+    for intent in ["BUY", "BUY_EXIT", "SELL", "SELL_EXIT"] {
+        assert!(
+            signals.iter().any(|s| s["intent"] == intent),
+            "{intent} missing"
+        );
+    }
+    let mut con = redis::Client::open(redis.url.as_str())
+        .unwrap()
+        .get_connection()
+        .unwrap();
+    let id = result["namespace"].as_str().unwrap();
+    let owner: Option<String> = redis::cmd("GET")
+        .arg(format!("kite:paper:supertrend:sim:{id}:owner"))
+        .query(&mut con)
+        .unwrap();
+    assert!(owner.is_none());
+    let health: String = redis::cmd("HGET")
+        .arg(format!("kite:paper:supertrend:{id}:health"))
+        .arg("state")
+        .query(&mut con)
+        .unwrap();
+    assert_eq!(health, "Clean");
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_supertrend_sigterm_flattens_before_stopping_node() {
+    use std::io::{BufRead, BufReader};
+    let redis = Redis::start();
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/production-supertrend.json")
+        .canonicalize()
+        .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+        .args(["native-supertrend-sim", config.to_str().unwrap()])
+        .env("KITE_REDIS_URL", &redis.url)
+        .current_dir(redis.dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    reader.read_line(&mut first).unwrap();
+    assert!(first.contains("supertrend_live_started"));
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut result = None;
+    for line in reader.lines() {
+        let line = line.unwrap();
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
+            result = Some(value);
+        }
+    }
+    assert!(child.wait().unwrap().success());
+    let result = result.unwrap();
+    assert_eq!(result["status"], "Clean");
+    assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+    assert!(result["fills"].as_u64().unwrap() >= 2);
+    let path = redis
+        .dir
+        .path()
+        .join(result["report_directory"].as_str().unwrap())
+        .join("signals.json");
+    let signals: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert!(signals.iter().any(|s| s["reason"] == "shutdown"));
+}

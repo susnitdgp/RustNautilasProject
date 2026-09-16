@@ -21,6 +21,8 @@ pub mod supertrend_backtest;
 mod supertrend_batch;
 mod supertrend_confirmation;
 pub mod supertrend_input;
+mod supertrend_interval_batch;
+mod ten_minute;
 pub mod vwap_actor;
 pub mod vwap_backtest;
 pub mod vwap_batch;
@@ -29,3 +31,16 @@ pub mod vwap_filters;
 pub mod vwap_input;
 pub mod vwap_report;
 pub mod vwap_signal;
+
+mod supertrend_stop_actor;
+mod supertrend_stop_backtest;
+mod supertrend_stop_batch;
+mod supertrend_stop_policy;
+
+mod production;
+
+mod supertrend_live_bars;
+mod supertrend_live_control;
+mod supertrend_live_data;
+mod supertrend_live_lease;
+mod supertrend_live_runner;

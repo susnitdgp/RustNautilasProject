@@ -1,0 +1,14 @@
+{
+  "strategy": "supertrend_macd_vwap",
+  "instrument": "CRUDEOIL26SEPFUT.MCX",
+  "interval": "5minute",
+  "contracts": 1,
+  "supertrend_period": 7,
+  "supertrend_multiplier": 2,
+  "macd_fast": 12,
+  "macd_slow": 26,
+  "macd_signal": 9,
+  "session_vwap": true,
+  "atr_stop_enabled": false,
+  "live_orders_enabled": false
+}

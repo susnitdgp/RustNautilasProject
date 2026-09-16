@@ -154,3 +154,59 @@ Exits remain Supertrend reversal or session close, with no extra fixed ATR stop.
 Earlier EMA/VWAP baseline: 69 trades, INR 101,500 gross, drawdown INR 33,100;
 different exits and trading frequency mean costs matter to any final choice.
 No default changed; real orders disabled. Reports end in 2c404264-451e-4255-8a6a-20d0dbaad733.
+
+### Fixed ATR stop comparison, 17 August–15 September
+See doc/SupertrendStopComparison.md. Same confirmed Supertrend/MACD/VWAP strategy,
+5-minute candles, one lot; fixed native 1.5 ATR(14) stop and fresh-direction
+re-entry block carried across sessions through Redis.
+Current: 143 trades, INR 108,100 gross, INR 46,200 closed-trade drawdown.
+Stop variant: 143 trades, 70 stop-outs, INR 50,700 gross, INR 85,800 drawdown.
+Worst trade improves from INR -14,900 to -12,500, but overall results worsen.
+Baseline reproduces exactly. All stop prices and re-entry blocks audited.
+197 workspace tests, Clippy and formatting passed. No default changed;
+real orders disabled. Results directory ends cbc3cbb1-97fc-4165-91f9-c4b3f894922e.
+
+### Ten-minute comparison without the added stop
+Same 17 August–15 September 2026 period and one CRUDEOIL lot.
+Supertrend(7,2) + MACD(12,26,9) + session VWAP, reversal/EOD exits only.
+Ten-minute bars aggregate saved five-minute pairs: 1,866 evaluated bars,
+435 prior warmup bars. No new historical fetch or stop orders.
+5-minute: 143 trades, INR 108,100 gross, INR 46,200 closed-trade drawdown.
+10-minute: 89 trades, INR 87,100 gross, INR 49,900 drawdown.
+Worst loss: INR 14,900 versus INR 23,200; win rate 37.8% versus 42.7%.
+Exact five-minute reproduction and all aggregation/entry/exit audits passed.
+No default changed; real orders disabled. See doc/SupertrendIntervalComparison.md.
+Results directory ends 19a53ea9-e08f-4868-815e-1d31516048fa.
+
+### Production deployment preparation: selected five-minute strategy
+User selected Supertrend(7,2) + MACD(12,26,9) + session VWAP, one lot,
+five-minute candles, no added ATR stop. Pinned in config/production-supertrend.json.
+Do not run native-node-paper as this strategy: runner.rs still wires the older
+tick crossover. The selected BarStrategy is currently backtest-only.
+native-production-preflight validates the selection and explicitly rejects live
+activation with its known blockers. native-production-verify exercises the
+selected strategy offline with the supplied release binary.
+See doc/ProductionDeployment.md and deploy/{prepare_candidate,verify_candidate}.py.
+Candidate packaging does not install/start a trading service or enable orders.
+Live bars/warmup, gap/reconnect recovery, supported order policy, selected-strategy
+forward testing and manual review remain required. Real orders remain disabled.
+
+Release candidate prepared and verified on 16 September 2026:
+    /home/ubuntu/kite-deploy/releases/20260916T072342Z-0f9f20e
+Optimized build completed in 15m37s; 200 workspace tests passed plus Clippy/format.
+Copied binary reproduces September 15 exactly: 6 trades, 12 fills, INR 21,800
+gross, flat, no stop orders. manifest.json records source/binary/config hashes.
+Source includes uncommitted changes; archive captures them explicitly.
+Status is CANDIDATE_NOT_ACTIVATED. No live trading service installed or started.
+Production remains incomplete until the selected strategy is wired to LiveNode,
+forward-verified and reviewed. Do not confuse this candidate with live deployment.
+
+## September 16: selected strategy connected to LiveNode
+
+See doc/SupertrendLiveNode.md. New native-supertrend-sim and native-supertrend-paper commands run the selected five-minute Supertrend(7,2) + MACD(12,26,9) + session VWAP BarStrategy through LiveNode and Sandbox. One lot; no added ATR stop; real orders disabled. Paper duration 5–290 seconds.
+
+Completed Kite historical bars warm up indicators and poll forward; WebSocket quotes provide simulated execution. Entries require fresh quotes and the latest completed bar after startup. Warmup gaps, revisions and feed faults stop admission. Hosted-mode SIGTERM drains a reducing exit before stopping; unresolved state retains a Redis owner for review.
+
+Verification: 205 tests across workspace/final package runs, one existing ignored fixture; Clippy/fmt. Both-direction simulation and in-position SIGTERM regression pass. A clean short real-data run received 29 quotes. Longer real-data run 5761e7df-90b8-4a67-a28a-d2d213ec0ed4 processed one new bar and two simulated fills, then detected a revised completed candle and stopped flat. Its paired fills and final native cache were reviewed; the paper lock was released while retaining all fault/health reports. No service was activated, no real orders sent. Continuous unattended operation remains unqualified; historical revisions need an explicit recovery policy before enabling that scope.
+
+Current code is newer than the inactive release candidate. Use cargo run for this connection. Do not use the old native-node-paper command for Supertrend; it still runs the tick crossover example.

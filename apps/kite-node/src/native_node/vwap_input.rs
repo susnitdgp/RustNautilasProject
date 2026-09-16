@@ -65,14 +65,22 @@ pub fn range(start: NaiveDate, end: NaiveDate) -> Result<Vec<NaiveDate>> {
 }
 pub fn validate(input: &Input, date: NaiveDate) -> Result<usize> {
     ensure!(
+        input.interval == "5minute",
+        "VWAP strategy requires five-minute bars"
+    );
+    validate_interval(input, date)
+}
+pub fn validate_interval(input: &Input, date: NaiveDate) -> Result<usize> {
+    let step = step_ns(&input.interval)?;
+    ensure!(
         input.instrument_id == "CRUDEOIL26SEPFUT.MCX"
             && input.instrument_token == 144870151
-            && input.interval == "5minute",
+            && matches!(input.interval.as_str(), "5minute" | "10minute"),
         "Wrong instrument or interval"
     );
     kite_adapter::http::historical::validate(&input.candles)?;
     let (start, end) = bounds(date)?;
-    let expected = ((end - start) / 300_000_000_000) as usize;
+    let expected = ((end - start) / step) as usize;
     let mut count = 0;
     let mut warmup = 0;
     for c in &input.candles {
@@ -87,7 +95,7 @@ pub fn validate(input: &Input, date: NaiveDate) -> Result<usize> {
                 .ok_or_else(|| anyhow::anyhow!("Timestamp overflow"))?,
         )?;
         ensure!(
-            ts == start + count as u64 * 300_000_000_000,
+            ts == start + count as u64 * step,
             "Missing or out-of-session candle on {date} at {}",
             c.timestamp
         );
@@ -102,6 +110,24 @@ pub fn validate(input: &Input, date: NaiveDate) -> Result<usize> {
 }
 pub fn replay(input: &Input, date: NaiveDate, bt: BarType) -> Result<Vec<Data>> {
     validate(input, date)?;
+    replay_interval(input, date, bt)
+}
+pub fn step_ns(interval: &str) -> Result<u64> {
+    match interval {
+        "5minute" => Ok(300_000_000_000),
+        "10minute" => Ok(600_000_000_000),
+        _ => anyhow::bail!("Only five or ten-minute bars are supported"),
+    }
+}
+pub fn replay_interval(input: &Input, date: NaiveDate, bt: BarType) -> Result<Vec<Data>> {
+    validate_interval(input, date)?;
+    let step = step_ns(&input.interval)?;
+    let expected: BarType = format!(
+        "CRUDEOIL26SEPFUT.MCX-{}-MINUTE-LAST-EXTERNAL",
+        step / 60_000_000_000
+    )
+    .parse()?;
+    ensure!(bt == expected, "Bar type does not match interval");
     let mut data = Vec::new();
     for c in &input.candles {
         let t = c.time()?;
@@ -114,7 +140,7 @@ pub fn replay(input: &Input, date: NaiveDate, bt: BarType) -> Result<Vec<Data>> 
                 data.push(quote(bt, c.open, open + offset));
             }
         }
-        let close = open + 300_000_000_000;
+        let close = open + step;
         data.push(Data::Bar(Bar::new(
             bt,
             Price::new(c.open, 0),

@@ -56,7 +56,8 @@ pub fn execute_variant(
 ) -> Result<serde_json::Value> {
     let count = input::validate(&data, date)?;
     let (instrument, _) = crate::paper_flow::simulation::fixture()?;
-    let bars: BarType = "CRUDEOIL26SEPFUT.MCX-5-MINUTE-LAST-EXTERNAL".parse()?;
+    let minutes = super::vwap_input::step_ns(&data.interval)? / 60_000_000_000;
+    let bars: BarType = format!("CRUDEOIL26SEPFUT.MCX-{minutes}-MINUTE-LAST-EXTERNAL").parse()?;
     let replay = input::replay(&data, date, bars)?;
     report::json(folder, "candles.json", &data)?;
     let run_id = instance.to_string();
@@ -159,11 +160,11 @@ pub fn execute_variant(
     let output = serde_json::json!({
         "event":"native_supertrend_backtest_complete","status":"completed","namespace":run_id,
         "date_ist":date.to_string(),"instrument":data.instrument_id,"data_source":data.source,
-        "interval":"5minute","atr_period":7,"atr_smoothing":"Nautilus Wilder (first true-range seed)",
+        "interval":data.interval,"atr_period":7,"atr_smoothing":"Nautilus Wilder (first true-range seed)",
         "multiplier":2,"warmup_bars":data.candles.len()-count,"session_bars":count,
         "entry_confirmation":filtered,"statistics":stats,
         "execution_model":"completed-bar signal, next-open synthetic zero-spread quote; separate exit then entry",
-        "session_ist":if count==78 {"17:00–23:30"} else {"09:00–23:30"},"position_size_contracts":1,"contract_multiplier":100,
+        "session_ist":if (end-start)==6*3_600_000_000_000+30*60_000_000_000 {"17:00–23:30"} else {"09:00–23:30"},"position_size_contracts":1,"contract_multiplier":100,
         "end_of_day":"forced simulated exit at last candle close",
         "fees":"excluded","slippage":"excluded","pnl_basis":"gross before fees, spread and slippage",
         "stop_loss_target":"not enabled; exit on Supertrend reversal or session close",
@@ -187,7 +188,7 @@ pub fn execute_variant(
     report::json(folder, "summary.json", &output)?;
     let pnl = &output["results"][0]["stats_pnls"]["INR"]["PnL (total)"];
     let text = format!(
-        "# Supertrend backtest — {date}\n\n- CRUDEOIL26SEPFUT.MCX, 5-minute candles, ATR(7) Wilder, multiplier 2.\n- Data: {}. Warmup bars: {}. Session bars: {count}. Entry confirmations: {filtered}.\n- Simulated fills: {}. Open contracts: {}.\n- Gross P&L (INR): {}. Fees, spread and slippage excluded.\n- Signals use completed bars; executions use the next open. End-of-day exit uses the last close.\n- No extra stop-loss/target overlay. No real orders sent.\n\nSee summary.json for Nautilus statistics, fills.json, signals.json, indicators.json and candles.json for the audit trail.\n",
+        "# Supertrend backtest — {date}\n\n- CRUDEOIL26SEPFUT.MCX, {minutes}-minute candles, ATR(7) Wilder, multiplier 2.\n- Data: {}. Warmup bars: {}. Session bars: {count}. Entry confirmations: {filtered}.\n- Simulated fills: {}. Open contracts: {}.\n- Gross P&L (INR): {}. Fees, spread and slippage excluded.\n- Signals use completed bars; executions use the next open. End-of-day exit uses the last close.\n- No extra stop-loss/target overlay. No real orders sent.\n\nSee summary.json for Nautilus statistics, fills.json, signals.json, indicators.json and candles.json for the audit trail.\n",
         data.source,
         data.candles.len() - count,
         output["fills"],

@@ -50,10 +50,10 @@ pub fn bounds(date: NaiveDate) -> Result<(u64, u64)> {
     Ok((parse("09:00:00")?, parse("23:30:00")?))
 }
 pub fn validate(input: &Input, date: NaiveDate) -> Result<usize> {
-    super::vwap_input::validate(input, date)
+    super::vwap_input::validate_interval(input, date)
 }
 pub fn replay(input: &Input, date: NaiveDate, bar_type: BarType) -> Result<Vec<Data>> {
-    super::vwap_input::replay(input, date, bar_type)
+    super::vwap_input::replay_interval(input, date, bar_type)
 }
 #[cfg(test)]
 pub fn fixture() -> Input {
