@@ -21,7 +21,7 @@ cargo build --locked --release -p kite-node -j 3
 ./target/release/kite-node native-supertrend-paper config/production-supertrend.json 360
 ```
 
-Session mode must start during the supported trading session. It begins graceful shutdown 60 seconds before the calendar close, leaving time to handle an exit. It does not start again the next day. Bounded paper runs accept 5–86360 seconds; use session mode to enforce the market-close deadline.
+Session mode must start during the supported trading session. It begins graceful shutdown 30 minutes before the calendar close, leaving time to handle an exit. It does not start again the next day. Bounded paper runs accept 5–86360 seconds; use session mode to enforce the market-close deadline.
 
 ## Recovery, ownership and stops
 
@@ -71,8 +71,15 @@ Mock execution verifies protected-market request serialization, broker conversio
 
 ## Verification checkpoint, September 16
 
-Workspace run: 212 passing tests plus one new passing protected-market conversion/partial-cancellation test (213 total covered); one existing ignored fixture. Feature-enabled adapter gate: 109 passing tests. Selected-strategy native mock, Redis reconstruction, corrected-history replay and SIGTERM regressions passed. Formatting and Clippy with warnings denied checked. The shipped optimized binary is built without the live-orders feature.
+Workspace run: 212 passing tests plus one new passing protected-market conversion/partial-cancellation test (213 total covered); one existing ignored fixture. Feature-enabled adapter gate: 109 passing tests. Selected-strategy native mock, Redis reconstruction, corrected-history replay and SIGTERM regressions passed. Formatting and Clippy with warnings denied checked. The earlier optimized verification binary was built without the live-orders feature; see the newer build checkpoint below.
 
 Live-data paper run 55cb0796-3c95-4071-80da-eb2fbb05af57 lasted 360 seconds: 332 accepted quotes, 843 warmup plus one new completed candle, one successful indicator rebuild after a correction, two simulated fills, no open orders or position, Clean final status. This verifies recovery over a candle boundary and operation beyond the old 300-second feed limit. It is not a whole-session or real-broker qualification.
 
 An older revision-stop run c83daa6e-0c44-4353-8d8f-b0c0b7661521 was reconstructed read-only from native Redis and confirmed flat before releasing its paper ownership. Its reports and health records were retained.
+
+## MIS build checkpoint
+The selected broker configuration and native mock now use MIS. Orders remain MARKET/DAY with market_protection=-1. The application starts graceful shutdown 30 minutes before the configured session close; this is an application buffer, not a verified broker square-off deadline. Historical backtest results have not been rerun with this earlier exit.
+
+At the user request, target/release/kite-node was rebuilt with kite-adapter/live-orders enabled. That binary is capable of production dispatch only after the separate account/configuration gates pass. The committed broker JSON still contains live_orders_enabled=false and expected_user_id=REPLACE_ME. No trading process was started and no real orders were sent. The build artifact is not stored in Git.
+
+Feature-enabled adapter tests, selected native MIS mock, session deadline tests, Clippy and the release build passed. Actual broker and full-session forward validation remain outstanding.

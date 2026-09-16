@@ -1,6 +1,6 @@
 {
   "expected_user_id": "REPLACE_ME",
-  "product": "NRML",
+  "product": "MIS",
   "instrument_token": 144870151,
   "live_orders_enabled": false,
   "market_protection": -1

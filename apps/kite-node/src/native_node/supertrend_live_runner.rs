@@ -167,7 +167,10 @@ fn run_backend_inner(
     let seconds = if sim {
         seconds
     } else {
-        seconds.min((end.saturating_sub(data::now()) / 1_000_000_000).saturating_sub(60))
+        seconds.min(
+            (end.saturating_sub(data::now()) / 1_000_000_000)
+                .saturating_sub(super::supertrend_session::EXIT_BUFFER_SECONDS),
+        )
     };
     ensure!(seconds >= 5, "Too close to session end to start");
     super::supertrend_terminal::step("Checking Redis persistence and strategy ownership");
@@ -208,7 +211,7 @@ fn run_backend_inner(
             builder.add_exec_client(Some("MCX".into()),Box::new(Factory),Box::new(LiveConfig{settings,namespace:id.to_string(),stop_signal:control.done.clone()}))?.build()?
         }else if kite_mock {
             use kite_adapter::execution::native_client::mock::{MockFactory,MockConfig};
-            builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"NRML".into(),instrument_token:token}))?.build()?
+            builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"MIS".into(),instrument_token:token}))?.build()?
         }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?.build()?};
         let bt:BarType=format!("{}-5-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(BarStrategy::new(bt,start,end,state.clone()).with_confirmation(true).with_live(control.clone()))?;

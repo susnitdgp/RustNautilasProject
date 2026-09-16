@@ -46,8 +46,8 @@ impl Settings {
             "Set the exact reviewed Kite user ID"
         );
         ensure!(
-            self.product == "NRML" && self.instrument_token == 144870151,
-            "Production scope is September CRUDEOIL NRML only"
+            self.product == "MIS" && self.instrument_token == 144870151,
+            "Production scope is September CRUDEOIL MIS only"
         );
         Ok(())
     }
@@ -124,16 +124,17 @@ mod tests {
     fn default_configuration_never_enables_broker_mutation() {
         let mut s = Settings {
             expected_user_id: "TEST123".into(),
-            product: "NRML".into(),
+            product: "MIS".into(),
             instrument_token: 144870151,
             live_orders_enabled: false,
             market_protection: -1,
         };
         assert!(s.validate().is_err());
         s.live_orders_enabled = true;
-        if !cfg!(feature = "live-orders") {
-            assert!(s.validate().is_err());
-        }
+        assert_eq!(s.validate().is_ok(), cfg!(feature = "live-orders"));
+        s.product = "NRML".into();
+        assert!(s.validate().is_err());
+        s.product = "MIS".into();
         s.expected_user_id = "REPLACE_ME".into();
         assert!(s.validate().is_err());
     }
