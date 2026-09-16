@@ -1,6 +1,7 @@
 pub mod actor;
 pub mod audit;
 pub mod backtest;
+pub mod backtest_report;
 pub mod catalog;
 pub mod cli;
 pub mod components;
@@ -14,3 +15,7 @@ pub mod runner;
 pub mod signals;
 pub mod status;
 pub mod strategy;
+pub mod supertrend;
+pub mod supertrend_actor;
+pub mod supertrend_backtest;
+pub mod supertrend_input;

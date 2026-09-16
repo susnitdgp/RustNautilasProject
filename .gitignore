@@ -28,3 +28,6 @@ target
 /data/
 /logs/
 *.pem
+
+# Backtest reports are retained locally, not committed
+/backtest_results/

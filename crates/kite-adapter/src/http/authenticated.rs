@@ -75,6 +75,25 @@ impl ReadClient {
         self.get_at("https://sandbox.kite.trade/oms/quote?i=MCX%3ACRUDEOIL26SEPFUT")
             .await
     }
+    pub(crate) async fn historical<T: DeserializeOwned>(
+        &self,
+        token: u32,
+        from: chrono::NaiveDate,
+        to: chrono::NaiveDate,
+    ) -> Result<T> {
+        ensure!(
+            self.root == "https://api.kite.trade",
+            "Historical reads require the market-data host"
+        );
+        let url = format!("{}/instruments/historical/{}/5minute", self.root, token);
+        self.read_response(self.client.get(url).query(&[
+            ("from", format!("{from} 00:00:00")),
+            ("to", format!("{to} 23:30:00")),
+            ("continuous", "0".into()),
+            ("oi", "1".into()),
+        ]))
+        .await
+    }
     pub(crate) async fn get<T: DeserializeOwned>(&self, endpoint: Endpoint) -> Result<T> {
         self.get_at(&format!("{}{}", self.root, endpoint.path()))
             .await

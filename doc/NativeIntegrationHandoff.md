@@ -99,3 +99,13 @@ Current logs: /tmp/kite-hardening-workspace-tests.log,
 /tmp/kite-hardening-feature-tests.log, /tmp/kite-hardening-clippy.log,
 /tmp/kite-full-live-audit.log and /tmp/kite-sandbox-preflight.log.
 Historical integration logs and catalog captures are retained as previously noted.
+
+## Supertrend backtest addition (16 September 2026)
+
+See [SupertrendBacktest.md](SupertrendBacktest.md). The separate native-supertrend-backtest
+command uses Nautilus ATR(7), Wilder smoothing, multiplier 2 and five-minute bars.
+The 15 September historical run completed with 174 session bars, 774 warmup bars,
+16 simulated fills, 8 closed trades and INR 32,300 gross P&L, ending flat.
+Reports and reproducible input are saved under backtest_results per run UUID.
+Fees/spread/slippage are excluded. Real orders remain disabled.
+The existing native-backtest command now saves its summary there too.

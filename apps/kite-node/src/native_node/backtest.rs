@@ -148,6 +148,9 @@ pub fn run(strategy_path: &str, catalog_path: Option<&str>) -> Result<()> {
     node.get_engine_mut(&run_id)
         .expect("backtest engine")
         .dispose();
+    let folder = super::backtest_report::directory("native_backtest", &run_id)?;
+    super::backtest_report::json(&folder, "summary.json", &output)?;
+    println!("Backtest results: {}", folder.display());
     println!("{}", output);
     Ok(())
 }

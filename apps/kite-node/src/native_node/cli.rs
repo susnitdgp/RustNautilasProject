@@ -53,6 +53,10 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                     super::runner::run(Some(instrument), strategy, seconds)
                 })
         }
+        ("native-supertrend-backtest", [date]) => super::supertrend_backtest::run(date, None),
+        ("native-supertrend-backtest", [date, path]) => {
+            super::supertrend_backtest::run(date, Some(path))
+        }
         ("native-backtest", []) => super::backtest::run("config/strategy-crossover.toml", None),
         ("native-backtest", [strategy]) => super::backtest::run(strategy, None),
         ("native-backtest", [strategy, catalog]) => super::backtest::run(strategy, Some(catalog)),
@@ -67,7 +71,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 
