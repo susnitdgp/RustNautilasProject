@@ -30,6 +30,10 @@ pub struct BarStrategy {
     start: u64,
     end: u64,
     target: i8,
+    confirmation: super::supertrend_confirmation::Confirmation,
+    filtered: bool,
+    allowed: i8,
+    last_bar: u64,
     pending: bool,
     state: Rc<RefCell<State>>,
 }
@@ -47,9 +51,17 @@ impl BarStrategy {
             start,
             end,
             target: 0,
+            confirmation: super::supertrend_confirmation::Confirmation::new(),
+            filtered: false,
+            allowed: 0,
+            last_bar: 0,
             pending: false,
             state,
         }
+    }
+    pub fn with_confirmation(mut self, filtered: bool) -> Self {
+        self.filtered = filtered;
+        self
     }
     fn instrument(&self) -> InstrumentId {
         self.bar_type.instrument_id()
@@ -86,9 +98,18 @@ impl DataActor for BarStrategy {
         if let Some((direction, _)) = result {
             self.target = direction;
         }
+        let (allowed, confirmation) = self.confirmation.update(
+            b.high.as_f64(),
+            b.low.as_f64(),
+            b.close.as_f64(),
+            b.volume.as_f64(),
+            b.ts_event.as_u64(),
+        );
+        self.allowed = allowed;
+        self.last_bar = b.ts_event.as_u64();
         self.state.borrow_mut().indicators.push(serde_json::json!({
             "bar_close_ns":b.ts_event.as_u64(),"close":b.close.as_f64(),"atr":self.indicator.atr.value,
-            "initialized":self.indicator.atr.initialized,"direction":result.map(|x|x.0),"supertrend":result.map(|x|x.1)
+            "confirmation":confirmation,"initialized":self.indicator.atr.initialized,"direction":result.map(|x|x.0),"supertrend":result.map(|x|x.1)
         }));
         Ok(())
     }
@@ -103,6 +124,11 @@ impl DataActor for BarStrategy {
             return Ok(());
         }
         let exit = position != 0.;
+        // Confirm only entries: loss of confirmation never blocks a reversal exit.
+        // No prior-day VWAP may authorize an entry at the new session open.
+        if !exit && self.filtered && (self.allowed != target || self.last_bar <= self.start) {
+            return Ok(());
+        }
         let side = if (exit && position > 0.) || (!exit && target < 0) {
             OrderSide::Sell
         } else {
@@ -126,7 +152,7 @@ impl DataActor for BarStrategy {
             None,
             None,
         );
-        self.state.borrow_mut().signals.push(serde_json::json!({"timestamp_ns":ts,"intent":intent,"target":target,"position_before":position,"reason":if ts>=self.end {"end_of_day"} else {"supertrend"}}));
+        self.state.borrow_mut().signals.push(serde_json::json!({"timestamp_ns":ts,"intent":intent,"target":target,"position_before":position,"entry_filtered":self.filtered,"reason":if ts>=self.end {"end_of_day"} else {"supertrend"}}));
         self.pending = true;
         self.submit_order(order, None, None, None)?;
         Ok(())

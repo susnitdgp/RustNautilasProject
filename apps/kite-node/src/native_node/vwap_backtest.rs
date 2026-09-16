@@ -1,4 +1,5 @@
 //! Native single-session VWAP/EMA/MACD backtest; no broker execution client.
+use super::vwap_filters::Variant;
 use super::{
     backtest_report as report, persistence, supertrend_actor::State, supertrend_input::Input,
     vwap_actor::VwapStrategy, vwap_input as input, vwap_report,
@@ -18,13 +19,16 @@ use nautilus_model::{
 };
 use std::{cell::RefCell, path::Path, rc::Rc};
 pub fn run(date: &str, path: &str, folder: &str) -> Result<()> {
+    run_variant(date, path, folder, Variant::Baseline)
+}
+pub fn run_variant(date: &str, path: &str, folder: &str, variant: Variant) -> Result<()> {
     let date = NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
     let instance = UUID4::new();
     let folder = Path::new(folder);
     std::fs::create_dir(folder)?;
     let outcome = (|| {
         let data = super::supertrend_input::load(date, Some(path))?;
-        execute(date, data, instance, folder)
+        execute(date, data, instance, folder, variant)
     })();
     if let Err(error) = &outcome {
         report::json(
@@ -40,6 +44,7 @@ pub fn execute(
     data: Input,
     instance: UUID4,
     folder: &Path,
+    variant: Variant,
 ) -> Result<serde_json::Value> {
     let count = input::validate(&data, date)?;
     let (instrument, _) = crate::paper_flow::simulation::fixture()?;
@@ -92,7 +97,7 @@ pub fn execute(
     )?;
     engine.kernel_mut().cache.borrow_mut().set_database(db);
     engine.add_instrument(&InstrumentAny::FuturesContract(instrument))?;
-    engine.add_strategy(VwapStrategy::new(bt, start, end, state.clone()))?;
+    engine.add_strategy(VwapStrategy::new(bt, start, end, state.clone(), variant))?;
     engine.add_data(replay, None, false, false)?;
     let results = node.run()?;
     let cache = node
@@ -138,10 +143,11 @@ pub fn execute(
     );
     report::json(folder, "trades.json", &trades)?;
     let output = serde_json::json!({"status":"completed","event":"native_vwap_backtest_complete","namespace":run_id,
+        "entry_variant":variant.name(),"breakout_confirmation_bars":3,
         "date_ist":date.to_string(),"instrument":data.instrument_id,"data_source":data.source,"interval":"5minute",
         "ema":[9,21],"macd":[12,26,9],"atr_period":14,"stop_atr_multiplier":1.5,"stop_type":"fixed native simulated stop-market, rounded outward to whole rupee",
         "vwap":"session HLC3 volume weighted, reset IST day","session_bars":count,"warmup_bars":data.candles.len()-count,
-        "entry_model":"fresh EMA cross with close/VWAP and MACD/signal agreement; next-open fill",
+        "entry_model":variant.entry_rule(),
         "exit_model":"stop-loss, fully confirmed opposite setup, or end-of-day",
         "fees":"excluded","spread":"excluded","slippage":"excluded","stop_fill_model":"native OHLC matching",
         "native_indicators":true,"native_backtest_node":true,"native_redis_cache":true,
@@ -204,7 +210,7 @@ mod tests {
         gap.low = gap_price - 1.;
         gap.close = gap_price;
         let folder = tempfile::tempdir().unwrap();
-        execute(date, data, UUID4::new(), folder.path()).unwrap();
+        execute(date, data, UUID4::new(), folder.path(), Variant::Baseline).unwrap();
         let signals: Vec<serde_json::Value> =
             serde_json::from_slice(&std::fs::read(folder.path().join("signals.json")).unwrap())
                 .unwrap();
@@ -264,7 +270,7 @@ mod tests {
                 .update(c.high, c.low, c.close, c.volume as f64, ts)
                 .entry;
         }
-        let out = execute(date, data, UUID4::new(), folder.path()).unwrap();
+        let out = execute(date, data, UUID4::new(), folder.path(), Variant::Baseline).unwrap();
         assert_eq!(out["open_contracts"], 0.);
         let fills: Vec<serde_json::Value> =
             serde_json::from_slice(&std::fs::read(folder.path().join("fills.json")).unwrap())

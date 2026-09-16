@@ -45,7 +45,16 @@ fn execute(
     instance: UUID4,
     folder: &Path,
 ) -> Result<serde_json::Value> {
-    input::validate(&data, date)?;
+    execute_variant(date, data, instance, folder, false)
+}
+pub fn execute_variant(
+    date: NaiveDate,
+    data: input::Input,
+    instance: UUID4,
+    folder: &Path,
+    filtered: bool,
+) -> Result<serde_json::Value> {
+    let count = input::validate(&data, date)?;
     let (instrument, _) = crate::paper_flow::simulation::fixture()?;
     let bars: BarType = "CRUDEOIL26SEPFUT.MCX-5-MINUTE-LAST-EXTERNAL".parse()?;
     let replay = input::replay(&data, date, bars)?;
@@ -84,7 +93,7 @@ fn execute(
     let mut node = BacktestNode::new(vec![config])?;
     node.build()?;
     let state = Rc::new(RefCell::new(State::default()));
-    let (start, end) = input::bounds(date)?;
+    let (start, end) = super::vwap_input::bounds(date)?;
     let engine = node.get_engine_mut(&run_id).expect("built node");
     let db = nautilus_common::live::get_runtime().block_on(
         super::redis_cache::Factory(persistence::redis_config()?).create(
@@ -95,7 +104,9 @@ fn execute(
     )?;
     engine.kernel_mut().cache.borrow_mut().set_database(db);
     engine.add_instrument(&InstrumentAny::FuturesContract(instrument))?;
-    engine.add_strategy(BarStrategy::new(bars, start, end, state.clone()))?;
+    engine.add_strategy(
+        BarStrategy::new(bars, start, end, state.clone()).with_confirmation(filtered),
+    )?;
     engine.add_data(replay, None, false, false)?;
     let results = node.run()?;
     let cache = node
@@ -112,19 +123,50 @@ fn execute(
     let pending = cache.orders_open(None, None, None, None, None).len();
     drop(cache);
     let s = state.borrow();
-    report::json(folder, "fills.json", &s.fills)?;
+    ensure!(
+        s.fills.len() == s.signals.len(),
+        "Missing or unmatched fills"
+    );
+    let mut fills = s.fills.clone();
+    for (fill, signal) in fills.iter_mut().zip(&s.signals) {
+        ensure!(
+            fill["timestamp_ns"] == signal["timestamp_ns"],
+            "Fill not at intended next open"
+        );
+        fill["reason"] =
+            serde_json::json!(if signal["intent"] == "BUY" || signal["intent"] == "SELL" {
+                "entry"
+            } else if signal["reason"] == "end_of_day" {
+                "end_of_day"
+            } else {
+                "supertrend_reversal"
+            });
+    }
+    let trades = super::vwap_report::trades(&fills)?;
+    let stats = super::vwap_report::statistics(&trades);
+    let native = serde_json::to_value(&results)?;
+    let pnl = native[0]["stats_pnls"]["INR"]["PnL (total)"]
+        .as_f64()
+        .unwrap_or(0.);
+    ensure!(
+        (pnl - stats["gross_pnl_inr"].as_f64().unwrap()).abs() < 0.01,
+        "Native P&L mismatch"
+    );
+    report::json(folder, "trades.json", &trades)?;
+    report::json(folder, "fills.json", &fills)?;
     report::json(folder, "signals.json", &s.signals)?;
     report::json(folder, "indicators.json", &s.indicators)?;
     let output = serde_json::json!({
         "event":"native_supertrend_backtest_complete","status":"completed","namespace":run_id,
         "date_ist":date.to_string(),"instrument":data.instrument_id,"data_source":data.source,
         "interval":"5minute","atr_period":7,"atr_smoothing":"Nautilus Wilder (first true-range seed)",
-        "multiplier":2,"warmup_bars":data.candles.len()-174,"session_bars":174,
+        "multiplier":2,"warmup_bars":data.candles.len()-count,"session_bars":count,
+        "entry_confirmation":filtered,"statistics":stats,
         "execution_model":"completed-bar signal, next-open synthetic zero-spread quote; separate exit then entry",
-        "session_ist":"09:00–23:30","position_size_contracts":1,"contract_multiplier":100,
+        "session_ist":if count==78 {"17:00–23:30"} else {"09:00–23:30"},"position_size_contracts":1,"contract_multiplier":100,
         "end_of_day":"forced simulated exit at last candle close",
         "fees":"excluded","slippage":"excluded","pnl_basis":"gross before fees, spread and slippage",
-        "stop_loss_target":"not enabled in this Supertrend-only backtest",
+        "stop_loss_target":"not enabled; exit on Supertrend reversal or session close",
         "native_backtest_node":true,"native_atr":true,"native_redis_cache":true,
         "signal_count":s.signals.len(),"fills":s.fills.len(),"open_contracts":open,
         "errors":s.errors,"results":results,"result_directory":folder,
@@ -145,9 +187,9 @@ fn execute(
     report::json(folder, "summary.json", &output)?;
     let pnl = &output["results"][0]["stats_pnls"]["INR"]["PnL (total)"];
     let text = format!(
-        "# Supertrend backtest — {date}\n\n- CRUDEOIL26SEPFUT.MCX, 5-minute candles, ATR(7) Wilder, multiplier 2.\n- Data: {}. Warmup bars: {}. Session bars: 174.\n- Simulated fills: {}. Open contracts: {}.\n- Gross P&L (INR): {}. Fees, spread and slippage excluded.\n- Signals use completed bars; executions use the next open. End-of-day exit uses the last close.\n- No extra stop-loss/target overlay. No real orders sent.\n\nSee summary.json for Nautilus statistics, fills.json, signals.json, indicators.json and candles.json for the audit trail.\n",
+        "# Supertrend backtest — {date}\n\n- CRUDEOIL26SEPFUT.MCX, 5-minute candles, ATR(7) Wilder, multiplier 2.\n- Data: {}. Warmup bars: {}. Session bars: {count}. Entry confirmations: {filtered}.\n- Simulated fills: {}. Open contracts: {}.\n- Gross P&L (INR): {}. Fees, spread and slippage excluded.\n- Signals use completed bars; executions use the next open. End-of-day exit uses the last close.\n- No extra stop-loss/target overlay. No real orders sent.\n\nSee summary.json for Nautilus statistics, fills.json, signals.json, indicators.json and candles.json for the audit trail.\n",
         data.source,
-        data.candles.len() - 174,
+        data.candles.len() - count,
         output["fills"],
         open,
         pnl

@@ -1,4 +1,5 @@
 //! Native VWAP/EMA/MACD/ATR calculations; decisions use completed bars only.
+use super::vwap_filters::{Filter, Variant};
 use nautilus_indicators::{
     average::{MovingAverageType, ema::ExponentialMovingAverage, vwap::VolumeWeightedAveragePrice},
     indicator::{Indicator, MovingAverage},
@@ -18,6 +19,9 @@ pub struct Reading {
     pub cross: i8,
     pub entry: i8,
     pub ready: bool,
+    pub raw_entry: i8,
+    pub ema9_slope: f64,
+    pub ema21_slope: f64,
 }
 #[derive(Debug)]
 pub struct Policy {
@@ -30,9 +34,13 @@ pub struct Policy {
     previous: Option<f64>,
     day: u64,
     volume: f64,
+    filter: Filter,
 }
 impl Policy {
     pub fn new() -> Self {
+        Self::with_variant(Variant::Baseline)
+    }
+    pub fn with_variant(variant: Variant) -> Self {
         Self {
             fast: ExponentialMovingAverage::new(9, None),
             slow: ExponentialMovingAverage::new(21, None),
@@ -48,6 +56,7 @@ impl Policy {
             previous: None,
             day: 0,
             volume: 0.,
+            filter: Filter::new(variant),
         }
     }
     pub fn update(&mut self, high: f64, low: f64, close: f64, volume: f64, ts: u64) -> Reading {
@@ -61,6 +70,8 @@ impl Policy {
         self.volume += volume;
         self.vwap
             .update_raw((high + low + close) / 3., volume, local_ts as f64);
+        let previous_fast = self.fast.value;
+        let previous_slow = self.slow.value;
         self.fast.update_raw(close);
         self.slow.update_raw(close);
         self.macd.update_raw(close);
@@ -88,7 +99,10 @@ impl Policy {
             self.signal.value,
             ready,
         );
-        Reading {
+        let mut reading = Reading {
+            raw_entry: entry,
+            ema9_slope: self.fast.value - previous_fast,
+            ema21_slope: self.slow.value - previous_slow,
             close,
             vwap: self.vwap.value,
             ema9: self.fast.value,
@@ -99,7 +113,9 @@ impl Policy {
             cross,
             entry,
             ready,
-        }
+        };
+        reading.entry = self.filter.apply(&reading, high, low, ts);
+        reading
     }
 }
 fn confirm(cross: i8, close: f64, vwap: f64, macd: f64, signal: f64, ready: bool) -> i8 {

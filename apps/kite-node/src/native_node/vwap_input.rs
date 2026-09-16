@@ -1,4 +1,4 @@
-//! Explicit September MCX session calendar; no silently skipped incomplete sessions.
+//! Explicit August–September MCX session calendar; no silently skipped incomplete sessions.
 use super::supertrend_input::Input;
 use anyhow::{Result, ensure};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
@@ -8,9 +8,9 @@ use nautilus_model::{
 };
 pub fn bounds(date: NaiveDate) -> Result<(u64, u64)> {
     ensure!(
-        date >= NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()
+        date >= NaiveDate::from_ymd_opt(2026, 8, 17).unwrap()
             && date <= NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
-        "Session calendar supports September 1–21, 2026 only"
+        "Session calendar supports August 17–September 21, 2026 only"
     );
     ensure!(
         !matches!(date.weekday(), Weekday::Sat | Weekday::Sun),
@@ -19,7 +19,7 @@ pub fn bounds(date: NaiveDate) -> Result<(u64, u64)> {
     let (start, end) = super::supertrend_input::bounds(date)?;
     // Official MCX calendar: Ganesh Chaturthi, morning closed, evening open.
     Ok((
-        if date.day() == 14 {
+        if date == NaiveDate::from_ymd_opt(2026, 9, 14).unwrap() {
             start + 8 * 3_600_000_000_000
         } else {
             start
@@ -44,6 +44,23 @@ pub fn dates(end: NaiveDate) -> Result<Vec<NaiveDate>> {
         "End date must be a trading session"
     );
     days.reverse();
+    Ok(days)
+}
+pub fn range(start: NaiveDate, end: NaiveDate) -> Result<Vec<NaiveDate>> {
+    ensure!(start <= end, "Start must precede end");
+    bounds(start)?;
+    bounds(end)?;
+    let mut days = Vec::new();
+    let mut day = start;
+    while day <= end {
+        if !matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
+            bounds(day)?;
+            days.push(day);
+        }
+        day = day
+            .checked_add_signed(Duration::days(1))
+            .ok_or_else(|| anyhow::anyhow!("Date overflow"))?;
+    }
     Ok(days)
 }
 pub fn validate(input: &Input, date: NaiveDate) -> Result<usize> {
@@ -136,6 +153,25 @@ fn quote(bt: BarType, p: f64, ts: u64) -> Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn thirty_calendar_days_cover_all_twenty_two_sessions() {
+        let start = NaiveDate::from_ymd_opt(2026, 8, 17).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();
+        let days = range(start, end).unwrap();
+        assert_eq!(days.len(), 22);
+        assert_eq!(days[0], start);
+        assert_eq!(days[21], end);
+        let bars: u64 = days
+            .iter()
+            .map(|d| {
+                let (a, b) = bounds(*d).unwrap();
+                (b - a) / 300_000_000_000
+            })
+            .sum();
+        assert_eq!(bars, 3732);
+        assert!(range(end, start).is_err());
+        assert!(bounds(NaiveDate::from_ymd_opt(2026, 8, 16).unwrap()).is_err());
+    }
     #[test]
     fn includes_seven_sessions_and_evening_holiday_without_skipping_missing_days() {
         let d = NaiveDate::from_ymd_opt(2026, 9, 15).unwrap();

@@ -120,3 +120,37 @@ The seven-session run (September 7–15) produced nine trades and INR 97,700 gro
 P&L before fees/spread/slippage. All 1,122 requested bars validated; fills were audited.
 Reports, per-day traces and offline replay input are retained in backtest_results.
 Real broker orders remain disabled.
+
+## Entry-filter comparison
+
+See VwapFilterComparison.md. Native comparison on the exact saved seven-session input:
+original 9 trades / INR 97,700 gross; zero-line + EMA slopes 2 / INR 12,500;
+breakout confirmation alone 4 / INR 6,300. Both avoided the second September 15
+loss but neither improved sample gross return. Original trades reproduced exactly.
+The original entry remains default. Opposite-setup exits, one-lot sizing and 1.5 ATR
+stops were held fixed. Reports are in backtest_results/vwap_filter_comparison_*.
+New command: native-vwap-compare YYYY-MM-DD historical_input.json.
+Real orders remain disabled. This is in-sample evidence only.
+
+### Thirty-calendar-day VWAP comparison
+Expanded comparison covers 2026-08-17 through 2026-09-15: 22 sessions / 3,732 bars.
+All three entry variants remain unchanged, one September CRUDEOIL contract,
+5-minute bars, fixed 1.5 ATR stop. Original evaluation candles preserved;
+870 earlier Kite candles added only for warmup.
+Original: 69 trades, INR 101,500 gross, INR 33,100 closed-trade drawdown.
+Trend: 22 trades, INR -28,500 gross, INR 41,000 drawdown.
+Breakout: 37 trades, INR 27,200 gross, INR 34,500 drawdown.
+Original default unchanged; real orders remain disabled. Costs excluded.
+All seven-session overlapping trades reproduce exactly in every variant.
+See doc/VwapFilterComparison.md and the comparison directory ending 83cd24fa-b97f-4fec-a949-de59d3cb99d3.
+
+### Supertrend + MACD + VWAP thirty-day comparison
+See doc/SupertrendConfirmationReview.md.
+Same 17 August–15 September input, five-minute candles and one lot.
+Supertrend(7,2) plus MACD(12,26,9) and session VWAP entry confirmation:
+143 trades (74 long, 69 short), INR 108,100 gross; closed-trade drawdown INR 46,200.
+Supertrend alone: 191 trades, INR 83,900 gross, drawdown INR 64,600.
+Exits remain Supertrend reversal or session close, with no extra fixed ATR stop.
+Earlier EMA/VWAP baseline: 69 trades, INR 101,500 gross, drawdown INR 33,100;
+different exits and trading frequency mean costs matter to any final choice.
+No default changed; real orders disabled. Reports end in 2c404264-451e-4255-8a6a-20d0dbaad733.

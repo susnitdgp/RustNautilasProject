@@ -1,11 +1,8 @@
 //! Historical input validation and causal bar/open-quote replay.
 use anyhow::{Result, ensure};
-use chrono::{NaiveDate, Timelike};
+use chrono::NaiveDate;
 use kite_adapter::http::historical::Candle;
-use nautilus_model::{
-    data::{Bar, BarType, Data, QuoteTick},
-    types::{Price, Quantity},
-};
+use nautilus_model::data::{BarType, Data};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Input {
@@ -52,97 +49,11 @@ pub fn bounds(date: NaiveDate) -> Result<(u64, u64)> {
     };
     Ok((parse("09:00:00")?, parse("23:30:00")?))
 }
-pub fn validate(input: &Input, date: NaiveDate) -> Result<()> {
-    ensure!(
-        date >= NaiveDate::from_ymd_opt(2026, 9, 1).unwrap()
-            && date <= NaiveDate::from_ymd_opt(2026, 9, 21).unwrap(),
-        "Date outside configured September 2026 contract scope"
-    );
-    ensure!(
-        input.instrument_id == "CRUDEOIL26SEPFUT.MCX"
-            && input.instrument_token == 144870151
-            && input.interval == "5minute",
-        "Historical instrument/interval mismatch"
-    );
-    kite_adapter::http::historical::validate(&input.candles)?;
-    let target: Vec<_> = input
-        .candles
-        .iter()
-        .filter(|c| c.time().is_ok_and(|t| t.date_naive() == date))
-        .collect();
-    ensure!(
-        target.len() == 174,
-        "Expected 174 five-minute candles for 09:00–23:30 IST; received {}",
-        target.len()
-    );
-    let mut warmup = 0;
-    for c in &input.candles {
-        let t = c.time()?;
-        ensure!(t.date_naive() <= date, "Input contains future candles");
-        if t.date_naive() < date {
-            warmup += 1;
-        }
-    }
-    ensure!(
-        warmup >= 100,
-        "At least 100 prior-session warmup candles are required"
-    );
-    for (i, c) in target.iter().enumerate() {
-        let t = c.time()?;
-        ensure!(
-            t.hour() * 60 + t.minute() == 540 + i as u32 * 5,
-            "Requested session has missing or out-of-session candles"
-        );
-    }
-    Ok(())
+pub fn validate(input: &Input, date: NaiveDate) -> Result<usize> {
+    super::vwap_input::validate(input, date)
 }
 pub fn replay(input: &Input, date: NaiveDate, bar_type: BarType) -> Result<Vec<Data>> {
-    validate(input, date)?;
-    let mut data = Vec::new();
-    for c in &input.candles {
-        let t = c.time()?;
-        let start = u64::try_from(
-            t.timestamp_nanos_opt()
-                .ok_or_else(|| anyhow::anyhow!("Timestamp overflow"))?,
-        )?;
-        let end = start + 300_000_000_000;
-        if t.date_naive() == date {
-            // Two ordered quotes permit reducing exit then entry after its fill; no doubled reversal order.
-            for offset in [2, 3] {
-                data.push(quote(bar_type, c.open, start + offset));
-            }
-        }
-        data.push(Data::Bar(Bar::new(
-            bar_type,
-            Price::new(c.open, 0),
-            Price::new(c.high, 0),
-            Price::new(c.low, 0),
-            Price::new(c.close, 0),
-            Quantity::from(c.volume),
-            (end).into(),
-            (end).into(),
-        )));
-    }
-    let (_, end) = bounds(date)?;
-    let close = input.candles.last().expect("validated").close;
-    data.push(quote(bar_type, close, end + 2));
-    data.sort_by_key(|d| match d {
-        Data::Bar(b) => b.ts_init.as_u64(),
-        Data::Quote(q) => q.ts_init.as_u64(),
-        _ => unreachable!(),
-    });
-    Ok(data)
-}
-fn quote(bar_type: BarType, price: f64, ts: u64) -> Data {
-    Data::Quote(QuoteTick::new(
-        bar_type.instrument_id(),
-        Price::new(price, 0),
-        Price::new(price, 0),
-        Quantity::from(1000),
-        Quantity::from(1000),
-        ts.into(),
-        ts.into(),
-    ))
+    super::vwap_input::replay(input, date, bar_type)
 }
 #[cfg(test)]
 pub fn fixture() -> Input {

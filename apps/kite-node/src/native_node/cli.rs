@@ -53,10 +53,24 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                     super::runner::run(Some(instrument), strategy, seconds)
                 })
         }
+        ("native-vwap-compare-range", [start, end, path]) => {
+            super::vwap_compare::run_range(start, end, path)
+        }
+        ("native-vwap-compare", [date, path]) => super::vwap_compare::run(date, path),
+        ("native-vwap-session", [date, path, folder, variant]) => {
+            super::vwap_filters::Variant::parse(variant)
+                .and_then(|v| super::vwap_backtest::run_variant(date, path, folder, v))
+        }
         ("native-vwap-backtest", [date]) => super::vwap_batch::run(date, None),
         ("native-vwap-backtest", [date, path]) => super::vwap_batch::run(date, Some(path)),
         ("native-vwap-session", [date, path, folder]) => {
             super::vwap_backtest::run(date, path, folder)
+        }
+        ("native-supertrend-confirm-compare", [start, end, path]) => {
+            super::supertrend_batch::run(start, end, path)
+        }
+        ("native-supertrend-session", [date, path, folder, variant]) => {
+            super::supertrend_batch::session(date, path, folder, variant)
         }
         ("native-supertrend-backtest", [date]) => super::supertrend_backtest::run(date, None),
         ("native-supertrend-backtest", [date, path]) => {
@@ -76,7 +90,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 

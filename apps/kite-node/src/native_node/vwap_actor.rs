@@ -33,7 +33,13 @@ pub struct VwapStrategy {
     reasons: HashMap<ClientOrderId, String>,
 }
 impl VwapStrategy {
-    pub fn new(bar_type: BarType, start: u64, end: u64, state: Rc<RefCell<State>>) -> Self {
+    pub fn new(
+        bar_type: BarType,
+        start: u64,
+        end: u64,
+        state: Rc<RefCell<State>>,
+        variant: super::vwap_filters::Variant,
+    ) -> Self {
         Self {
             core: StrategyCore::new(StrategyConfig {
                 strategy_id: Some("VWAP-EMA-MACD-001".into()),
@@ -41,7 +47,11 @@ impl VwapStrategy {
                 log_commands: false,
                 ..Default::default()
             }),
-            policy: Policy::new(),
+            policy: if variant == super::vwap_filters::Variant::Baseline {
+                Policy::new()
+            } else {
+                Policy::with_variant(variant)
+            },
             bar_type,
             start,
             end,
@@ -157,8 +167,16 @@ impl DataActor for VwapStrategy {
             b.volume.as_f64(),
             ts,
         );
-        self.queued = if ts > self.start && ts < self.end && reading.entry != 0 {
-            Some((reading.entry, reading.atr, ts))
+        let exit_only =
+            reading.raw_entry != 0 && self.position() * f64::from(reading.raw_entry) < 0.;
+        self.queued = if ts > self.start && ts < self.end {
+            if reading.entry != 0 {
+                Some((reading.entry, reading.atr, ts))
+            } else if exit_only {
+                Some((0, 0., ts))
+            } else {
+                None
+            }
         } else {
             None
         };
