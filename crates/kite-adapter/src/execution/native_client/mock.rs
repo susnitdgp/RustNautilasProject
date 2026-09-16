@@ -227,7 +227,7 @@ impl Broker for MockBroker {
                     .iter_mut()
                     .find(|o| &o.order_id == order_id)
                     .expect("mock acknowledgement");
-                o.market_protection = Some(Decimal::from(-1));
+                o.market_protection = Some(Decimal::ZERO); // observed Kite converted-order response
             }
             return Ok(outcome);
         }

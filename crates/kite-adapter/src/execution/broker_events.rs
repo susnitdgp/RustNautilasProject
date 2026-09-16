@@ -153,10 +153,15 @@ pub fn reconcile(
     let market = current.order_type() == nautilus_model::enums::OrderType::Market;
     if market {
         ensure!(
-            broker.market_protection.is_some_and(
-                |p| p == Decimal::from(-1) || (p > Decimal::ZERO && p <= Decimal::from(100))
-            ),
-            "Protected market acknowledgement missing protection"
+            broker
+                .market_protection
+                .is_some_and(|p| p == Decimal::from(-1)
+                    || (p > Decimal::ZERO && p <= Decimal::from(100))
+                    || (p == Decimal::ZERO
+                        && broker.order_type == "LIMIT"
+                        && broker.price > Decimal::ZERO
+                        && broker.price.fract().is_zero())),
+            "Owned market order has unsupported broker conversion metadata"
         );
     } else {
         ensure!(broker.order_type == "LIMIT", "Broker order type changed");
@@ -573,7 +578,20 @@ mod tests {
             )
             .is_err()
         );
+        // Kite can clear protection after converting an owned market order to LIMIT.
         broker.market_protection = Some(Decimal::ZERO);
+        assert!(
+            reconcile(
+                &order,
+                &owner(),
+                &broker,
+                std::slice::from_ref(&trade),
+                &events,
+                now()
+            )
+            .is_ok()
+        );
+        broker.order_type = "MARKET".into();
         assert!(
             reconcile(
                 &order,
@@ -585,6 +603,7 @@ mod tests {
             )
             .is_err()
         );
+        broker.order_type = "LIMIT".into();
         broker.market_protection = Some(Decimal::from(-1));
         broker.status = "CANCELLED".into();
         let mapped = reconcile(
@@ -599,5 +618,94 @@ mod tests {
         process(&mut order, mapped);
         assert_eq!(order.status(), OrderStatus::Canceled);
         assert_eq!(order.filled_qty(), Quantity::from(1));
+    }
+    #[test]
+    fn observed_mis_sell_conversion_records_fill_once_and_rejects_wrong_ownership() {
+        let (_, events, mut broker, mut trade) = fixture();
+        let mut factory = OrderFactory::new(
+            "SUSANTA-001".into(),
+            "CROSSOVER-001".into(),
+            None,
+            None,
+            Rc::new(RefCell::new(TestClock::new())),
+            false,
+            false,
+        );
+        let mut order = factory.market(
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            OrderSide::Sell,
+            1.into(),
+            Some(TimeInForce::Day),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        order
+            .apply(
+                events.generate_order_submitted(&order, timestamp("2026-09-16 16:50:07").unwrap()),
+            )
+            .unwrap();
+        broker.product = "MIS".into();
+        broker.transaction_type = "SELL".into();
+        broker.quantity = 1;
+        broker.filled_quantity = 1;
+        broker.status = "COMPLETE".into();
+        broker.order_type = "LIMIT".into();
+        broker.price = Decimal::from(9868);
+        broker.market_protection = Some(Decimal::ZERO);
+        broker.order_timestamp = "2026-09-16 16:50:07".into();
+        broker.exchange_timestamp = Some("2026-09-16 16:50:09".into());
+        broker.exchange_update_timestamp = broker.exchange_timestamp.clone();
+        trade.product = "MIS".into();
+        trade.transaction_type = "SELL".into();
+        trade.average_price = Decimal::from(9916);
+        trade.fill_timestamp = "2026-09-16 16:50:09".into();
+        let owner = Ownership {
+            product: "MIS",
+            ..owner()
+        };
+        let now = timestamp("2026-09-16 16:50:10").unwrap();
+        let mut foreign = broker.clone();
+        foreign.tag = Some("OtherRun".into());
+        assert!(
+            reconcile(
+                &order,
+                &owner,
+                &foreign,
+                std::slice::from_ref(&trade),
+                &events,
+                now
+            )
+            .is_err()
+        );
+        let mapped = reconcile(
+            &order,
+            &owner,
+            &broker,
+            std::slice::from_ref(&trade),
+            &events,
+            now,
+        )
+        .unwrap();
+        assert_eq!(mapped.len(), 2);
+        assert!(matches!(&mapped[0], OrderEventAny::Accepted(_)));
+        match &mapped[1] {
+            OrderEventAny::Filled(fill) => {
+                assert_eq!(fill.last_px, Price::from("9916"));
+                assert_eq!(fill.last_qty, Quantity::from(1));
+                assert_eq!(fill.order_side, OrderSide::Sell);
+            }
+            _ => panic!("fill required"),
+        }
+        process(&mut order, mapped);
+        assert_eq!(order.status(), OrderStatus::Filled);
+        assert!(
+            reconcile(&order, &owner, &broker, &[trade], &events, now)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

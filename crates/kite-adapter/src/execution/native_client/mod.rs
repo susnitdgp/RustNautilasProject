@@ -190,6 +190,19 @@ impl Client {
                     owners.get(&o.order_id).copied(),
                     now,
                 )?;
+                // Recover native order type from owned local history, not cleared broker metadata.
+                let owned_market = owners.get(&o.order_id).is_some_and(|id| {
+                    self.cache.as_ref().is_some_and(|cache| {
+                        cache
+                            .borrow()
+                            .order(id)
+                            .is_some_and(|order| order.order_type() == OrderType::Market)
+                    })
+                });
+                if owned_market {
+                    report.order_type = OrderType::Market;
+                    report.price = None;
+                }
                 if o.filled_quantity > 0 {
                     report.avg_px = Some(fees::average(
                         grouped
