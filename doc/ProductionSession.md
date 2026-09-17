@@ -95,3 +95,66 @@ A user-started MIS SELL was acknowledged and filled by Kite, but the native mapp
 The mapper now accepts that conversion only for an originally native MARKET order with matching durable ownership, broker ID, tag, instrument, product, side and quantity, and a valid positive integral converted limit price. Outbound MARKET requests still require market_protection=-1; zero is accepted only as observed broker conversion metadata, not as an outgoing instruction. An unconverted MARKET response with zero protection remains rejected.
 The regression fixture reproduces the observed MIS SELL: converted LIMIT 9868, protection 0, fill 9916. It checks native Accepted/Filled events, repeat-snapshot deduplication and wrong-tag rejection. Native mocks now return zero protection after conversion so the integration path exercises this broker behavior. Owned order-status reports retain the original MARKET type when native cache history is available.
 The historical run remains ReviewRequired because its manual closure is outside the strategy journal. This code change does not adopt that external trade, clear recovery locks, restart production or send broker commands. The existing query-order callback limitation and cancellation-after-fault limitation are not independently resolved by this mapping correction.
+
+## WebSocket-driven production order confirmation (after v1.0.0)
+
+Production execution now opens a dedicated authenticated order-update WebSocket.
+It sends no instrument subscription and no order mutations over that connection.
+The existing market-data connection remains separate: a normal production run
+therefore uses two Kite WebSocket connections. Kite documents a maximum of three
+per API key; other clients using the key count toward that limit.
+
+The order socket connects before the startup REST snapshot, buffering updates
+during initialization. JSON `type=order` messages are account-validated and wake
+the serial REST reconciler. They never directly generate Accepted/Filled events.
+The reconciler still checks orders, individual trades, positions and funds,
+matches durable ownership, deduplicates trade IDs, and persists events in Redis
+before publishing them to Nautilus. Manual account orders also wake reconciliation;
+their notifications do not grant the strategy ownership.
+
+Scheduling:
+- Order notifications trigger reconciliation without waiting for a polling tick.
+  Bursts coalesce into one pending wake-up; existing REST request pacing remains.
+- A 15-second fallback checks the account even if a notification is missed.
+- Every five seconds, unresolved orders trigger an additional REST check. With
+  no unresolved orders, that tick only refreshes the durable Redis heartbeat.
+- Submit/cancel still reconcile immediately after the HTTP request. The strategy's
+  ten-second fill deadline and unresolved-order shutdown rules remain unchanged.
+  Intervals are scheduling targets, not guaranteed confirmation latency: broker
+  request time, bounded read retries and dispatcher serialization still apply.
+
+On a disconnect or ten seconds without frames, new entries are blocked.
+The gap triggers reconciliation; reconnect triggers another reconciliation.
+Admission reopens only after a successful snapshot for the current connection
+generation. A snapshot started before a disconnect cannot reopen it.
+An entry attempted while recovery is incomplete is denied; the selected strategy
+treats denial as a failure and stops. Reduce-only exits and cancellations retain
+REST access while the execution client remains active. Terminal stream/reconciliation
+failure stops the client, signals shutdown and marks the account for review.
+
+There are at most two reconnects per run, with bounded backoff. Handshake/authentication
+failure, malformed order messages, wrong-account messages and broker error messages
+fail closed. Raw payloads and credentials are not logged. Stop cancels the reader,
+including an in-progress handshake, and closes the socket. Mock/sandbox clients
+retain their existing polling path and do not open this production order stream.
+
+Implementation:
+- `crates/kite-adapter/src/execution/native_client/order_stream.rs`
+- `crates/kite-adapter/src/execution/native_client/order_stream_tests.rs`
+- Native client lifecycle and dispatcher admission guards in the same directory.
+
+Local WebSocket fixtures verify notifications, duplicate fills, absent notifications,
+fallback checks, ping/pong, disconnects, heartbeat timeout, cancellation during
+reconnect, stale snapshots, failed reconciliation and disconnect during order
+preflight. No live Kite session or real order is needed for these tests.
+
+References:
+- https://kite.trade/docs/connect/v3/websocket/#postbacks-and-non-binary-updates
+- https://kite.trade/docs/connect/v3/postbacks/#payload-attributes
+
+Verification for this change: 124 feature-enabled adapter tests passed (including
+nine new order-stream tests). The selected protected-market native mock integration
+and SIGTERM/flat-account restart regression also passed using isolated test Redis.
+Adapter Clippy with all targets and warnings denied, changed-file formatting and
+Git whitespace checks passed. No live broker requests or production orders were
+made as part of this verification.

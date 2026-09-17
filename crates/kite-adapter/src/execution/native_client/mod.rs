@@ -4,6 +4,7 @@ mod dispatch;
 mod fees;
 mod ledger;
 pub mod mock;
+mod order_stream;
 pub(crate) mod outage;
 pub mod production;
 pub mod recovery;
@@ -109,6 +110,7 @@ pub struct Client {
     id: ClientId,
     connected: bool,
     production: bool,
+    order_stream_ready: Arc<std::sync::atomic::AtomicBool>,
     stop_signal: Option<Arc<std::sync::atomic::AtomicBool>>,
     account: RefCell<Option<AccountAny>>,
     dispatcher: Option<Arc<tokio::sync::Mutex<dispatch::Dispatcher>>>,
@@ -146,6 +148,7 @@ impl Client {
             id: ClientId::from(name),
             connected: false,
             production: false,
+            order_stream_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             stop_signal: None,
             account: RefCell::new(None),
             dispatcher: None,
@@ -279,6 +282,8 @@ impl ExecutionClient for Client {
     }
     fn stop(&mut self) -> Result<()> {
         self.connected = false;
+        self.order_stream_ready
+            .store(false, std::sync::atomic::Ordering::Release);
         self.active
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
@@ -298,6 +303,12 @@ impl ExecutionClient for Client {
             "Native execution event channel unavailable"
         );
         self.broker.verify().await?;
+        // Connect before the initial snapshot so updates during startup are buffered.
+        let order_socket = if self.production {
+            Some(order_stream::connect(&self.config.credentials).await?)
+        } else {
+            None
+        };
         let snapshot = outage::snapshot(self.broker.as_ref()).await?;
         reports::positions_for(
             &snapshot,
@@ -327,6 +338,8 @@ impl ExecutionClient for Client {
         self.connected = true;
         self.active
             .store(true, std::sync::atomic::Ordering::Release);
+        self.order_stream_ready
+            .store(self.production, std::sync::atomic::Ordering::Release);
         if let Some(dispatcher) = &self.dispatcher {
             let dispatcher = dispatcher.clone();
             let active = self.active.clone();
@@ -334,7 +347,32 @@ impl ExecutionClient for Client {
             let tx = try_get_exec_event_sender()
                 .ok_or_else(|| anyhow!("Native event channel unavailable"))?;
             let production = self.production;
+            let stream_ready = self.order_stream_ready.clone();
+            let credentials = self.config.credentials.clone();
+            let user_id = self.config.user_id.clone();
             self.poll = Some(tokio::spawn(async move {
+                if let Some(socket) = order_socket {
+                    let result = order_stream::Monitor {
+                        dispatcher: dispatcher.clone(),
+                        tx: tx.clone(),
+                        active: active.clone(),
+                        ready: stream_ready.clone(),
+                        credentials,
+                        user_id,
+                    }
+                    .run(socket)
+                    .await;
+                    if result.is_err() {
+                        stream_ready.store(false, std::sync::atomic::Ordering::Release);
+                        active.store(false, std::sync::atomic::Ordering::Release);
+                        if let Some(signal) = &stop_signal {
+                            signal.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        dispatcher.lock().await.fault();
+                        eprintln!("Kite order-stream reconciliation failed; review required");
+                    }
+                    return result;
+                }
                 while active.load(std::sync::atomic::Ordering::Acquire) {
                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     if !active.load(std::sync::atomic::Ordering::Acquire) {
@@ -430,6 +468,8 @@ impl ExecutionClient for Client {
                 self.tasks.borrow().len() < 256,
                 "Native task admission capacity exhausted"
             );
+            let production = self.production;
+            let stream_ready = self.order_stream_ready.clone();
             self.tasks.borrow_mut().push(tokio::spawn(async move {
                 ensure!(
                     active.load(std::sync::atomic::Ordering::Acquire),
@@ -441,7 +481,18 @@ impl ExecutionClient for Client {
                     "Native client stopped before dispatch"
                 );
                 let result = async {
-                    service.submit(order, position as i64, &tx).await?;
+                    if production {
+                        service
+                            .submit_guarded(
+                                order,
+                                position as i64,
+                                &tx,
+                                Some(stream_ready.as_ref()),
+                            )
+                            .await?;
+                    } else {
+                        service.submit(order, position as i64, &tx).await?;
+                    }
                     service.refresh(&tx).await
                 }
                 .await;
