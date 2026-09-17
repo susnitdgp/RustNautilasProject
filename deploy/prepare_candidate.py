@@ -23,7 +23,7 @@ destination.mkdir(parents=True,exist_ok=False)
 for directory in ["bin","config","doc"]:(destination/directory).mkdir()
 shutil.copy2(binary,destination/"bin/kite-node")
 shutil.copy2(selection,destination/"config/production-supertrend.json")
-for name in ["ProductionDeployment.md","SupertrendConfirmationReview.md","SupertrendLiveNode.md","ProductionSession.md"]:
+for name in ["RedisReference.md","RedisCredentials.md","SlackAlerts.md"]:
     shutil.copy2(root/"doc"/name,destination/"doc"/name)
 names=git("ls-files","--cached","--others","--exclude-standard","-z").decode().split("\0")
 with tarfile.open(destination/"source.tar.gz","w:gz") as archive:

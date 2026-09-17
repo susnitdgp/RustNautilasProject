@@ -41,13 +41,6 @@ No Kite authentication request, WebSocket session or order submission is perform
 This synchronous reader is for the standalone preflight/startup boundary only.
 The live runtime must obtain credentials outside its core event loop.
 
-## Verification result
-
-15 September 2026, ip-172-31-36-59: 26 tests passed; Clippy passed
-with warnings denied. Full preflight loaded both keys from local Redis and
-resolved CRUDEOIL26SEPFUT.MCX at 07:00:00 UTC. Output contained only
-credentials_loaded=true and kite_session_validated=false, with no secret values.
-
-The later session-check and stream commands do validate the stored credentials
-with Kite; see doc/Step2Verification.md. Plain preflight remains an instrument
-and Redis check and continues to report kite_session_validated=false.
+The session-check and stream commands validate the stored credentials with Kite.
+Plain preflight remains an instrument and Redis check and reports
+kite_session_validated=false.

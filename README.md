@@ -1,88 +1,57 @@
 # Rust Nautilus + Zerodha Kite
 
-Latest user-selected endpoint: http://94.136.191.37:3000/. Its current static mock responses fail native execution compatibility checks. Configuration and findings: [doc/CustomSandbox.md](doc/CustomSandbox.md). Real orders remain disabled.
+Rust trading workspace using NautilusTrader, Kite market data and execution, and Redis persistence.
 
-Latest hardening, short trading, explicit signals, local protection and official sandbox status: [doc/NativeHardening.md](doc/NativeHardening.md). Real orders remain disabled.
+## Current setup
 
-Rust workspace for a modular Kite integration. First target: standard MCX
-CRUDEOIL September 2026 futures (not CRUDEOILM).
+The execution code is restored to **v1.0.0 (`eedbd6b`)**, with a subsequent documentation cleanup. Local broker configuration and the release binary are managed separately from Git.
 
-**Current native integration:** LiveNode/Kernel/Trader, native strategy and audit
-actor, DataEngine/RiskEngine/ExecutionEngine, Sandbox matching, portfolio/accounts,
-Redis cache, ParquetDataCatalog, BacktestNode/BacktestEngine, SMA indicators,
-OrderEmulator and TWAP are exercised. Full Kite packets reach the user strategy,
-roundtrip through the native catalog, and replay through BacktestNode.
-Native Kite ExecutionClient/factory, Redis-owned command dispatch, delayed broker
-updates and calculated-fee mass reconciliation are now integrated and fixture-tested; see [Kite continuation](doc/NativeKiteExecution.md).
-Run native-kite-mock to exercise this adapter through LiveNode. The real broker
-client remains read-only and real orders remain disabled. Native startup and immediate LIMIT event-order warnings are
-fixed with two pinned local Nautilus patches; see
-[event compatibility verification](doc/NativeEventCompatibility.md).
-See [native architecture and verification](doc/NativeIntegration.md) for exact
-scope, test evidence, commands and remaining integration work.
+- Instrument: CRUDEOIL26SEPFUT; five-minute completed candles; one lot.
+- Entries: Supertrend ATR(7), Wilder smoothing, multiplier 2; matching MACD(12,26,9) and session VWAP confirmation.
+- Exits: opposite Supertrend, session shutdown or graceful stop. Additional ATR stop disabled.
+- Production orders: MARKET / MIS / DAY with `market_protection=-1`.
+- Quotes: Kite WebSocket. Order confirmation: REST polling, with fills confirmed from broker trades.
+- Orders, application state and ownership: Redis. Failed runs require review before restart.
 
-Edit strategy decisions in `apps/kite-node/src/native_node/strategy.rs`.
-`on_full_tick` receives depth, OHLC, volume, OI and the derived native quote;
-its default delegates to `on_quote`. Quote-only catalogs use `on_quote`.
-The runtime still restricts execution to one long contract and one pending order.
-Strategy parameters are in `config/strategy-crossover.toml`.
-There is **no usable live execution enable flag** for the native node today.
-`native-node-live` rejects execution; `native-node-paper` means live data with
-simulated fills, not broker orders.
+The September contract and configured calendar end September 21, 2026. Rollover is manual.
 
-**Earlier stages:** modular preflight, Redis credentials, session validation,
-WebSocket diagnostics, a Nautilus DataClient/factory and DataEngine quote runner,
-plus Parquet recording, offline quote replay and read-only broker reconciliation. Nautilus is pinned to 0.63.0.
-See [Step 3 verification](doc/Step3Verification.md) for capture/replay commands
-and [Step 2 verification](doc/Step2Verification.md) for sample price display.
-See [Step 4 verification](doc/Step4Verification.md) for the read-only reconcile command.
-See [Step 5A verification](doc/Step5Verification.md) for the durable Redis journal
-and offline mock execution simulator.
-See [Step 5B verification](doc/Step5BVerification.md) for shared Redis order budgets.
-See [Step 5C verification](doc/Step5CVerification.md) for mock modification and cancellation.
-See [Step 5D verification](doc/Step5DVerification.md) for native Nautilus order/fill report mapping.
-See [Step 6 verification](doc/Step6Verification.md) for the reference crossover
-strategy, paper replay, and guarded Kite HTTP/service modules.
-Native LiveNode paper integration is now implemented. Production risk controls
-and real broker activation remain pending. Earlier stage commands use
-the previous Session/paper runtime and do not validate the new native node.
-See [implementation stages](doc/Implementation.md) and [verification](doc/Verification.md).
+## Build and manual operation
 
-Run from this repository:
+From the repository root, build the live-capable binary:
 
 ```bash
-cargo run --locked -p kite-node -- preflight config/crudeoil-september.toml --download
-cargo test --locked --workspace
+cargo build --locked --release -p kite-node --features kite-adapter/live-orders -j 3
 ```
 
-Preflight loads the API key and access token from Redis before downloading the
-public instrument master. See [Redis credentials](doc/RedisCredentials.md).
-Configuration requires an explicit expiry. Expired targets fail; there is no
-automatic roll. Token, lot size and tick size come from the downloaded master.
+Real trading requires the live-orders build feature, enabled local broker configuration, the expected Kite account, valid credentials and clean ownership checks. The local production configuration may differ from the committed defaults.
 
-The reported broker lot size is NOT the monetary multiplier. The September
-standard crude-oil contract now has a source-verified 100-barrel multiplier.
-MIS/NRML profile mapping and broker quantity checks are implemented.
-Native account/order/fill/position reports and Redis-owned mock dispatch are
-implemented. Real broker execution stays disabled pending hardening and authorization.
+The following command **starts real trading** when those gates pass; use it only when intending to trade:
 
-Nautilus dependencies are LGPL-3.0-only; review upstream license obligations
-before redistribution. This project pins published crates and carries two documented local compatibility
-patches; see vendor/README.md.
+```bash
+./deploy/run-supertrend-live.sh
+```
 
-### Native Nautilus paper execution (Step 7)
+Keep the terminal open. Ctrl-C requests graceful shutdown and a reducing exit; verify the actual final position and open orders in Kite. Session mode must start during the configured trading hours and before its shutdown window. The application begins shutdown 30 minutes before the configured session close.
 
-Run `cargo run --locked -p kite-node -- nautilus-paper-sim config/strategy-crossover.toml`.
-This exercises a real ExecutionEngine and paper ExecutionClient with synthetic
-quotes, Redis persistence, native fills/cancellation and fresh-cache replay.
-[Verification and scope](doc/Step7Verification.md).
+## Recovery
 
-### Live Kite full ticks with native strategy and paper risk flow (Step 8)
+Reports are saved under `data/supertrend-live/<RUN_UUID>/`. Inspect a failed run without submitting orders:
 
-Run `cargo run --locked -p kite-node -- paper-flow-sim config/strategy-crossover.toml` first.
-Then use `paper-live config/crudeoil-september.toml config/strategy-crossover.toml --seconds 30`.
-The native Strategy actor receives KiteFullTick custom data including five-level
-depth, OHLC, volume and open interest. Derived quotes support paper matching.
-The RiskEngine routes orders to paper execution only; diagnostics classify rejected
-updates and distinguish transport gaps from quality suspensions.
-[Verification, disconnect and restart behavior](doc/Step8Verification.md).
+```bash
+./target/release/kite-node native-recover RUN_UUID
+./target/release/kite-node native-kite-review RUN_UUID
+./target/release/kite-node native-kite-status EXPECTED_USER_ID
+```
+
+Compare the journal with Kite orders, trades and positions before releasing stale ownership. A manual broker closure does not automatically update the old strategy journal. Preserve the reports and review audit; never clear Redis broadly to bypass startup checks.
+
+## Maintained references
+
+- [Redis keys, ownership and recovery](doc/RedisReference.md)
+- [Redis credentials](doc/RedisCredentials.md)
+- [Optional Slack alerts](doc/SlackAlerts.md)
+- [Pinned Nautilus compatibility patches](vendor/README.md)
+
+Historical implementation notes and verification reports have been removed from the working tree; earlier revisions remain in Git. The documentation cleanup does not change trading code or validate new live execution.
+
+Nautilus is pinned to 0.63.0 with documented local patches. Its dependencies include LGPL-3.0-only components; review the upstream licenses before redistribution.

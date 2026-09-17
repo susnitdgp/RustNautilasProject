@@ -34,5 +34,5 @@ Upstream tests were run in an isolated temporary workspace containing these two
 source copies, using the project target directory. Published crates omit one
 include_str fixture; its original contents were downloaded from the exact source
 commit above (test_data/databento/esh4-glbx-mdp3-20231225.mbo.json). No fixture was
-fabricated and no upstream test expectations were changed. See
-`doc/NativeEventCompatibility.md` for the regression scope and evidence.
+fabricated and no upstream test expectations were changed. Historical regression
+evidence remains available in earlier Git revisions.
