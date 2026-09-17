@@ -264,9 +264,14 @@ fn run_backend_inner(
         };
         display.render(&state.borrow(),&control);
         watcher.abort();owner_monitor.abort();
+        // LiveNode disposal disconnects execution clients and performs the final
+        // broker reconciliation. Snapshot native state only after that completes;
+        // otherwise a last shutdown fill is omitted from the report.
+        node.dispose();
+        result?;
         let position=state.borrow().cache.as_ref().map(|cache|cache.borrow().positions_open(None,None,None,None,None).iter().map(|p|p.signed_qty).sum::<f64>()).unwrap_or(0.);
         let pending=state.borrow().cache.as_ref().map(|cache|cache.borrow().orders_open(None,None,None,None,None).len()+cache.borrow().orders_inflight(None,None,None,None,None).len()).unwrap_or(0);
-        node.dispose();result?;Ok::<_,anyhow::Error>((position,pending))
+        Ok::<_,anyhow::Error>((position,pending))
     });
     if kite_mock || real {
         let scope = production
