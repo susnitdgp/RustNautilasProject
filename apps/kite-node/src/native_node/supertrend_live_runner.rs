@@ -102,17 +102,10 @@ pub fn run_recovery_fixture(config: &str) -> Result<()> {
 }
 pub fn run_broker(config: &str, settings: &str) -> Result<()> {
     let selection = super::production::Selection::load(config)?;
-    ensure!(
-        selection.pivot_point.is_none(),
-        "Pivot Point SuperTrend is available for simulation/paper only; production activation is not enabled"
-    );
-    let mut settings: kite_adapter::execution::native_client::production::Settings =
-        serde_json::from_str(&std::fs::read_to_string(settings)?)?;
-    settings.instrument_token = selection.instrument_token;
-    settings.validate()?;
+    let settings = selection.broker_settings(settings)?;
     run_backend(
         config,
-        selection.session_duration(data::now())?,
+        selection.production_duration(data::now())?,
         false,
         false,
         Some(settings),
@@ -172,7 +165,7 @@ fn run_backend_inner(
     let selection = super::production::Selection::load(config)?;
     ensure!(
         (5..=86360).contains(&seconds),
-        "Paper duration must be 5..86360 seconds"
+        "Run duration must be 5..86360 seconds"
     );
     let date = chrono::Utc::now()
         .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
@@ -195,7 +188,7 @@ fn run_backend_inner(
     };
     super::supertrend_terminal::step("Loading completed five-minute candles for warmup");
     let (warmup, simulated) = if sim {
-        if selection.pivot_point.is_some() {
+        if selection.pivot_point.is_some() || selection.trend_ribbon.is_some() {
             pivot_synthetic(&selection)?
         } else {
             synthetic()?
@@ -207,10 +200,11 @@ fn run_backend_inner(
     };
     ensure!(
         warmup.len()
-            >= selection
-                .pivot_point
-                .as_ref()
-                .map_or(100, |p| 100.max(p.atr_period)),
+            >= selection.pivot_point.as_ref().map_or_else(
+                || selection.trend_ribbon.as_ref().map_or(100, |r| 100
+                    .max(r.alma_length.max(r.deviation_length).max(r.atr_length) + r.slope_length)),
+                |p| 100.max(p.atr_period)
+            ),
         "Insufficient indicator warmup"
     );
     if !sim {
@@ -219,10 +213,10 @@ fn run_backend_inner(
     let (start, end) = if sim {
         (bars::close(warmup.last().unwrap())?, u64::MAX)
     } else {
-        let (session_start, end) = selection.session_bounds(date)?;
+        let (session_start, end) = selection.execution_bounds(date, real)?;
         ensure!(
             data::now() >= session_start && data::now() + 15_000_000_000 < end,
-            "Start paper mode during the configured session"
+            "Start the strategy during the configured execution session"
         );
         (data::now(), end)
     };
@@ -230,12 +224,14 @@ fn run_backend_inner(
         seconds
     } else {
         let remaining = end.saturating_sub(data::now());
-        seconds.min(if selection.pivot_point.is_some() {
-            remaining.div_ceil(1_000_000_000)
-        } else {
-            (remaining / 1_000_000_000)
-                .saturating_sub(super::supertrend_session::EXIT_BUFFER_SECONDS)
-        })
+        seconds.min(
+            if selection.pivot_point.is_some() || selection.trend_ribbon.is_some() {
+                remaining.div_ceil(1_000_000_000)
+            } else {
+                (remaining / 1_000_000_000)
+                    .saturating_sub(super::supertrend_session::EXIT_BUFFER_SECONDS)
+            },
+        )
     };
     ensure!(seconds >= 5, "Too close to session end to start");
     super::supertrend_terminal::step("Checking Redis persistence and strategy ownership");
@@ -287,8 +283,9 @@ fn run_backend_inner(
             builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"MIS".into(),instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),instrument_token:token}))?.build()?
         }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?.build()?};
         let bt:BarType=format!("{}-5-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
-        let mut strategy = BarStrategy::new(bt,start,end,state.clone()).with_confirmation(selection.pivot_point.is_none()).with_live(control.clone());
+        let mut strategy = BarStrategy::new(bt,start,end,state.clone()).with_confirmation(selection.pivot_point.is_none() && selection.trend_ribbon.is_none()).with_live(control.clone());
         if let Some(pivot) = &selection.pivot_point { strategy = strategy.with_pivot(pivot.clone(),selection.session_calendar.clone())?; }
+        if let Some(ribbon) = &selection.trend_ribbon { strategy = strategy.with_ribbon(ribbon.clone(),selection.session_calendar.clone())?; }
         node.add_strategy(strategy)?;
         let owner_monitor=lease.monitor(control.clone());
         let handle=node.handle();let ctl=control.clone();
@@ -304,7 +301,7 @@ fn run_backend_inner(
             }
             handle.stop();
         });
-        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":selection.strategy,"interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"live_orders_enabled":real}));
+        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":selection.strategy,"interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"square_off_ns":if sim{None}else{Some(end)},"live_orders_enabled":real}));
         alerts.emit(format!("{} 5m: run {id} initialized; real_orders={real}", selection.symbol));
         let mut was_paused=false;
         let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock,&selection);
@@ -372,11 +369,11 @@ fn run_backend_inner(
         "simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
         "bars":s.indicators.len(),"warmup_bars":warmup.len(),"signals":s.signals.len(),"fills":s.fills.len(),"open_contracts":position,
         "open_orders":pending,"errors":s.errors,"feed_fault":fault,"run_error":outcome.as_ref().err().map(ToString::to_string),
-        "indicator_rebuilds":control.recoveries.load(Ordering::Acquire),"automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":real,"broker_orders_sent":if real {serde_json::Value::Null}else{serde_json::json!(false)}});
+        "square_off_ns":if sim{None}else{Some(end)},"indicator_rebuilds":control.recoveries.load(Ordering::Acquire),"automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":real,"broker_orders_sent":if real {serde_json::Value::Null}else{serde_json::json!(false)}});
     super::backtest_report::json(&folder, "summary.json", &output)?;
     println!("{output}");
     super::supertrend_terminal::finish(clean, &folder, real);
     outcome?;
-    ensure!(clean, "Paper run requires recovery review");
+    ensure!(clean, "Strategy run requires recovery review");
     Ok(())
 }

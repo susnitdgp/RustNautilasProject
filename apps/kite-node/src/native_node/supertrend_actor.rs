@@ -38,6 +38,7 @@ pub struct BarStrategy {
     core: StrategyCore,
     indicator: Supertrend,
     pivot: Option<super::pivot_point::PivotPoint>,
+    ribbon: Option<super::trend_ribbon::TrendRibbon>,
     bar_type: BarType,
     start: u64,
     end: u64,
@@ -61,6 +62,7 @@ impl BarStrategy {
             }),
             indicator: Supertrend::new(),
             pivot: None,
+            ribbon: None,
             bar_type,
             start,
             end,
@@ -80,6 +82,15 @@ impl BarStrategy {
         calendar: super::session_calendar::Calendar,
     ) -> Result<Self> {
         self.pivot = Some(super::pivot_point::PivotPoint::new(settings, calendar)?);
+        self.filtered = false;
+        Ok(self)
+    }
+    pub fn with_ribbon(
+        mut self,
+        settings: super::trend_ribbon::Settings,
+        calendar: super::session_calendar::Calendar,
+    ) -> Result<Self> {
+        self.ribbon = Some(super::trend_ribbon::TrendRibbon::new(settings, calendar)?);
         self.filtered = false;
         Ok(self)
     }
@@ -264,6 +275,26 @@ impl DataActor for BarStrategy {
             control.fail("Out-of-order or future bar");
             return Ok(());
         }
+        if let Some(ribbon) = &mut self.ribbon {
+            let observation = ribbon.update(
+                b.high.as_f64(),
+                b.low.as_f64(),
+                b.close.as_f64(),
+                b.ts_event.as_u64(),
+            )?;
+            if !observation.in_session {
+                self.target = 0;
+            }
+            if b.ts_event.as_u64() > self.start && observation.signal != 0 {
+                self.target = observation.signal;
+            }
+            self.last_bar = b.ts_event.as_u64();
+            self.state
+                .borrow_mut()
+                .indicators
+                .push(serde_json::to_value(observation)?);
+            return Ok(());
+        }
         if let Some(pivot) = &mut self.pivot {
             let observation = pivot.update(
                 b.high.as_f64(),
@@ -334,6 +365,9 @@ impl DataActor for BarStrategy {
                 if let Some(pivot) = &self.pivot {
                     self.pivot = Some(pivot.rebuild_empty()?);
                 }
+                if let Some(ribbon) = &self.ribbon {
+                    self.ribbon = Some(ribbon.rebuild_empty()?);
+                }
                 self.confirmation = super::supertrend_confirmation::Confirmation::new();
                 self.last_bar = 0;
                 self.target = 0;
@@ -342,7 +376,7 @@ impl DataActor for BarStrategy {
                 for bar in bars {
                     self.on_bar(&bar)?;
                 }
-                if self.pivot.is_some() {
+                if self.pivot.is_some() || self.ribbon.is_some() {
                     // A corrected history can require an exit, but cannot replay an
                     // old entry. Keep only an existing position that still agrees.
                     let position = self.position();
@@ -391,18 +425,22 @@ impl DataActor for BarStrategy {
         {
             return Ok(());
         }
+        let session_clock = if self.live.as_ref().is_some_and(|c| c.sim) {
+            self.last_bar
+        } else {
+            ts
+        };
         let session_closed = if let Some(pivot) = &self.pivot {
-            let clock = if self.live.as_ref().is_some_and(|c| c.sim) {
-                self.last_bar
-            } else {
-                ts
-            };
-            !pivot.in_session(clock)?
+            !pivot.in_session(session_clock)?
+        } else if let Some(ribbon) = &self.ribbon {
+            !ribbon.in_session(session_clock)?
         } else {
             false
         };
         let target = if session_closed { 0 } else { target };
-        let reason = if self.pivot.is_some() && (session_closed || ts >= self.end) {
+        let reason = if (self.pivot.is_some() || self.ribbon.is_some())
+            && (session_closed || ts >= self.end)
+        {
             "session_end"
         } else if stopping {
             "shutdown"
@@ -410,6 +448,8 @@ impl DataActor for BarStrategy {
             "end_of_day"
         } else if self.pivot.is_some() {
             "pivot_supertrend"
+        } else if self.ribbon.is_some() {
+            "trend_ribbon"
         } else {
             "supertrend"
         };

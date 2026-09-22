@@ -23,6 +23,7 @@ pub struct Display {
     id: String,
     symbol: String,
     pivot: Option<super::pivot_point::Settings>,
+    production_cutoff: Option<String>,
     dashboard: bool,
 }
 
@@ -48,6 +49,19 @@ impl Display {
             id: id.into(),
             symbol: selection.symbol.clone(),
             pivot: selection.pivot_point.clone(),
+            production_cutoff: if real && selection.pivot_point.is_some() {
+                selection
+                    .execution_bounds(super::pivot_session::date(data::now()), true)
+                    .ok()
+                    .map(|(_, end)| {
+                        chrono::DateTime::from_timestamp_nanos(end as i64)
+                            .with_timezone(&chrono::FixedOffset::east_opt(19_800).unwrap())
+                            .format("%H:%M:%S IST")
+                            .to_string()
+                    })
+            } else {
+                None
+            },
             dashboard,
         };
         if !dashboard {
@@ -273,6 +287,9 @@ impl Snapshot {
         let mut output = heading('┌', '┐', &title);
         output.push_str(&row("Status", self.phase));
         output.push_str(&row("Run", &display.id));
+        if let Some(cutoff) = &display.production_cutoff {
+            output.push_str(&row("Live cutoff", cutoff));
+        }
         output.push_str(&section("Configuration"));
         output.push_str(&row(
             "Feed / exec",

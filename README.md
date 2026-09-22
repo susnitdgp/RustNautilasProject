@@ -13,7 +13,7 @@ The working tree builds on **v1.0.0 (`eedbd6b`)**, with shutdown reporting fixes
 - Quotes: Kite WebSocket. Production order updates: a dedicated Kite order WebSocket triggers REST reconciliation; slower fallback and pending checks remain, with fills confirmed from broker trades.
 - Orders, application state and ownership: Redis. Failed runs require review before restart.
 
-Contract selection and live session coverage are configured in `config/production-supertrend.json`. The October symbol, token `145894407`, expiry `2026-10-19`, tick size and broker lot size were checked against the [Kite MCX instrument master](https://api.kite.trade/instruments/MCX) on September 22, 2026. Rollover remains manual.
+Contract selection and live session coverage are configured in `config/production-supertrend.json` for the original strategy and `config/production-pivot-supertrend.json` for Pivot Point SuperTrend. The October symbol, token `145894407`, expiry `2026-10-19`, tick size and broker lot size were checked against the [Kite MCX instrument master](https://api.kite.trade/instruments/MCX) on September 22, 2026. Rollover remains manual.
 
 ## Build and manual operation
 
@@ -37,7 +37,7 @@ Sandbox strategy lifecycle hooks are disabled by default. To opt in, set `sandbo
 
 ## Contract rollover through JSON
 
-For the live Supertrend launcher and its paper/mock variants, `config/production-supertrend.json` is the contract source of truth:
+The selected strategy JSON is the contract source of truth: `config/production-supertrend.json` for the original live strategy, `config/production-pivot-supertrend.json` for live Pivot, and `config/pivot-point-supertrend.json` for Pivot paper/simulation. Update each selection that you intend to run at rollover. Example identity/calendar fields:
 
 ```json
 {
@@ -86,7 +86,20 @@ The supplied intraday Pine indicator is available as `pivot_point_supertrend`, c
 ./target/release/kite-node native-pivot-kite-mock config/pivot-point-supertrend.json
 ```
 
-This command uses synthetic data and the native Kite mock adapter. For live-data paper operation use `native-pivot-session-paper` with the same JSON. Production activation of this new strategy is blocked; the existing live launcher keeps its current selection. See [parameters, Pine session corrections and run modes](doc/PivotPointSupertrend.md).
+This command uses synthetic data and the native Kite mock adapter. For live-data paper operation use `native-pivot-session-paper` with the same JSON.
+
+Pivot production uses a separate selection, `config/production-pivot-supertrend.json`, and a manual launcher. Its strategy gate is enabled in that file; the live-capable build and enabled private broker configuration are still required. The paper selection cannot start production.
+
+```bash
+# Offline configuration check; does not start trading or access the account.
+./target/release/kite-node native-pivot-production-check \
+    config/production-pivot-supertrend.json config/kite-production.json
+
+# Starts REAL Pivot Point trading after the runtime gates pass.
+./deploy/run-pivot-live.sh
+```
+
+The production default is 09:00–23:00 IST. The effective cutoff is capped at 30 minutes before the configured market close; paper retains 23:15. Production uses the same Kite adapter, WebSocket-triggered reconciliation, reducing exits and Redis account guards as the original strategy. The original Supertrend launcher retains its selection. See [parameters, production procedure, Pine session corrections and run modes](doc/PivotPointSupertrend.md).
 
 ## Recovery
 

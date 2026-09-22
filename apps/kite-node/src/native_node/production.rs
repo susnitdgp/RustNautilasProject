@@ -1,4 +1,4 @@
-//! Validated production selection and offline release verification; no live activation.
+//! Validated strategy selection, production gates and offline release verification.
 use super::session_calendar::Calendar;
 use anyhow::{Result, ensure};
 use chrono::{Datelike, NaiveDate};
@@ -23,6 +23,7 @@ pub struct Selection {
     atr_stop_enabled: bool,
     live_orders_enabled: bool,
     pub pivot_point: Option<super::pivot_point::Settings>,
+    pub trend_ribbon: Option<super::trend_ribbon::Settings>,
 }
 impl Selection {
     pub fn load(path: &str) -> Result<Self> {
@@ -31,6 +32,12 @@ impl Selection {
         Ok(s)
     }
     pub fn session_bounds(&self, date: NaiveDate) -> Result<(u64, u64)> {
+        if let Some(ribbon) = &self.trend_ribbon {
+            return ribbon
+                .session
+                .window(date, &self.session_calendar)?
+                .ok_or_else(|| anyhow::anyhow!("No Trend Ribbon trading session for {date}"));
+        }
         if let Some(pivot) = &self.pivot_point {
             pivot
                 .session
@@ -41,7 +48,7 @@ impl Selection {
         }
     }
     pub fn session_duration(&self, now: u64) -> Result<u64> {
-        if self.pivot_point.is_none() {
+        if self.pivot_point.is_none() && self.trend_ribbon.is_none() {
             return super::supertrend_session::duration(now, &self.session_calendar);
         }
         let (start, end) = self.session_bounds(super::pivot_session::date(now))?;
@@ -50,6 +57,50 @@ impl Selection {
             "Start Pivot Point during its configured session and before square-off"
         );
         Ok((end - now).div_ceil(1_000_000_000))
+    }
+    /// Effective live cutoff retains the application's existing MIS exit buffer.
+    pub fn execution_bounds(&self, date: NaiveDate, real: bool) -> Result<(u64, u64)> {
+        let (start, mut end) = self.session_bounds(date)?;
+        if real && (self.pivot_point.is_some() || self.trend_ribbon.is_some()) {
+            let (_, market_close) = self.session_calendar.bounds(date)?;
+            let cutoff = market_close
+                .checked_sub(super::supertrend_session::EXIT_BUFFER_SECONDS * 1_000_000_000)
+                .ok_or_else(|| anyhow::anyhow!("Invalid production session cutoff"))?;
+            end = end.min(cutoff);
+            ensure!(
+                start < end,
+                "Pivot production session ends before its configured start"
+            );
+        }
+        Ok((start, end))
+    }
+    pub fn production_duration(&self, now: u64) -> Result<u64> {
+        if self.pivot_point.is_none() && self.trend_ribbon.is_none() {
+            return self.session_duration(now);
+        }
+        let (start, end) = self.execution_bounds(super::pivot_session::date(now), true)?;
+        ensure!(
+            now >= start && now + 15_000_000_000 < end,
+            "Start Pivot production during its session and before the MIS application exit window"
+        );
+        Ok((end - now).div_ceil(1_000_000_000))
+    }
+    pub fn broker_settings(
+        &self,
+        path: &str,
+    ) -> Result<kite_adapter::execution::native_client::production::Settings> {
+        if self.pivot_point.is_some() || self.trend_ribbon.is_some() {
+            ensure!(
+                self.live_orders_enabled,
+                "Pivot production requires live_orders_enabled=true in the strategy JSON; paper selection cannot start real orders"
+            );
+        }
+        let mut settings: kite_adapter::execution::native_client::production::Settings =
+            serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        // The strategy selection is the routing source of truth for all live modes.
+        settings.instrument_token = self.instrument_token;
+        settings.validate()?;
+        Ok(settings)
     }
     pub fn resolve(
         &self,
@@ -98,10 +149,6 @@ impl Selection {
             "Configured symbol and expected expiry month disagree"
         );
         ensure!(
-            !self.live_orders_enabled,
-            "Real-order activation is not supported"
-        );
-        ensure!(
             !self.atr_stop_enabled,
             "Selected production strategy has no added ATR stop"
         );
@@ -113,9 +160,14 @@ impl Selection {
                 && self.contracts == 1,
             "Selection requires one configured MCX crude oil contract and five-minute bars"
         );
-        match (self.strategy.as_str(), &self.pivot_point) {
-            ("supertrend_macd_vwap", None) => ensure!(
-                self.supertrend_period == Some(7)
+        match (
+            self.strategy.as_str(),
+            &self.pivot_point,
+            &self.trend_ribbon,
+        ) {
+            ("supertrend_macd_vwap", None, None) => ensure!(
+                !self.live_orders_enabled
+                    && self.supertrend_period == Some(7)
                     && self.supertrend_multiplier == Some(2)
                     && self.macd_fast == Some(12)
                     && self.macd_slow == Some(26)
@@ -123,7 +175,7 @@ impl Selection {
                     && self.session_vwap == Some(true),
                 "Selection differs from the reviewed five-minute strategy"
             ),
-            ("pivot_point_supertrend", Some(pivot)) => {
+            ("pivot_point_supertrend", Some(pivot), None) => {
                 pivot.validate()?;
                 ensure!(
                     self.supertrend_period.is_none()
@@ -135,7 +187,19 @@ impl Selection {
                     "Pivot Point strategy does not use ordinary Supertrend or MACD/VWAP settings"
                 );
             }
-            _ => anyhow::bail!("Unsupported strategy or mismatched Pivot Point configuration"),
+            ("trend_ribbon_boswaves", None, Some(ribbon)) => {
+                ribbon.validate()?;
+                ensure!(
+                    self.supertrend_period.is_none()
+                        && self.supertrend_multiplier.is_none()
+                        && self.macd_fast.is_none()
+                        && self.macd_slow.is_none()
+                        && self.macd_signal.is_none()
+                        && self.session_vwap.is_none(),
+                    "Trend Ribbon does not use Supertrend or MACD/VWAP settings"
+                );
+            }
+            _ => anyhow::bail!("Unsupported strategy or mismatched strategy configuration"),
         }
         Ok(())
     }
@@ -234,7 +298,6 @@ mod tests {
         for (key, value) in [
             ("strategy", serde_json::json!("supertrend_macd_vwap")),
             ("macd_fast", serde_json::json!(12)),
-            ("live_orders_enabled", serde_json::json!(true)),
         ] {
             let mut invalid: serde_json::Value = serde_json::from_str(raw).unwrap();
             invalid[key] = value;
@@ -338,3 +401,7 @@ mod tests {
         assert!(zero_token.validate().is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "pivot_production_tests.rs"]
+mod pivot_production_tests;

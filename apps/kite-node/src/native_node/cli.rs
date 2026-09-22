@@ -14,6 +14,22 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                 ))
             })
             .map(|v| println!("{v}")),
+        ("native-trend-ribbon-sim", [config]) => trend_ribbon_selection(config)
+            .and_then(|_| super::supertrend_live_runner::run(config, 30, true)),
+        ("native-trend-ribbon-paper", [config, seconds]) => trend_ribbon_selection(config)
+            .and_then(|_| seconds.parse::<u64>().map_err(anyhow::Error::from))
+            .and_then(|n| super::supertrend_live_runner::run(config, n, false)),
+        ("native-trend-ribbon-kite-mock", [config]) => {
+            trend_ribbon_selection(config).and_then(|_| {
+                super::supertrend_live_runner::run_with_execution(config, 30, true, true)
+            })
+        }
+        ("native-trend-ribbon-kite-production", [config, broker]) => trend_ribbon_selection(config)
+            .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
+        ("native-trend-ribbon-production-check", [config, broker]) => {
+            trend_ribbon_selection(config)
+                .and_then(|_| super::pivot_production::check(config, broker))
+        }
         ("native-pivot-sim", [config]) => pivot_selection(config)
             .and_then(|_| super::supertrend_live_runner::run(config, 30, true)),
         ("native-pivot-kite-mock", [config]) => pivot_selection(config).and_then(|_| {
@@ -22,12 +38,16 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-pivot-session-paper", [config]) => {
             pivot_selection(config).and_then(|_| super::supertrend_session::run(config))
         }
+        ("native-pivot-kite-production", [config, broker]) => pivot_selection(config)
+            .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
+        ("native-pivot-production-check", [config, broker]) => {
+            super::pivot_production::check(config, broker)
+        }
         ("native-supertrend-recovery-sim", [config]) => {
             super::supertrend_live_runner::run_recovery_fixture(config)
         }
-        ("native-supertrend-kite-production", [config, broker]) => {
-            super::supertrend_live_runner::run_broker(config, broker)
-        }
+        ("native-supertrend-kite-production", [config, broker]) => supertrend_selection(config)
+            .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
         ("native-supertrend-session-paper", [config]) => super::supertrend_session::run(config),
         ("native-supertrend-kite-mock", [config]) => {
             super::supertrend_live_runner::run_with_execution(config, 30, true, true)
@@ -141,7 +161,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-pivot-sim config.json | native-pivot-kite-mock config.json | native-pivot-session-paper config.json | native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-pivot-kite-production config.json broker.json | native-pivot-production-check config.json broker.json | native-pivot-sim config.json | native-pivot-kite-mock config.json | native-pivot-session-paper config.json | native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 
@@ -163,6 +183,26 @@ fn pivot_selection(path: &str) -> Result<()> {
             .pivot_point
             .is_some(),
         "This command requires a pivot_point_supertrend JSON selection"
+    );
+    Ok(())
+}
+
+fn supertrend_selection(path: &str) -> Result<()> {
+    anyhow::ensure!(
+        super::production::Selection::load(path)?
+            .pivot_point
+            .is_none(),
+        "Pivot Point production requires native-pivot-kite-production; the Supertrend launcher keeps its original strategy"
+    );
+    Ok(())
+}
+
+fn trend_ribbon_selection(path: &str) -> Result<()> {
+    anyhow::ensure!(
+        super::production::Selection::load(path)?
+            .trend_ribbon
+            .is_some(),
+        "This command requires a trend_ribbon_boswaves JSON selection"
     );
     Ok(())
 }

@@ -1,0 +1,38 @@
+{
+  "strategy": "pivot_point_supertrend",
+  "instrument": "CRUDEOIL26OCTFUT.MCX",
+  "symbol": "CRUDEOIL26OCTFUT",
+  "instrument_token": 145894407,
+  "interval": "5minute",
+  "contracts": 1,
+  "atr_stop_enabled": false,
+  "live_orders_enabled": true,
+  "expected_expiry": "2026-10-19",
+  "session_calendar": {
+    "timezone": "Asia/Kolkata",
+    "valid_from": "2026-08-17",
+    "valid_through": "2026-10-19",
+    "regular": {
+      "open": "09:00:00",
+      "close": "23:30:00"
+    },
+    "overrides": {
+      "2026-09-14": {
+        "open": "17:00:00",
+        "close": "23:30:00"
+      },
+      "2026-10-02": null
+    }
+  },
+  "pivot_point": {
+    "pivot_period": 2,
+    "atr_period": 10,
+    "atr_factor": 3.0,
+    "session": {
+      "start": "09:00:00",
+      "end": "23:00:00",
+      "days": "23456",
+      "reset_daily": true
+    }
+  }
+}
