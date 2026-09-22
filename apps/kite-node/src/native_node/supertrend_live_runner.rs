@@ -182,6 +182,13 @@ fn run_backend_inner(
     ensure!(seconds >= 5, "Too close to session end to start");
     super::supertrend_terminal::step("Checking Redis persistence and strategy ownership");
     let redis = persistence::redis_config()?;
+    if kite_mock || real {
+        let account = production
+            .as_ref()
+            .map(|s| s.expected_user_id.as_str())
+            .unwrap_or("MOCK");
+        kite_adapter::execution::native_client::coordination::check_startup(account)?;
+    }
     let id = UUID4::new();
     let mut control = Control::new(sim);
     control.real = real;
@@ -280,14 +287,19 @@ fn run_backend_inner(
         }
     }
     let fault = control.fault.lock().expect("fault lock").clone();
-    let (position, pending) = outcome.as_ref().copied().unwrap_or((f64::NAN, 1));
+    // Failed initialization/reconciliation gives no trustworthy position or order count.
+    // Serialize unknown values as null instead of inventing an open order.
+    let (position, pending) = outcome
+        .as_ref()
+        .map(|&(position, pending)| (Some(position), Some(pending)))
+        .unwrap_or((None, None));
     let clean = outcome.is_ok()
-        && position == 0.
-        && pending == 0
+        && position == Some(0.)
+        && pending == Some(0)
         && fault.is_none()
         && state.borrow().errors.is_empty()
         && state.borrow().stopped;
-    lease.finish(clean, position)?;
+    lease.finish(clean, position.unwrap_or(f64::NAN))?;
     let folder = std::path::PathBuf::from(format!("data/supertrend-live/{id}"));
     std::fs::create_dir_all(&folder)?;
     let s = state.borrow();

@@ -22,6 +22,46 @@ pub fn key(account: &str) -> Result<String> {
         "susanta:nautilus:native-kite:account:{{{account}}}"
     ))
 }
+/// Read-only admission check before acquiring a strategy lease. The atomic
+/// Account::acquire remains authoritative if another process starts afterwards.
+pub fn check_startup(account: &str) -> Result<()> {
+    check_startup_at(&connection::url_from_env()?, account)
+}
+pub fn check_startup_at(url: &str, account: &str) -> Result<()> {
+    let key = key(account)?;
+    let mut con = connection::connect(url)?;
+    let (values, ttl): (BTreeMap<String, String>, i64) = redis::pipe()
+        .atomic()
+        .cmd("HGETALL")
+        .arg(&key)
+        .cmd("PTTL")
+        .arg(&key)
+        .query(&mut con)
+        .map_err(|_| anyhow!("Cannot verify native account startup state"))?;
+    validate_startup(&values, ttl)
+}
+fn validate_startup(values: &BTreeMap<String, String>, ttl: i64) -> Result<()> {
+    if values.is_empty() && ttl == -2 {
+        return Ok(());
+    }
+    ensure!(
+        values.get("scope").map(String::as_str) == Some("NATIVE_DISABLED_V1") && ttl == -1,
+        "Account coordination metadata invalid; manual review required"
+    );
+    let value = |key: &str| values.get(key).map(String::as_str).unwrap_or("unknown");
+    ensure!(
+        value("state") == "Clean"
+            && value("owner").is_empty()
+            && value("unresolved") == "0"
+            && value("position") == "0",
+        "Account restart blocked: state={}, owner={}, unresolved={}, position={}. Review the retained run with native-kite-review before restarting; no new strategy owner acquired",
+        value("state"),
+        value("owner"),
+        value("unresolved"),
+        value("position")
+    );
+    Ok(())
+}
 impl Account {
     pub fn acquire(url: &str, account: &str, owner: &str) -> Result<Self> {
         ensure!(
@@ -146,4 +186,39 @@ pub fn status_at(url: &str, account: &str) -> Result<serde_json::Value> {
     Ok(
         serde_json::json!({"event":"native_kite_health","account":account,"state":values.get("state"),"owner":values.get("owner"),"last_namespace":values.get("last_namespace"),"unresolved":values.get("unresolved"),"position":values.get("position"),"heartbeat_age_ms":age,"stale":values.get("state").is_none_or(|s|s!="Clean") && age.is_none_or(|a|a>15000),"command_attempts":values.get("command_attempts"),"restart_blocked":values.get("state").is_none_or(|s|s!="Clean"),"requires_review":values.get("state").is_none_or(|s|s=="ReviewRequired" || (s!="Clean" && age.is_none_or(|a|a>15000))),"live_orders_enabled":false}),
     )
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    #[test]
+    fn admission_requires_absent_or_clean_flat_unowned_durable_account() {
+        let empty = BTreeMap::new();
+        assert!(validate_startup(&empty, -2).is_ok());
+        assert!(validate_startup(&empty, -1).is_err());
+        let clean: BTreeMap<String, String> = [
+            ("scope", "NATIVE_DISABLED_V1"),
+            ("state", "Clean"),
+            ("owner", ""),
+            ("unresolved", "0"),
+            ("position", "0"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        assert!(validate_startup(&clean, -1).is_ok());
+        assert!(validate_startup(&clean, 10_000).is_err());
+        for (field, value) in [
+            ("state", "ReviewRequired"),
+            ("state", "Running"),
+            ("owner", "previous-run"),
+            ("unresolved", "1"),
+            ("position", "-1"),
+            ("scope", "unknown"),
+        ] {
+            let mut invalid = clean.clone();
+            invalid.insert(field.into(), value.into());
+            assert!(validate_startup(&invalid, -1).is_err());
+        }
+    }
 }

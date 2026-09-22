@@ -35,8 +35,8 @@ Only one selected strategy process may own a given mode.
 
 | Key | Type | Value |
 |---|---|---|
-| `kite:production:supertrend:CRUDEOIL26SEPFUT:owner` | string | Production run UUID |
-| `kite:paper:supertrend:CRUDEOIL26SEPFUT:owner` | string | Live-data paper run UUID |
+| `kite:production:supertrend:CRUDEOIL26OCTFUT:owner` | string | Production run UUID |
+| `kite:paper:supertrend:CRUDEOIL26OCTFUT:owner` | string | Live-data paper run UUID |
 | `kite:paper:supertrend:sim:<RUN_UUID>:owner` | string | Isolated synthetic run UUID |
 | `<OWNER_KEY>:heartbeat` | hash | `owner`, `last_seen_ns` |
 
@@ -45,8 +45,8 @@ The owner is acquired with `SET ... NX`. There is no TTL and no automatic takeov
 Read-only checks:
 
 ```bash
-redis-cli --raw GET kite:production:supertrend:CRUDEOIL26SEPFUT:owner
-redis-cli HGETALL kite:production:supertrend:CRUDEOIL26SEPFUT:owner:heartbeat
+redis-cli --raw GET kite:production:supertrend:CRUDEOIL26OCTFUT:owner
+redis-cli HGETALL kite:production:supertrend:CRUDEOIL26OCTFUT:owner:heartbeat
 ```
 
 ## Strategy run health
@@ -110,7 +110,7 @@ Review commands:
 
 | Key pattern | Type | Purpose |
 |---|---|---|
-| `susanta:nautilus:native-kite:manual-review:{<RUN_UUID>}` | hash | Evidence retained when an exact stale owner is released after broker review |
+| `susanta:nautilus:native-kite:manual-review:{<RUN_UUID>}` (or a unique `:<REVIEW_UUID>` suffix) | hash | Evidence retained when an exact stale owner is released after broker review |
 
 Current fields include `namespace`, `reviewed_at_ms`, `broker_open_orders`, `broker_position`, `manual_closure`, `previous_state`, `previous_unresolved`, and `previous_position`.
 
@@ -162,7 +162,7 @@ No Redis flag alone enables production trading. Real orders require all of these
 
 1. A binary built with `kite-adapter/live-orders`.
 2. `live_orders_enabled: true` in `config/kite-production.json`.
-3. A valid expected Kite user ID, `product: MIS`, token `144870151`, and `market_protection: -1`.
+3. A valid expected Kite user ID, `product: MIS`, the exact token selected in `config/production-supertrend.json` (currently `145894407`), and `market_protection: -1`.
 4. A valid production credential pair in Redis.
 5. Clean strategy and account ownership state.
 6. Successful account, permissions, funds-ledger, order, trade, and position checks.

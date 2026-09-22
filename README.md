@@ -80,6 +80,8 @@ Reports are saved under `data/supertrend-live/<RUN_UUID>/`. Inspect a failed run
 ./target/release/kite-node native-kite-status EXPECTED_USER_ID
 ```
 
+A retained account owner is checked before a new strategy lease is created. A blocked restart reports the retained owner for review; it does not automatically unlock the account. If initialization or reconciliation fails before counts can be verified, the report uses `null` for open orders and position.
+
 Compare the journal with Kite orders, trades and positions before releasing stale ownership. A manual broker closure does not automatically update the old strategy journal. Preserve the reports and review audit; never clear Redis broadly to bypass startup checks.
 
 ## Maintained references

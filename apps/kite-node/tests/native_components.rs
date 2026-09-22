@@ -524,8 +524,17 @@ mod unattended {
         let health = redis.run(&["native-kite-status", "MOCK"]);
         assert_eq!(health["restart_blocked"], true);
         assert_eq!(health["owner"], id);
-        let (mut restarted, _) = start(&redis, "native-supertrend-kite-mock");
-        assert!(!bounded_wait(&mut restarted).success());
+        let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/production-supertrend.json");
+        let rejected = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+            .args(["native-supertrend-kite-mock", config.to_str().unwrap()])
+            .env("KITE_REDIS_URL", &redis.url)
+            .current_dir(redis.dir.path())
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("Account restart blocked"));
+        assert!(!String::from_utf8_lossy(&rejected.stdout).contains("supertrend_live_started"));
         let after: u64 = redis::cmd("HGET")
             .arg(key)
             .arg("command_attempts")
@@ -555,4 +564,95 @@ mod unattended {
             assert_ne!(summary["status"], "Clean");
         }
     }
+}
+
+#[test]
+fn selected_blocked_account_does_not_create_strategy_owner_or_journal() {
+    let redis = Redis::start();
+    let mut con = redis::Client::open(redis.url.as_str())
+        .unwrap()
+        .get_connection()
+        .unwrap();
+    let key = "susanta:nautilus:native-kite:account:{MOCK}";
+    redis::cmd("HSET")
+        .arg(key)
+        .arg("scope")
+        .arg("NATIVE_DISABLED_V1")
+        .arg("state")
+        .arg("ReviewRequired")
+        .arg("owner")
+        .arg("previous-run")
+        .arg("unresolved")
+        .arg("0")
+        .arg("position")
+        .arg("0")
+        .query::<()>(&mut con)
+        .unwrap();
+    let before: std::collections::BTreeMap<String, String> =
+        redis::cmd("HGETALL").arg(key).query(&mut con).unwrap();
+    let config =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/production-supertrend.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+        .args(["native-supertrend-kite-mock", config.to_str().unwrap()])
+        .env("KITE_REDIS_URL", &redis.url)
+        .current_dir(redis.dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("owner=previous-run"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("supertrend_live_started"));
+    let after: std::collections::BTreeMap<String, String> =
+        redis::cmd("HGETALL").arg(key).query(&mut con).unwrap();
+    assert_eq!(before, after);
+    assert_eq!(
+        redis::cmd("DBSIZE").query::<usize>(&mut con).unwrap(),
+        1,
+        "Rejected startup created new persistence or strategy ownership"
+    );
+}
+
+#[test]
+fn selected_initialization_failure_reports_unknown_order_count() {
+    let redis = Redis::start();
+    let mut con = redis::Client::open(redis.url.as_str())
+        .unwrap()
+        .get_connection()
+        .unwrap();
+    // A clean-looking coordinator without its durable budget fails during client
+    // creation, after admission. It must not manufacture a one-order report.
+    redis::cmd("HSET")
+        .arg("susanta:nautilus:native-kite:account:{MOCK}")
+        .arg("scope")
+        .arg("NATIVE_DISABLED_V1")
+        .arg("state")
+        .arg("Clean")
+        .arg("owner")
+        .arg("")
+        .arg("unresolved")
+        .arg("0")
+        .arg("position")
+        .arg("0")
+        .query::<()>(&mut con)
+        .unwrap();
+    let config =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/production-supertrend.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+        .args(["native-supertrend-kite-mock", config.to_str().unwrap()])
+        .env("KITE_REDIS_URL", &redis.url)
+        .current_dir(redis.dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let result: serde_json::Value = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str(line).ok())
+        .expect("Failure summary");
+    assert_eq!(result["status"], "ReviewRequired");
+    assert!(result["open_orders"].is_null());
+    assert!(result["open_contracts"].is_null());
+    assert_eq!(result["signals"], 0);
+    assert_eq!(result["fills"], 0);
+    assert!(result["run_error"].as_str().unwrap().contains("Rate-limit"));
 }
