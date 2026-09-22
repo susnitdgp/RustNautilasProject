@@ -282,3 +282,186 @@ async fn short_entry_cover_and_contract_cap_are_enforced_at_dispatch() {
     d.finish(&tx, false).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
+
+#[derive(Clone, Copy)]
+enum ObservationFault {
+    PositionLag,
+    TradeLag,
+    WrongOwner,
+    DuplicateTrade,
+    SessionExpired,
+    RateLimited,
+}
+struct LagBroker {
+    inner: ObservedBroker,
+    fault: ObservationFault,
+    remaining: AtomicUsize,
+    reads: AtomicUsize,
+}
+#[async_trait]
+impl Broker for LagBroker {
+    async fn verify(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn execute(&self, command: &Command) -> Result<Outcome> {
+        self.inner.execute(command).await
+    }
+    async fn snapshot(&self) -> Result<Snapshot> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let mut snapshot = self.inner.snapshot().await?;
+        if !snapshot.orders.is_empty()
+            && self
+                .remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            match self.fault {
+                ObservationFault::PositionLag => {
+                    let side = if snapshot.trades.last().unwrap().transaction_type == "BUY" {
+                        1
+                    } else {
+                        -1
+                    };
+                    snapshot.positions[0].quantity -= side;
+                    snapshot.positions[0].average_price = if snapshot.positions[0].quantity == 0 {
+                        rust_decimal::Decimal::ZERO
+                    } else {
+                        rust_decimal::Decimal::from(6000)
+                    };
+                }
+                ObservationFault::TradeLag => {
+                    snapshot.trades.pop();
+                }
+                ObservationFault::WrongOwner => {
+                    snapshot.orders.last_mut().unwrap().instrument_token = 1;
+                }
+                ObservationFault::DuplicateTrade => {
+                    snapshot
+                        .trades
+                        .push(snapshot.trades.last().unwrap().clone());
+                }
+                ObservationFault::SessionExpired => {
+                    return Err(anyhow::anyhow!(super::outage::ReadFailure::SessionExpired));
+                }
+                ObservationFault::RateLimited => {
+                    return Err(anyhow::anyhow!(super::outage::ReadFailure::RateLimited(
+                        10_000
+                    )));
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+}
+fn lag_fixture(
+    fault: ObservationFault,
+    remaining: usize,
+) -> (Dispatcher, Arc<LagBroker>, Arc<Mutex<Vec<Record>>>) {
+    let records = Arc::new(Mutex::new(vec![]));
+    let broker = Arc::new(LagBroker {
+        inner: ObservedBroker {
+            inner: MockBroker::new(144870151, "NRML"),
+            records: records.clone(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            lose_ack: false,
+        },
+        fault,
+        remaining: AtomicUsize::new(remaining),
+        reads: AtomicUsize::new(0),
+    });
+    let d = Dispatcher::new(
+        broker.clone(),
+        Box::new(Memory {
+            records: records.clone(),
+            fail: false,
+        }),
+        OrderEventFactory::new(
+            "SUSANTA-001".into(),
+            "KITE-MOCK".into(),
+            AccountType::Margin,
+            Some(Currency::INR()),
+        ),
+        "NRML".into(),
+        144870151,
+        "CRUDEOIL26SEPFUT.MCX".into(),
+        "CRUDEOIL26SEPFUT".into(),
+    );
+    (d, broker, records)
+}
+#[tokio::test]
+async fn reconciliation_retries_lagging_trade_and_position_reads_without_resubmitting() {
+    for fault in [ObservationFault::PositionLag, ObservationFault::TradeLag] {
+        for side in [OrderSide::Buy, OrderSide::Sell] {
+            let (mut d, broker, _) = lag_fixture(fault, 2);
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            d.submit(order(side, 1, false), 0, &tx).await.unwrap();
+            drain(&mut rx);
+            d.refresh(&tx).await.unwrap();
+            assert_eq!(broker.reads.load(Ordering::SeqCst), 4); // Preflight + three observations.
+            assert_eq!(broker.inner.calls.load(Ordering::SeqCst), 1);
+            assert!(matches!(
+                &drain(&mut rx)[..],
+                [OrderEventAny::Accepted(_), OrderEventAny::Filled(_)]
+            ));
+            d.refresh(&tx).await.unwrap();
+            assert!(drain(&mut rx).is_empty());
+            let (exit, position) = if side == OrderSide::Buy {
+                (OrderSide::Sell, 1)
+            } else {
+                (OrderSide::Buy, -1)
+            };
+            d.submit(order(exit, 1, true), position, &tx).await.unwrap();
+            drain(&mut rx);
+            broker.remaining.store(2, Ordering::SeqCst);
+            // Final shutdown reconciliation must also tolerate delayed exit observations.
+            d.finish(&tx, false).await.unwrap();
+            assert_eq!(broker.inner.calls.load(Ordering::SeqCst), 2);
+            assert!(matches!(
+                &drain(&mut rx)[..],
+                [OrderEventAny::Accepted(_), OrderEventAny::Filled(_)]
+            ));
+            assert_eq!(d.unresolved(), 0);
+        }
+    }
+}
+#[tokio::test]
+async fn reconciliation_persistent_lag_exhausts_reads_without_publishing_or_persisting_fills() {
+    for fault in [ObservationFault::PositionLag, ObservationFault::TradeLag] {
+        let (mut d, broker, records) = lag_fixture(fault, 99);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        d.submit(order(OrderSide::Buy, 1, false), 0, &tx)
+            .await
+            .unwrap();
+        drain(&mut rx);
+        let saved = records.lock().unwrap().len();
+        assert!(d.refresh(&tx).await.is_err());
+        assert_eq!(broker.reads.load(Ordering::SeqCst), 4);
+        assert_eq!(records.lock().unwrap().len(), saved);
+        assert_eq!(d.unresolved(), 1);
+        assert!(drain(&mut rx).is_empty());
+        assert_eq!(broker.inner.calls.load(Ordering::SeqCst), 1);
+        d.fault();
+        assert!(d.finish(&tx, false).await.is_err());
+    }
+}
+#[tokio::test]
+async fn reconciliation_integrity_auth_and_rate_errors_fail_without_retry() {
+    for fault in [
+        ObservationFault::WrongOwner,
+        ObservationFault::DuplicateTrade,
+        ObservationFault::SessionExpired,
+        ObservationFault::RateLimited,
+    ] {
+        let (mut d, broker, records) = lag_fixture(fault, 99);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        d.submit(order(OrderSide::Buy, 1, false), 0, &tx)
+            .await
+            .unwrap();
+        drain(&mut rx);
+        let saved = records.lock().unwrap().len();
+        assert!(d.refresh(&tx).await.is_err());
+        assert_eq!(broker.reads.load(Ordering::SeqCst), 2);
+        assert_eq!(records.lock().unwrap().len(), saved);
+        assert!(drain(&mut rx).is_empty());
+    }
+}

@@ -4,6 +4,7 @@ use anyhow::Result;
 use nautilus_common::{
     actor::{DataActor, DataActorNative},
     cache::Cache,
+    timer::TimeEvent,
 };
 use nautilus_model::{
     data::{Bar, BarType, CustomData, DataType, QuoteTick},
@@ -36,6 +37,7 @@ pub struct State {
 pub struct BarStrategy {
     core: StrategyCore,
     indicator: Supertrend,
+    pivot: Option<super::pivot_point::PivotPoint>,
     bar_type: BarType,
     start: u64,
     end: u64,
@@ -58,6 +60,7 @@ impl BarStrategy {
                 ..Default::default()
             }),
             indicator: Supertrend::new(),
+            pivot: None,
             bar_type,
             start,
             end,
@@ -71,6 +74,15 @@ impl BarStrategy {
             state,
         }
     }
+    pub fn with_pivot(
+        mut self,
+        settings: super::pivot_point::Settings,
+        calendar: super::session_calendar::Calendar,
+    ) -> Result<Self> {
+        self.pivot = Some(super::pivot_point::PivotPoint::new(settings, calendar)?);
+        self.filtered = false;
+        Ok(self)
+    }
     pub fn with_confirmation(mut self, filtered: bool) -> Self {
         self.filtered = filtered;
         self
@@ -78,6 +90,58 @@ impl BarStrategy {
     pub fn with_live(mut self, control: super::supertrend_live_control::Control) -> Self {
         self.live = Some(control);
         self
+    }
+    fn trade_target(&mut self, target: i8, ts: u64, reason: &str) -> Result<()> {
+        if self.pending {
+            return Ok(());
+        }
+        let position = self.position();
+        if let Some(control) = &self.live {
+            control.flat.store(position == 0., Ordering::Release);
+        }
+        if position == f64::from(target) {
+            return Ok(());
+        }
+        let exit = position != 0.;
+        // Confirm only entries: loss of confirmation never blocks a reversal exit.
+        // No prior-day VWAP may authorize an entry at the new session open.
+        if !exit && self.filtered && (self.allowed != target || self.last_bar <= self.start) {
+            return Ok(());
+        }
+        let side = if (exit && position > 0.) || (!exit && target < 0) {
+            OrderSide::Sell
+        } else {
+            OrderSide::Buy
+        };
+        let intent = match (exit, side) {
+            (false, OrderSide::Buy) => "BUY",
+            (false, _) => "SELL",
+            (true, OrderSide::Sell) => "BUY_EXIT",
+            (true, _) => "SELL_EXIT",
+        };
+        let order = self.order().market(
+            self.instrument(),
+            side,
+            1.into(),
+            Some(TimeInForce::Day),
+            Some(exit),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        self.state.borrow_mut().signals.push(serde_json::json!({"timestamp_ns":ts,"intent":intent,"target":target,"position_before":position,"entry_filtered":self.filtered,"reason":reason}));
+        if let Some(control) = &self.live {
+            control.flat.store(false, Ordering::Release);
+        }
+        if let Some(c) = &self.live {
+            c.order_deadline
+                .store(super::data::now() + 10_000_000_000, Ordering::Release);
+        }
+        self.pending = true;
+        self.submit_order(order, None, None, None)?;
+        Ok(())
     }
     fn instrument(&self) -> InstrumentId {
         self.bar_type.instrument_id()
@@ -116,14 +180,51 @@ impl DataActor for BarStrategy {
                 None,
             );
         }
+        if self.pivot.is_some() && self.live.is_some() {
+            self.clock().set_timer_ns(
+                "pivot_square_off",
+                250_000_000,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )?;
+        }
         self.state.borrow_mut().started = true;
         Ok(())
     }
     fn on_stop(&mut self) -> Result<()> {
+        if self.pivot.is_some() {
+            self.clock().cancel_timer("pivot_square_off");
+        }
         if self.live.is_some() {
             self.cancel_all_orders(self.instrument(), None, None, true, None)?;
         }
         self.state.borrow_mut().stopped = true;
+        Ok(())
+    }
+    fn on_time_event(&mut self, event: &TimeEvent) -> Result<()> {
+        if event.name.as_str() != "pivot_square_off" {
+            return Ok(());
+        }
+        let now = self.clock().timestamp_ns().as_u64();
+        let stopping = self
+            .live
+            .as_ref()
+            .is_some_and(|c| c.stopping.load(Ordering::Acquire));
+        if now >= self.end || stopping {
+            self.target = 0;
+            self.trade_target(
+                0,
+                now,
+                if now >= self.end {
+                    "session_end"
+                } else {
+                    "shutdown"
+                },
+            )?;
+        }
         Ok(())
     }
     fn on_data(&mut self, data: &CustomData) -> Result<()> {
@@ -161,6 +262,28 @@ impl DataActor for BarStrategy {
                 || (!control.sim && b.ts_event.as_u64() > self.clock().timestamp_ns().as_u64()))
         {
             control.fail("Out-of-order or future bar");
+            return Ok(());
+        }
+        if let Some(pivot) = &mut self.pivot {
+            let observation = pivot.update(
+                b.high.as_f64(),
+                b.low.as_f64(),
+                b.close.as_f64(),
+                b.ts_event.as_u64(),
+            )?;
+            // Historical warmup never becomes an entry instruction. A fresh +/-
+            // transition after startup is required, as in the supplied Pine alerts.
+            if !observation.in_session || observation.new_session {
+                self.target = 0;
+            }
+            if b.ts_event.as_u64() > self.start && observation.signal != 0 {
+                self.target = observation.signal;
+            }
+            self.last_bar = b.ts_event.as_u64();
+            self.state
+                .borrow_mut()
+                .indicators
+                .push(serde_json::to_value(observation)?);
             return Ok(());
         }
         let result = self
@@ -208,6 +331,9 @@ impl DataActor for BarStrategy {
             {
                 let previous = self.last_bar;
                 self.indicator = Supertrend::new();
+                if let Some(pivot) = &self.pivot {
+                    self.pivot = Some(pivot.rebuild_empty()?);
+                }
                 self.confirmation = super::supertrend_confirmation::Confirmation::new();
                 self.last_bar = 0;
                 self.target = 0;
@@ -215,6 +341,22 @@ impl DataActor for BarStrategy {
                 self.state.borrow_mut().indicators.clear();
                 for bar in bars {
                     self.on_bar(&bar)?;
+                }
+                if self.pivot.is_some() {
+                    // A corrected history can require an exit, but cannot replay an
+                    // old entry. Keep only an existing position that still agrees.
+                    let position = self.position();
+                    let latest = self.state.borrow().indicators.last().cloned();
+                    let direction = latest
+                        .as_ref()
+                        .and_then(|v| v["direction"].as_i64())
+                        .unwrap_or(0);
+                    let inside = latest.as_ref().is_some_and(|v| v["in_session"] == true);
+                    self.target = if inside && position.signum() == direction as f64 {
+                        direction as i8
+                    } else {
+                        0
+                    };
                 }
                 self.state.borrow_mut().rebuilds.push(serde_json::json!({"epoch":epoch,"previous_bar":previous,"rebuilt_bar":self.last_bar,"received_ns":q.ts_init.as_u64(),"past_orders_replayed":false}));
                 control.recoveries.fetch_add(1, Ordering::AcqRel);
@@ -246,52 +388,29 @@ impl DataActor for BarStrategy {
         {
             return Ok(());
         }
-        let position = self.position();
-        if let Some(control) = &self.live {
-            control.flat.store(position == 0., Ordering::Release);
-        }
-        if position == f64::from(target) {
-            return Ok(());
-        }
-        let exit = position != 0.;
-        // Confirm only entries: loss of confirmation never blocks a reversal exit.
-        // No prior-day VWAP may authorize an entry at the new session open.
-        if !exit && self.filtered && (self.allowed != target || self.last_bar <= self.start) {
-            return Ok(());
-        }
-        let side = if (exit && position > 0.) || (!exit && target < 0) {
-            OrderSide::Sell
+        let session_closed = if let Some(pivot) = &self.pivot {
+            let clock = if self.live.as_ref().is_some_and(|c| c.sim) {
+                self.last_bar
+            } else {
+                ts
+            };
+            !pivot.in_session(clock)?
         } else {
-            OrderSide::Buy
+            false
         };
-        let intent = match (exit, side) {
-            (false, OrderSide::Buy) => "BUY",
-            (false, _) => "SELL",
-            (true, OrderSide::Sell) => "BUY_EXIT",
-            (true, _) => "SELL_EXIT",
+        let target = if session_closed { 0 } else { target };
+        let reason = if self.pivot.is_some() && (session_closed || ts >= self.end) {
+            "session_end"
+        } else if stopping {
+            "shutdown"
+        } else if ts >= self.end {
+            "end_of_day"
+        } else if self.pivot.is_some() {
+            "pivot_supertrend"
+        } else {
+            "supertrend"
         };
-        let order = self.order().market(
-            self.instrument(),
-            side,
-            1.into(),
-            Some(TimeInForce::Day),
-            Some(exit),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        self.state.borrow_mut().signals.push(serde_json::json!({"timestamp_ns":ts,"intent":intent,"target":target,"position_before":position,"entry_filtered":self.filtered,"reason":if stopping {"shutdown"} else if ts>=self.end {"end_of_day"} else {"supertrend"}}));
-        if let Some(control) = &self.live {
-            control.flat.store(false, Ordering::Release);
-        }
-        if let Some(c) = &self.live {
-            c.order_deadline
-                .store(super::data::now() + 10_000_000_000, Ordering::Release);
-        }
-        self.pending = true;
-        self.submit_order(order, None, None, None)?;
+        self.trade_target(target, ts, reason)?;
         Ok(())
     }
 }

@@ -656,3 +656,84 @@ fn selected_initialization_failure_reports_unknown_order_count() {
     assert_eq!(result["fills"], 0);
     assert!(result["run_error"].as_str().unwrap().contains("Rate-limit"));
 }
+
+#[test]
+fn pivot_point_simulation_and_kite_mock_reverse_and_square_off_without_confirmation_filter() {
+    let redis = Redis::start();
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/pivot-point-supertrend.json")
+        .canonicalize()
+        .unwrap();
+    for command in ["native-pivot-sim", "native-pivot-kite-mock"] {
+        let result = redis.run(&[command, config.to_str().unwrap()]);
+        assert_eq!(result["strategy"], "pivot_point_supertrend");
+        assert_eq!(result["status"], "Clean");
+        assert_eq!(result["live_orders_enabled"], false);
+        assert_eq!(result["open_orders"], 0);
+        assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+        let folder = redis
+            .dir
+            .path()
+            .join(result["report_directory"].as_str().unwrap());
+        let signals: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(folder.join("signals.json")).unwrap()).unwrap();
+        for intent in ["BUY", "BUY_EXIT", "SELL", "SELL_EXIT"] {
+            assert!(
+                signals.iter().any(|s| s["intent"] == intent),
+                "{command}: missing {intent}: {signals:?}"
+            );
+        }
+        assert!(signals.iter().all(|s| s["entry_filtered"] == false));
+        assert!(signals.iter().any(|s| s["reason"] == "session_end"));
+        let indicators: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(folder.join("indicators.json")).unwrap())
+                .unwrap();
+        assert!(indicators.iter().any(|v| !v["center"].is_null()));
+        assert!(indicators.iter().all(|v| v.get("confirmation").is_none()));
+        let recovered = redis.run(&["native-recover", result["namespace"].as_str().unwrap()]);
+        assert_eq!(recovered["requires_review"], false);
+        assert_eq!(recovered["resubmissions"], 0);
+    }
+}
+
+#[test]
+fn pivot_point_cannot_activate_production_or_load_the_wrong_strategy() {
+    let redis = Redis::start();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for args in [
+        vec![
+            "native-supertrend-kite-production".to_owned(),
+            root.join("config/pivot-point-supertrend.json")
+                .display()
+                .to_string(),
+            "missing-private-broker-settings.json".to_owned(),
+        ],
+        vec![
+            "native-pivot-sim".to_owned(),
+            root.join("config/production-supertrend.json")
+                .display()
+                .to_string(),
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kite-node"))
+            .args(args)
+            .env("KITE_REDIS_URL", &redis.url)
+            .current_dir(redis.dir.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Pivot")
+                || String::from_utf8_lossy(&output.stderr).contains("pivot_point_supertrend")
+        );
+    }
+    let mut con = redis::Client::open(redis.url.as_str())
+        .unwrap()
+        .get_connection()
+        .unwrap();
+    assert_eq!(
+        redis::cmd("DBSIZE").query::<usize>(&mut con).unwrap(),
+        0,
+        "Rejected activation created Redis state"
+    );
+}

@@ -14,6 +14,14 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                 ))
             })
             .map(|v| println!("{v}")),
+        ("native-pivot-sim", [config]) => pivot_selection(config)
+            .and_then(|_| super::supertrend_live_runner::run(config, 30, true)),
+        ("native-pivot-kite-mock", [config]) => pivot_selection(config).and_then(|_| {
+            super::supertrend_live_runner::run_with_execution(config, 30, true, true)
+        }),
+        ("native-pivot-session-paper", [config]) => {
+            pivot_selection(config).and_then(|_| super::supertrend_session::run(config))
+        }
         ("native-supertrend-recovery-sim", [config]) => {
             super::supertrend_live_runner::run_recovery_fixture(config)
         }
@@ -133,7 +141,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-pivot-sim config.json | native-pivot-kite-mock config.json | native-pivot-session-paper config.json | native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 
@@ -145,6 +153,16 @@ fn custom_probe(path: &str) -> Result<()> {
     anyhow::ensure!(
         result["read_shapes_compatible"] == true,
         "Custom sandbox is incompatible with native execution; see checks above"
+    );
+    Ok(())
+}
+
+fn pivot_selection(path: &str) -> Result<()> {
+    anyhow::ensure!(
+        super::production::Selection::load(path)?
+            .pivot_point
+            .is_some(),
+        "This command requires a pivot_point_supertrend JSON selection"
     );
     Ok(())
 }

@@ -6,7 +6,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
-    strategy: String,
+    pub strategy: String,
     pub instrument: String,
     pub symbol: String,
     pub instrument_token: u32,
@@ -14,20 +14,42 @@ pub struct Selection {
     pub session_calendar: Calendar,
     interval: String,
     contracts: u32,
-    supertrend_period: u32,
-    supertrend_multiplier: u32,
-    macd_fast: u32,
-    macd_slow: u32,
-    macd_signal: u32,
-    session_vwap: bool,
+    supertrend_period: Option<u32>,
+    supertrend_multiplier: Option<u32>,
+    macd_fast: Option<u32>,
+    macd_slow: Option<u32>,
+    macd_signal: Option<u32>,
+    session_vwap: Option<bool>,
     atr_stop_enabled: bool,
     live_orders_enabled: bool,
+    pub pivot_point: Option<super::pivot_point::Settings>,
 }
 impl Selection {
     pub fn load(path: &str) -> Result<Self> {
         let s: Self = serde_json::from_str(&std::fs::read_to_string(path)?)?;
         s.validate()?;
         Ok(s)
+    }
+    pub fn session_bounds(&self, date: NaiveDate) -> Result<(u64, u64)> {
+        if let Some(pivot) = &self.pivot_point {
+            pivot
+                .session
+                .window(date, &self.session_calendar)?
+                .ok_or_else(|| anyhow::anyhow!("No Pivot Point trading session for {date}"))
+        } else {
+            self.session_calendar.bounds(date)
+        }
+    }
+    pub fn session_duration(&self, now: u64) -> Result<u64> {
+        if self.pivot_point.is_none() {
+            return super::supertrend_session::duration(now, &self.session_calendar);
+        }
+        let (start, end) = self.session_bounds(super::pivot_session::date(now))?;
+        ensure!(
+            now >= start && now + 5_000_000_000 < end,
+            "Start Pivot Point during its configured session and before square-off"
+        );
+        Ok((end - now).div_ceil(1_000_000_000))
     }
     pub fn resolve(
         &self,
@@ -84,20 +106,37 @@ impl Selection {
             "Selected production strategy has no added ATR stop"
         );
         ensure!(
-            self.strategy == "supertrend_macd_vwap"
-                && kite_adapter::instruments::contract::validate_symbol(&self.symbol).is_ok()
+            kite_adapter::instruments::contract::validate_symbol(&self.symbol).is_ok()
                 && self.instrument == format!("{}.MCX", self.symbol)
                 && self.instrument_token > 0
                 && self.interval == "5minute"
-                && self.contracts == 1
-                && self.supertrend_period == 7
-                && self.supertrend_multiplier == 2
-                && self.macd_fast == 12
-                && self.macd_slow == 26
-                && self.macd_signal == 9
-                && self.session_vwap,
-            "Selection differs from the reviewed five-minute strategy"
+                && self.contracts == 1,
+            "Selection requires one configured MCX crude oil contract and five-minute bars"
         );
+        match (self.strategy.as_str(), &self.pivot_point) {
+            ("supertrend_macd_vwap", None) => ensure!(
+                self.supertrend_period == Some(7)
+                    && self.supertrend_multiplier == Some(2)
+                    && self.macd_fast == Some(12)
+                    && self.macd_slow == Some(26)
+                    && self.macd_signal == Some(9)
+                    && self.session_vwap == Some(true),
+                "Selection differs from the reviewed five-minute strategy"
+            ),
+            ("pivot_point_supertrend", Some(pivot)) => {
+                pivot.validate()?;
+                ensure!(
+                    self.supertrend_period.is_none()
+                        && self.supertrend_multiplier.is_none()
+                        && self.macd_fast.is_none()
+                        && self.macd_slow.is_none()
+                        && self.macd_signal.is_none()
+                        && self.session_vwap.is_none(),
+                    "Pivot Point strategy does not use ordinary Supertrend or MACD/VWAP settings"
+                );
+            }
+            _ => anyhow::bail!("Unsupported strategy or mismatched Pivot Point configuration"),
+        }
         Ok(())
     }
 }
@@ -127,11 +166,11 @@ pub fn contract_check(path: &str) -> Result<()> {
     Ok(())
 }
 pub fn preflight(path: &str) -> Result<()> {
-    let _ = Selection::load(path)?;
+    let selection = Selection::load(path)?;
     println!(
         "{}",
         serde_json::json!({"event":"production_readiness","selection_valid":true,
-        "strategy":"supertrend_macd_vwap","interval":"5minute","contracts":1,"atr_stop_enabled":false,
+        "strategy":selection.strategy,"interval":"5minute","contracts":1,"atr_stop_enabled":false,
         "live_orders_enabled":false,"ready_for_live_deployment":false,
         "live_node_paper_integrated":true,
         "blockers":["Session paper operation and indicator recovery are implemented; full-session qualification and manual review remain",
@@ -143,6 +182,10 @@ pub fn preflight(path: &str) -> Result<()> {
 }
 pub fn verify(config: &str, date: &str, input: &str, folder: &str) -> Result<()> {
     let s = Selection::load(config)?;
+    ensure!(
+        s.pivot_point.is_none(),
+        "Legacy production replay is only for Supertrend + MACD/VWAP; use the Pivot Point simulation command"
+    );
     let date_value = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
     let data = super::supertrend_input::load(date_value, Some(input))?;
     ensure!(
@@ -154,6 +197,55 @@ pub fn verify(config: &str, date: &str, input: &str, folder: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pivot_selection_validates_settings_and_uses_its_own_session_deadline() {
+        let raw = include_str!("../../../../config/pivot-point-supertrend.json");
+        let selection: Selection = serde_json::from_str(raw).unwrap();
+        selection.validate().unwrap();
+        assert_eq!(selection.strategy, "pivot_point_supertrend");
+        let ns = |s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap() as u64
+        };
+        assert_eq!(
+            selection
+                .session_duration(ns("2026-09-22T09:00:00+05:30"))
+                .unwrap(),
+            14 * 3600 + 15 * 60
+        );
+        assert_eq!(
+            selection
+                .session_duration(ns("2026-09-22T23:14:50.5+05:30"))
+                .unwrap(),
+            10
+        );
+        assert!(
+            selection
+                .session_duration(ns("2026-09-22T23:15:00+05:30"))
+                .is_err()
+        );
+        assert!(
+            selection
+                .session_duration(ns("2026-10-02T09:00:00+05:30"))
+                .is_err()
+        );
+        for (key, value) in [
+            ("strategy", serde_json::json!("supertrend_macd_vwap")),
+            ("macd_fast", serde_json::json!(12)),
+            ("live_orders_enabled", serde_json::json!(true)),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_str(raw).unwrap();
+            invalid[key] = value;
+            assert!(
+                serde_json::from_value::<Selection>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn selected_metadata_matches_master_and_simulated_routing() {
         let config = include_str!("../../../../config/production-supertrend.json");

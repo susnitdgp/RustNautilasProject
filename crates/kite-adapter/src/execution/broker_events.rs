@@ -15,6 +15,17 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::{collections::BTreeSet, str::FromStr};
 
+/// Separately fetched broker views have not converged. No events may be applied
+/// from this observation; only the bounded read path may retry it.
+#[derive(Debug)]
+pub(crate) struct ObservationLag(pub &'static str);
+impl std::fmt::Display for ObservationLag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+impl std::error::Error for ObservationLag {}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct BrokerOrder {
     pub order_id: String,
@@ -197,20 +208,13 @@ pub fn reconcile(
         );
         ensure!(trade.quantity > 0, "Empty Kite trade");
         let ts = timestamp(&trade.fill_timestamp)?;
-        ensure!(
-            ts <= now && ts <= last,
-            "Trade ahead of order snapshot; fetch a consistent snapshot"
-        );
+        ensure!(ts <= now, "Future Kite trade observation");
         let px = price(trade.average_price)?;
         sum = sum
             .checked_add(trade.quantity)
             .ok_or_else(|| anyhow!("Kite trade quantity overflow"))?;
         matched.push((ts, trade, px));
     }
-    ensure!(
-        sum == broker.filled_quantity,
-        "Order/trade snapshot mismatch; no inferred fills"
-    );
     matched.sort_by(|a, b| (a.0, &a.1.trade_id).cmp(&(b.0, &b.1.trade_id)));
     let existing: BTreeSet<String> = current
         .events()
@@ -249,6 +253,16 @@ pub fn reconcile(
     ensure!(
         Quantity::from(known_qty) == current.filled_qty(),
         "Kite snapshot omits native fills"
+    );
+    // Check immutable native fill history first. Missing/changed previously
+    // processed trades and invalid identities are integrity failures, not lag.
+    ensure!(
+        matched.iter().all(|(ts, _, _)| *ts <= last),
+        ObservationLag("Trade ahead of order snapshot; fetch a consistent snapshot")
+    );
+    ensure!(
+        sum == broker.filled_quantity,
+        ObservationLag("Order/trade snapshot mismatch; no inferred fills")
     );
     let accepted = match broker.status.as_str() {
         "OPEN" | "COMPLETE" | "CANCELLED" => true,

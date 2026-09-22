@@ -17,7 +17,7 @@ pub fn run(config: &str) -> Result<()> {
     let selection = super::production::Selection::load(config)?;
     super::supertrend_live_runner::run(
         config,
-        duration(super::data::now(), &selection.session_calendar)?,
+        selection.session_duration(super::data::now())?,
         false,
     )
 }

@@ -22,6 +22,7 @@ pub struct Display {
     mock: bool,
     id: String,
     symbol: String,
+    pivot: Option<super::pivot_point::Settings>,
     dashboard: bool,
 }
 
@@ -33,7 +34,7 @@ impl Display {
         id: &str,
         real: bool,
         mock: bool,
-        symbol: &str,
+        selection: &super::production::Selection,
     ) -> Self {
         let dashboard = io::stderr().is_terminal()
             && std::env::var("KITE_TERMINAL_DASHBOARD").as_deref() != Ok("0");
@@ -45,12 +46,14 @@ impl Display {
             real,
             mock,
             id: id.into(),
-            symbol: symbol.into(),
+            symbol: selection.symbol.clone(),
+            pivot: selection.pivot_point.clone(),
             dashboard,
         };
         if !dashboard {
             line(&format!(
-                "SUPERTREND + MACD + VWAP | {} | 5m | 1 lot\nFeed: {} | Execution: {} | REAL ORDERS: {}\nRun: {id} | Limit: {seconds}s | Ctrl-C: graceful stop",
+                "{} | {} | 5m | 1 lot\nFeed: {} | Execution: {} | REAL ORDERS: {}\nRun: {id} | Limit: {seconds}s | Ctrl-C: graceful stop",
+                selection.strategy,
                 display.symbol,
                 display.feed(),
                 display.execution(),
@@ -283,10 +286,32 @@ impl Snapshot {
             "Instrument",
             &format!("{} | 5-minute | 1 lot", display.symbol),
         ));
-        output.push_str(&row("Strategy", PARAMETERS));
-        output.push_str(&row("Confirmation", "MACD EMA(12,26,9) + session VWAP"));
-        output.push_str(&row("Entry", ENTRY_RULE));
-        output.push_str(&row("Exit", EXIT_RULE));
+        if let Some(p) = &display.pivot {
+            output.push_str(&row(
+                "Strategy",
+                &format!(
+                    "Pivot Point ST({}) | ATR({}) x {}",
+                    p.pivot_period, p.atr_period, p.atr_factor
+                ),
+            ));
+            output.push_str(&row(
+                "Session",
+                &format!(
+                    "{}-{} IST | days {} | reset {}",
+                    p.session.start, p.session.end, p.session.days, p.session.reset_daily
+                ),
+            ));
+            output.push_str(&row(
+                "Entry",
+                "Confirmed Pivot Point Supertrend flip; no MACD/VWAP filter",
+            ));
+            output.push_str(&row("Exit", "Opposite flip or timed session square-off"));
+        } else {
+            output.push_str(&row("Strategy", PARAMETERS));
+            output.push_str(&row("Confirmation", "MACD EMA(12,26,9) + session VWAP"));
+            output.push_str(&row("Entry", ENTRY_RULE));
+            output.push_str(&row("Exit", EXIT_RULE));
+        }
         output.push_str(&section("Live market and indicators"));
         output.push_str(&row("Quote", &self.price));
         output.push_str(&row(
@@ -306,24 +331,31 @@ impl Snapshot {
                 show(self.atr)
             ),
         ));
-        output.push_str(&row(
-            "Direction",
-            &format!(
-                "Supertrend {} | confirmation {} | ready {}",
-                direction(self.direction),
-                direction(self.confirmation),
-                self.confirmation_ready
-            ),
-        ));
-        output.push_str(&row(
-            "Confirmation",
-            &format!(
-                "VWAP {} | MACD {} | signal {}",
-                show(self.vwap),
-                show(self.macd),
-                show(self.macd_signal)
-            ),
-        ));
+        if display.pivot.is_some() {
+            output.push_str(&row(
+                "Direction",
+                &format!("Pivot Point Supertrend {}", direction(self.direction)),
+            ));
+        } else {
+            output.push_str(&row(
+                "Direction",
+                &format!(
+                    "Supertrend {} | confirmation {} | ready {}",
+                    direction(self.direction),
+                    direction(self.confirmation),
+                    self.confirmation_ready
+                ),
+            ));
+            output.push_str(&row(
+                "Confirmation",
+                &format!(
+                    "VWAP {} | MACD {} | signal {}",
+                    show(self.vwap),
+                    show(self.macd),
+                    show(self.macd_signal)
+                ),
+            ));
+        }
         output.push_str(&section("Position and safety"));
         output.push_str(&row(
             "Position",

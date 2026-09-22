@@ -19,17 +19,29 @@ impl std::fmt::Display for ReadFailure {
 }
 impl std::error::Error for ReadFailure {}
 pub(crate) async fn snapshot(broker: &dyn Broker) -> Result<Snapshot> {
+    snapshot_checked(broker, |_| Ok(()))
+        .await
+        .map(|(snapshot, ())| snapshot)
+}
+/// Transport failures and lagging broker views share one retry budget. The
+/// validator must be side-effect free: only the successful result is published.
+pub(crate) async fn snapshot_checked<T>(
+    broker: &dyn Broker,
+    mut validate: impl FnMut(&Snapshot) -> Result<T>,
+) -> Result<(Snapshot, T)> {
     for attempt in 0..3 {
         let result = tokio::time::timeout(Duration::from_secs(12), broker.snapshot())
             .await
-            .unwrap_or_else(|_| Err(anyhow!(ReadFailure::Transient)));
+            .unwrap_or_else(|_| Err(anyhow!(ReadFailure::Transient)))
+            .and_then(|snapshot| validate(&snapshot).map(|value| (snapshot, value)));
         match result {
             Ok(s) => return Ok(s),
             Err(e)
-                if matches!(
+                if (matches!(
                     e.downcast_ref::<ReadFailure>(),
                     Some(ReadFailure::Transient)
-                ) && attempt < 2 =>
+                ) || e.is::<super::super::broker_events::ObservationLag>())
+                    && attempt < 2 =>
             {
                 tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await
             }

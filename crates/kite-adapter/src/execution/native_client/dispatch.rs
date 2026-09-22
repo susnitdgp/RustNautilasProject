@@ -19,6 +19,11 @@ use nautilus_model::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::mpsc::UnboundedSender;
+struct PreparedObservation {
+    position: i64,
+    records: BTreeMap<String, Record>,
+    events: Vec<OrderEventAny>,
+}
 pub(crate) struct Dispatcher {
     broker: Arc<dyn Broker>,
     store: Box<dyn Store>,
@@ -309,9 +314,47 @@ impl Dispatcher {
     }
     pub async fn refresh(&mut self, tx: &UnboundedSender<ExecutionEvent>) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
-        let snapshot = self.snapshot().await?;
+        let broker = self.broker.clone();
+        let result = super::outage::snapshot_checked(broker.as_ref(), |snapshot| {
+            // Retain the exclusive dispatcher borrow across retries; Store is Send,
+            // not Sync. Preparing an observation itself makes no state changes.
+            let dispatcher = &mut *self;
+            dispatcher.prepare_observation(snapshot)
+        })
+        .await;
+        let (_, prepared) = match result {
+            Ok(value) => value,
+            Err(e) => {
+                if let Some(super::outage::ReadFailure::RateLimited(ms)) =
+                    e.downcast_ref::<super::outage::ReadFailure>()
+                {
+                    self.store.cooldown(*ms)?;
+                }
+                return Err(e);
+            }
+        };
+        // Every order, trade and position is validated before any journal/cache
+        // changes. A failed write or event delivery poisons this dispatcher.
+        self.poisoned = true;
+        self.position = prepared.position;
+        for (id, record) in &prepared.records {
+            self.store.save(id, record)?;
+        }
+        self.records.extend(prepared.records);
+        for event in prepared.events {
+            Self::emit(tx, event)?;
+        }
+        self.store
+            .health("Running", self.unresolved(), self.position)?;
+        self.poisoned = false;
+        Ok(())
+    }
+    fn prepare_observation(
+        &self,
+        snapshot: &super::broker::Snapshot,
+    ) -> Result<PreparedObservation> {
         let positions = super::reports::positions_for(
-            &snapshot,
+            snapshot,
             self.factory.account_id(),
             &self.product,
             self.token,
@@ -325,16 +368,12 @@ impl Dispatcher {
             .as_decimal()
             .to_i64()
             .ok_or_else(|| anyhow!("Invalid account position"))?;
-        self.position = if positions[0].position_side == nautilus_model::enums::PositionSide::Short
-        {
+        let position = if positions[0].position_side == nautilus_model::enums::PositionSide::Short {
             -quantity
         } else {
             quantity
         };
-        ensure!(
-            self.position.abs() <= 1,
-            "Account position exceeds contract cap"
-        );
+        ensure!(position.abs() <= 1, "Account position exceeds contract cap");
         ensure!(
             snapshot
                 .positions
@@ -357,33 +396,28 @@ impl Dispatcher {
                     .any(|r| o.tag.as_deref() == Some(r.tag.as_str()))),
             "Unowned open account order; review required"
         );
-        let mut observed_exposure = rust_decimal::Decimal::ZERO;
-        for r in self.records.values() {
-            let current = OrderAny::from_events(r.events.clone())?;
-            let qty = snapshot
-                .orders
-                .iter()
-                .find(|o| o.tag.as_deref() == Some(r.tag.as_str()))
-                .map_or(current.filled_qty().as_decimal(), |o| {
-                    rust_decimal::Decimal::from(o.filled_quantity)
-                });
-            observed_exposure += if current.order_side() == nautilus_model::enums::OrderSide::Buy {
-                qty
-            } else {
-                -qty
-            };
-        }
-        ensure!(
-            observed_exposure == rust_decimal::Decimal::from(self.position),
-            "Account exposure differs from observed owned trades"
-        );
-        for (id, record) in &mut self.records {
+        let mut prepared = PreparedObservation {
+            position,
+            records: BTreeMap::new(),
+            events: Vec::new(),
+        };
+        for (id, record) in &self.records {
             let current = OrderAny::from_events(record.events.clone())?;
             let matches: Vec<_> = snapshot
                 .orders
                 .iter()
                 .filter(|b| b.tag.as_deref() == Some(record.tag.as_str()))
                 .collect();
+            if let Some(existing) = &record.broker_id {
+                ensure!(
+                    snapshot
+                        .orders
+                        .iter()
+                        .filter(|b| &b.order_id == existing)
+                        .all(|b| b.tag.as_deref() == Some(record.tag.as_str())),
+                    "Broker order ownership changed"
+                );
+            }
             if matches.is_empty() {
                 // OMS acknowledgement can precede visibility in the daily book.
                 // Retain the unresolved record and poll reads; never resubmit.
@@ -416,31 +450,31 @@ impl Dispatcher {
                 next.broker_id = Some(broker.order_id.clone());
                 next.outcome = "Observed".into();
                 next.events.extend(events.iter().cloned());
-                self.poisoned = true;
-                self.store.save(id, &next)?;
-                *record = next;
-                self.poisoned = false;
-                for event in events {
-                    Self::emit(tx, event)?;
-                }
+                prepared.records.insert(id.clone(), next);
+                prepared.events.extend(events);
             }
         }
 
         let mut expected = rust_decimal::Decimal::ZERO;
-        for r in self.records.values() {
-            let o = OrderAny::from_events(r.events.clone())?;
-            expected += if o.order_side() == nautilus_model::enums::OrderSide::Buy {
-                o.filled_qty().as_decimal()
+        for (id, record) in &self.records {
+            let record = prepared.records.get(id).unwrap_or(record);
+            let order = OrderAny::from_events(record.events.clone())?;
+            expected += if order.order_side() == nautilus_model::enums::OrderSide::Buy {
+                order.filled_qty().as_decimal()
             } else {
-                -o.filled_qty().as_decimal()
+                -order.filled_qty().as_decimal()
             };
         }
-        ensure!(
-            expected == rust_decimal::Decimal::from(self.position),
-            "Broker position differs from owned fills; manual review required"
-        );
-        self.heartbeat()?;
-        Ok(())
+        if expected != rust_decimal::Decimal::from(position) {
+            ensure!(
+                self.has_unresolved(),
+                "Broker position differs from owned fills; manual review required"
+            );
+            return Err(anyhow!(broker_events::ObservationLag(
+                "Account exposure differs from observed owned trades"
+            )));
+        }
+        Ok(prepared)
     }
     pub async fn cancel(
         &mut self,

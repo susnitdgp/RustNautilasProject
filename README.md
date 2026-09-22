@@ -70,6 +70,24 @@ Check the selected contract and calendar without starting trading, reading accou
 
 The check verifies the exact symbol/token/expiry against Kite and validates the supported tick/lot specification. It is not an account, funds or complete trading-readiness check. JSON changes are read at startup; future rollovers do not require a Rust rebuild. Restart manually only after reviewing the check and account state. The launcher command remains unchanged.
 
+## Order reconciliation
+
+Production uses the dedicated Kite order WebSocket to trigger authoritative REST reads. Notifications and HTTP acknowledgements do not create fills. A 15-second fallback and a 5-second unresolved-order check recover missed notifications; these intervals are currently code defaults, not JSON settings.
+
+Orders, trades and positions must agree before fill events are persisted and published. Temporary order/trade or pending-order position disagreement shares the existing three-attempt read budget with transient transport failures (250 ms then 500 ms backoff, 12 seconds per snapshot attempt). Identity errors, duplicate/changed trades, authentication failures and rate limits are not retried. Persistent disagreement stops trading with `ReviewRequired`; order submissions are never retried automatically.
+
+New entries remain blocked during WebSocket recovery until a fresh reconciliation succeeds. Existing order deadlines and shutdown review gates still apply; retries do not extend them. The same validation runs during final shutdown reconciliation. Unit and mock tests cover these paths, but a successful no-order live session does not qualify real fill handling.
+
+## Pivot Point SuperTrend
+
+The supplied intraday Pine indicator is available as `pivot_point_supertrend`, configured separately in `config/pivot-point-supertrend.json`: pivot period 2, ATR(10) × 3, Monday–Friday 09:00–23:15 IST, daily session reset, and entries only on fresh trend flips. It uses no MACD/VWAP filter. Reversals close the current position before entering the opposite side; a native clock callback requests session square-off.
+
+```bash
+./target/release/kite-node native-pivot-kite-mock config/pivot-point-supertrend.json
+```
+
+This command uses synthetic data and the native Kite mock adapter. For live-data paper operation use `native-pivot-session-paper` with the same JSON. Production activation of this new strategy is blocked; the existing live launcher keeps its current selection. See [parameters, Pine session corrections and run modes](doc/PivotPointSupertrend.md).
+
 ## Recovery
 
 Reports are saved under `data/supertrend-live/<RUN_UUID>/`. Inspect a failed run without submitting orders:
