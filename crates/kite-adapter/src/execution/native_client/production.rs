@@ -10,8 +10,23 @@ use nautilus_model::identifiers::TraderId;
 use serde::Deserialize;
 use std::{
     any::Any,
+    collections::BTreeMap,
     sync::{Arc, atomic::AtomicBool},
 };
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxWebhooks {
+    pub enabled: bool,
+    pub strategies: BTreeMap<String, SandboxWebhook>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxWebhook {
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -20,6 +35,8 @@ pub struct Settings {
     pub instrument_token: u32,
     pub live_orders_enabled: bool,
     pub market_protection: i32,
+    #[serde(default)]
+    pub sandbox_webhooks: SandboxWebhooks,
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
@@ -139,6 +156,7 @@ mod tests {
             instrument_token: 144870151,
             live_orders_enabled: false,
             market_protection: -1,
+            sandbox_webhooks: SandboxWebhooks::default(),
         };
         assert!(s.validate().is_err());
         s.live_orders_enabled = true;

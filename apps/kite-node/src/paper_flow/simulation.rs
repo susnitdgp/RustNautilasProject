@@ -24,6 +24,14 @@ pub fn fixture() -> Result<(FuturesContract, UnixNanos)> {
     };
     Ok((kite_adapter::instruments::contract::build(&report, ts)?, ts))
 }
+/// Synthetic live-clock runs must not expire with the historical replay fixture.
+/// Never use this instrument for broker-backed market data or execution.
+pub fn live_clock_fixture() -> Result<(FuturesContract, UnixNanos)> {
+    let (mut instrument, _) = fixture()?;
+    let now = nautilus_core::time::get_atomic_clock_realtime().get_time_ns();
+    instrument.expiration_ns = (now.as_u64() + 86_400_000_000_000).into();
+    Ok((instrument, now))
+}
 #[cfg(test)]
 pub fn quote(instrument: &FuturesContract, p: i32, ts: u64) -> QuoteTick {
     QuoteTick::new(

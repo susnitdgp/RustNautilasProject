@@ -49,6 +49,9 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-kite-sandbox", [settings, strategy]) => {
             super::runner::run_kite_sandbox(settings, strategy)
         }
+        ("native-kite-sandbox", [settings, strategy, webhooks]) => {
+            super::runner::run_kite_sandbox_with_webhooks(settings, strategy, webhooks)
+        }
         ("native-kite-review", [namespace]) => {
             kite_adapter::execution::native_client::recovery::review(namespace)
                 .map(|v| println!("{}", v))
@@ -129,7 +132,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 

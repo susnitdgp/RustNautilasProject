@@ -26,7 +26,7 @@ use std::{
 };
 pub fn run(strategy_path: &str, catalog_path: Option<&str>) -> Result<()> {
     let strategy = kite_strategy::config::Config::parse(&std::fs::read_to_string(strategy_path)?)?;
-    let (instrument, _) = crate::paper_flow::simulation::fixture()?;
+    let (mut instrument, _) = crate::paper_flow::simulation::fixture()?;
     let instance = UUID4::new();
     let run_id = instance.to_string();
     let path = catalog_path
@@ -38,6 +38,20 @@ pub fn run(strategy_path: &str, catalog_path: Option<&str>) -> Result<()> {
             InstrumentAny::FuturesContract(instrument.clone()),
             &catalog::fixture_quotes()?,
         )?;
+    }
+    if catalog_path.is_some() {
+        let saved = nautilus_persistence::backend::catalog::ParquetDataCatalog::new(
+            &path, None, None, None, None,
+        )
+        .query_instruments(Some(&[instrument.id.to_string()]))?;
+        ensure!(
+            saved.len() == 1,
+            "Replay requires one unambiguous catalog instrument"
+        );
+        let InstrumentAny::FuturesContract(saved) = saved.into_iter().next().unwrap() else {
+            anyhow::bail!("Replay requires a futures contract");
+        };
+        instrument = saved;
     }
     let full_ticks = catalog::read_full(&path)?;
     let full_replay = !full_ticks.is_empty();

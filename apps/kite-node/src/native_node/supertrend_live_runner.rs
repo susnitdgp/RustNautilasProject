@@ -135,7 +135,11 @@ fn run_backend_inner(
         .date_naive();
     super::supertrend_terminal::step("Resolving instrument and data credentials");
     let (instrument, token, credentials) = if sim {
-        (crate::paper_flow::simulation::fixture()?.0, 144870151, None)
+        (
+            crate::paper_flow::simulation::live_clock_fixture()?.0,
+            144870151,
+            None,
+        )
     } else {
         let master = kite_adapter::http::instruments::download()?;
         let report = kite_adapter::preflight::run_selected(

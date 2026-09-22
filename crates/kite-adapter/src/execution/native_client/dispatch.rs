@@ -1,4 +1,4 @@
-//! Serial native command dispatch. Only the mock factory constructs this service.
+//! Serial native command dispatch shared by explicit mock, sandbox and production factories.
 use super::super::{
     broker_events::{self, Ownership},
     native,
@@ -139,6 +139,15 @@ impl Dispatcher {
         position: i64,
         tx: &UnboundedSender<ExecutionEvent>,
     ) -> Result<()> {
+        self.submit_guarded(order, position, tx, None).await
+    }
+    pub async fn submit_guarded(
+        &mut self,
+        order: OrderAny,
+        position: i64,
+        tx: &UnboundedSender<ExecutionEvent>,
+        stream_ready: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
         let id = order.client_order_id().to_string();
         ensure!(
@@ -146,7 +155,17 @@ impl Dispatcher {
             "Native order was already attempted; no resubmission"
         );
         let tag = UUID4::new().to_string().replace('-', "")[..20].to_owned();
+        let admission = || -> Result<()> {
+            ensure!(
+                order.is_reduce_only()
+                    || stream_ready
+                        .is_none_or(|ready| ready.load(std::sync::atomic::Ordering::Acquire)),
+                "Kite order stream recovering; new entries paused"
+            );
+            Ok(())
+        };
         let preflight = async {
+            admission()?;
             ensure!(
                 self.records
                     .values()
@@ -203,6 +222,8 @@ impl Dispatcher {
                 },
                 "Exposure requires reducing exit before another entry"
             );
+            // Recheck after awaited broker reads: the stream may have disconnected.
+            admission()?;
             native::submit_with_position(&order, &self.product, &tag, position)
         }
         .await;

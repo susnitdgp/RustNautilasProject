@@ -4,13 +4,13 @@ Rust trading workspace using NautilusTrader, Kite market data and execution, and
 
 ## Current setup
 
-The execution code is restored to **v1.0.0 (`eedbd6b`)**, with a subsequent documentation cleanup. Local broker configuration and the release binary are managed separately from Git.
+The working tree builds on **v1.0.0 (`eedbd6b`)**, with shutdown reporting fixes and WebSocket-triggered order reconciliation. Local broker configuration and the release binary are managed separately from Git.
 
 - Instrument: CRUDEOIL26SEPFUT; five-minute completed candles; one lot.
 - Entries: Supertrend ATR(7), Wilder smoothing, multiplier 2; matching MACD(12,26,9) and session VWAP confirmation.
 - Exits: opposite Supertrend, session shutdown or graceful stop. Additional ATR stop disabled.
 - Production orders: MARKET / MIS / DAY with `market_protection=-1`.
-- Quotes: Kite WebSocket. Order confirmation: REST polling, with fills confirmed from broker trades.
+- Quotes: Kite WebSocket. Production order updates: a dedicated Kite order WebSocket triggers REST reconciliation; slower fallback and pending checks remain, with fills confirmed from broker trades.
 - Orders, application state and ownership: Redis. Failed runs require review before restart.
 
 The September contract and configured calendar end September 21, 2026. Rollover is manual.
@@ -33,6 +33,8 @@ The following command **starts real trading** when those gates pass; use it only
 
 Keep the terminal open. Ctrl-C requests graceful shutdown and a reducing exit; verify the actual final position and open orders in Kite. Session mode must start during the configured trading hours and before its shutdown window. The application begins shutdown 30 minutes before the configured session close.
 
+Sandbox strategy lifecycle hooks are disabled by default. To opt in, set `sandbox_webhooks.enabled` to `true` in `config/kite-production.json`; the sandbox runner then POSTs `{"action":"start","mode":"sandbox"}` for both configured strategies before the run and `{"action":"stop"}` for both after the node run ends. A failed start/stop is reported for review, redirects are rejected, and production never uses these hooks. The default command is `./target/release/kite-node native-kite-sandbox`; an alternate webhook config can be supplied as its third argument.
+
 ## Recovery
 
 Reports are saved under `data/supertrend-live/<RUN_UUID>/`. Inspect a failed run without submitting orders:
@@ -52,6 +54,6 @@ Compare the journal with Kite orders, trades and positions before releasing stal
 - [Optional Slack alerts](doc/SlackAlerts.md)
 - [Pinned Nautilus compatibility patches](vendor/README.md)
 
-Historical implementation notes and verification reports have been removed from the working tree; earlier revisions remain in Git. The documentation cleanup does not change trading code or validate new live execution.
+Historical implementation notes and verification reports have been removed from the working tree; earlier revisions remain in Git. Automated tests do not establish live broker or external webhook qualification.
 
 Nautilus is pinned to 0.63.0 with documented local patches. Its dependencies include LGPL-3.0-only components; review the upstream licenses before redistribution.

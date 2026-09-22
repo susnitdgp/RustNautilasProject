@@ -57,6 +57,22 @@ async fn transient_reads_retry_but_permanent_errors_do_not_and_retry_budget_is_b
     assert_eq!(b.calls.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
+async fn shutdown_preserves_primary_task_error() {
+    let error = shutdown::drain(
+        vec![
+            tokio::spawn(async { Err(anyhow!("primary reconciliation failure")) }),
+            tokio::spawn(async { Err(anyhow!("secondary shutdown failure")) }),
+        ],
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("primary reconciliation failure"));
+    assert!(!message.contains("secondary shutdown failure"));
+}
+
+#[tokio::test]
 async fn shutdown_drains_finished_tasks_and_aborts_overdue_tasks_without_detaching() {
     shutdown::drain(vec![tokio::spawn(async { Ok(()) })], Duration::from_secs(1))
         .await

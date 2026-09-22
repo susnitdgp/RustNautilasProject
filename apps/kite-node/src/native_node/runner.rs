@@ -22,16 +22,39 @@ use std::{
     time::Duration,
 };
 pub fn run(instrument_path: Option<&str>, strategy_path: &str, seconds: u64) -> Result<()> {
-    run_with_backend(instrument_path, strategy_path, seconds, false, false, None)
+    run_with_backend(
+        instrument_path,
+        strategy_path,
+        seconds,
+        false,
+        false,
+        None,
+        None,
+    )
 }
 pub fn run_kite_mock(strategy_path: &str) -> Result<()> {
-    run_with_backend(None, strategy_path, 60, true, false, None)
+    run_with_backend(None, strategy_path, 60, true, false, None, None)
 }
 pub fn run_kite_mock_short(strategy_path: &str) -> Result<()> {
-    run_with_backend(None, strategy_path, 60, true, true, None)
+    run_with_backend(None, strategy_path, 60, true, true, None, None)
 }
 pub fn run_kite_sandbox(settings_path: &str, strategy_path: &str) -> Result<()> {
-    run_with_backend(None, strategy_path, 60, false, false, Some(settings_path))
+    run_kite_sandbox_with_webhooks(settings_path, strategy_path, "config/kite-production.json")
+}
+pub fn run_kite_sandbox_with_webhooks(
+    settings_path: &str,
+    strategy_path: &str,
+    webhooks_path: &str,
+) -> Result<()> {
+    run_with_backend(
+        None,
+        strategy_path,
+        60,
+        false,
+        false,
+        Some(settings_path),
+        Some(webhooks_path),
+    )
 }
 fn run_with_backend(
     instrument_path: Option<&str>,
@@ -40,6 +63,7 @@ fn run_with_backend(
     kite_mock: bool,
     short_fixture: bool,
     sandbox_path: Option<&str>,
+    webhooks_path: Option<&str>,
 ) -> Result<()> {
     let strategy = kite_strategy::config::Config::parse(&std::fs::read_to_string(strategy_path)?)?;
     let sandbox = sandbox_path
@@ -49,6 +73,15 @@ fn run_with_backend(
             )
         })
         .transpose()?;
+    let sandbox_webhooks = if let Some(path) = webhooks_path {
+        ensure!(
+            sandbox.is_some(),
+            "Sandbox strategy webhooks require sandbox mode"
+        );
+        Some(super::sandbox_webhooks::Controller::load(path)?)
+    } else {
+        None
+    };
     let seconds = sandbox.as_ref().map_or(seconds, |s| s.seconds);
     let native_kite = kite_mock || sandbox.is_some();
     let account_scope = sandbox
@@ -73,7 +106,11 @@ fn run_with_backend(
             Some(Arc::new(kite_adapter::credentials::redis::load_from_env()?)),
         )
     } else {
-        (crate::paper_flow::simulation::fixture()?.0, 144870151, None)
+        (
+            crate::paper_flow::simulation::live_clock_fixture()?.0,
+            144870151,
+            None,
+        )
     };
     let live_data = credentials.is_some();
     let redis = persistence::redis_config()?;
@@ -107,18 +144,29 @@ fn run_with_backend(
   node.add_strategy(NativeStrategy::new(strategy,instrument.id,true,state.clone(),done.clone()))?;
   node.add_actor(AuditActor::new(instrument.id,audit.clone()))?;
   node.add_exec_algorithm(TwapAlgorithm::new(ExecutionAlgorithmConfig{exec_algorithm_id:Some("TWAP".into()),..Default::default()}))?;
+  let mut webhook_session = if let Some(controller) = sandbox_webhooks.as_ref() {
+   Some(controller.start().await?)
+  } else {
+   None
+  };
   let handle=node.handle();
   let completed=done.clone();
   let watcher=tokio::spawn(async move {
    super::lifecycle::wait(completed,seconds).await;
    handle.stop();
   });
-  println!("{}",serde_json::json!({"event":"native_node_started","namespace":instance.to_string(),"runtime":"LiveNode","live_orders_enabled":false}));
+  println!("{}",serde_json::json!({"event":"native_node_started","namespace":instance.to_string(),"runtime":"LiveNode","live_orders_enabled":false,"sandbox_webhooks_enabled":sandbox_webhooks.as_ref().is_some_and(|c| c.enabled())}));
   let run=node.run().await;
   watcher.abort();
-  let output=report(&state,audit.get(),live_data,instance.to_string(),kite_mock,sandbox.is_some());
+  let webhook_stop = if let Some(session) = webhook_session.as_mut() {
+   session.stop().await
+  } else {
+   Ok(())
+  };
   node.dispose();
+  webhook_stop?;
   run?;
+  let output=report(&state,audit.get(),live_data,instance.to_string(),kite_mock,sandbox.is_some());
   if native_kite {let health=kite_adapter::execution::native_client::coordination::status(&account_scope)?; ensure!(health["state"]=="Clean","Native account shutdown requires review");}
   output
  });
