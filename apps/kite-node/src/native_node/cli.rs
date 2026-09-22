@@ -32,6 +32,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
             .parse::<u64>()
             .map_err(anyhow::Error::from)
             .and_then(|n| super::supertrend_live_runner::run(config, n, false)),
+        ("native-contract-check", [config]) => super::production::contract_check(config),
         ("native-production-preflight", [config]) => super::production::preflight(config),
         ("native-production-verify", [config, date, input, folder]) => {
             super::production::verify(config, date, input, folder)
@@ -132,7 +133,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 

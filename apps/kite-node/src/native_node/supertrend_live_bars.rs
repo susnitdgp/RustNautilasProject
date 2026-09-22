@@ -102,15 +102,20 @@ mod tests {
     }
 }
 
-pub fn validate_warmup(candles: &[Candle], date: chrono::NaiveDate, now: u64) -> Result<()> {
+pub fn validate_warmup(
+    candles: &[Candle],
+    date: chrono::NaiveDate,
+    now: u64,
+    calendar: &super::session_calendar::Calendar,
+) -> Result<()> {
     let first = candles
         .first()
         .ok_or_else(|| anyhow::anyhow!("No warmup"))?
         .time()?
         .date_naive();
     let mut index = 0;
-    for day in super::vwap_input::range(first, date)? {
-        let (start, end) = super::vwap_input::bounds(day)?;
+    for day in calendar.range(first, date)? {
+        let (start, end) = calendar.bounds(day)?;
         let cutoff = if day == date {
             now.saturating_sub(2_000_000_000).min(end)
         } else {
@@ -133,6 +138,7 @@ pub fn validate_warmup(candles: &[Candle], date: chrono::NaiveDate, now: u64) ->
 #[test]
 fn warmup_requires_complete_sessions_and_latest_closed_candle() {
     let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let calendar = super::session_calendar::fixture();
     let (start, _) = super::vwap_input::bounds(date).unwrap();
     let now = start + 3 * STEP + 2_000_000_000;
     let (previous, end) = super::vwap_input::bounds(date.pred_opt().unwrap()).unwrap();
@@ -153,8 +159,8 @@ fn warmup_requires_complete_sessions_and_latest_closed_candle() {
             oi: 10,
         });
     }
-    assert!(validate_warmup(&candles, date, now).is_ok());
-    assert!(validate_warmup(&candles[..candles.len() - 1], date, now).is_err());
+    assert!(validate_warmup(&candles, date, now, &calendar).is_ok());
+    assert!(validate_warmup(&candles[..candles.len() - 1], date, now, &calendar).is_err());
     candles.remove(12);
-    assert!(validate_warmup(&candles, date, now).is_err());
+    assert!(validate_warmup(&candles, date, now, &calendar).is_err());
 }

@@ -1,5 +1,7 @@
 //! Validated production selection and offline release verification; no live activation.
+use super::session_calendar::Calendar;
 use anyhow::{Result, ensure};
+use chrono::{Datelike, NaiveDate};
 use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -8,6 +10,8 @@ pub struct Selection {
     pub instrument: String,
     pub symbol: String,
     pub instrument_token: u32,
+    pub expected_expiry: NaiveDate,
+    pub session_calendar: Calendar,
     interval: String,
     contracts: u32,
     supertrend_period: u32,
@@ -25,7 +29,52 @@ impl Selection {
         s.validate()?;
         Ok(s)
     }
+    pub fn resolve(
+        &self,
+        master: &[u8],
+        date: NaiveDate,
+    ) -> Result<kite_adapter::preflight::Report> {
+        self.validate()?;
+        let report = kite_adapter::preflight::run_selected(
+            &self.symbol,
+            self.instrument_token,
+            master,
+            date,
+        )?;
+        ensure!(
+            report.instrument_id == self.instrument
+                && report.expiry == self.expected_expiry.to_string(),
+            "JSON instrument or expected expiry differs from the selected Kite contract"
+        );
+        Ok(report)
+    }
+    /// Synthetic metadata is only for offline simulation; retain the configured routing identity.
+    pub fn synthetic_instrument(&self) -> Result<nautilus_model::instruments::FuturesContract> {
+        self.validate()?;
+        let (mut instrument, _) = crate::paper_flow::simulation::live_clock_fixture()?;
+        instrument.id = self.instrument.parse()?;
+        instrument.raw_symbol = self.symbol.as_str().into();
+        Ok(instrument)
+    }
     fn validate(&self) -> Result<()> {
+        self.session_calendar.validate()?;
+        ensure!(
+            self.expected_expiry >= self.session_calendar.valid_from
+                && self.expected_expiry <= self.session_calendar.valid_through,
+            "JSON session calendar must cover the configured contract expiry"
+        );
+        ensure!(
+            self.symbol
+                == format!(
+                    "CRUDEOIL{}FUT",
+                    self.expected_expiry
+                        .format("%y%b")
+                        .to_string()
+                        .to_uppercase()
+                )
+                && (2020..=2099).contains(&self.expected_expiry.year()),
+            "Configured symbol and expected expiry month disagree"
+        );
         ensure!(
             !self.live_orders_enabled,
             "Real-order activation is not supported"
@@ -51,6 +100,31 @@ impl Selection {
         );
         Ok(())
     }
+}
+/// Read-only contract/calendar check; never loads credentials, starts a node or sends orders.
+pub fn contract_check(path: &str) -> Result<()> {
+    let selection = Selection::load(path)?;
+    let now = chrono::Utc::now();
+    let date = now
+        .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+        .date_naive();
+    let session = selection.session_calendar.session(date)?;
+    let master = kite_adapter::http::instruments::download()?;
+    let report = selection.resolve(&master, date)?;
+    let instrument =
+        kite_adapter::instruments::contract::build(&report, super::data::now().into())?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event":"selected_contract_check", "instrument":instrument.id.to_string(),
+            "instrument_token":report.instrument_token, "expiry":report.expiry,
+            "broker_lot_size":report.broker_lot_size, "tick_size":report.tick_size,
+            "validation_date_ist":date, "session_today":session.is_some(),
+            "calendar_valid_through":selection.session_calendar.valid_through,
+            "live_orders_enabled":false, "engine_started":false, "orders_sent":0
+        })
+    );
+    Ok(())
 }
 pub fn preflight(path: &str) -> Result<()> {
     let _ = Selection::load(path)?;
@@ -80,6 +154,60 @@ pub fn verify(config: &str, date: &str, input: &str, folder: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn selected_metadata_matches_master_and_simulated_routing() {
+        let config = include_str!("../../../../config/production-supertrend.json");
+        let selection: Selection = serde_json::from_str(config).unwrap();
+        let master = format!("instrument_token,tradingsymbol,name,expiry,tick_size,lot_size,instrument_type,segment,exchange\n{}, {},CRUDEOIL,{},1,1,FUT,MCX-FUT,MCX\n",
+            selection.instrument_token, selection.symbol, selection.expected_expiry).replace(", ", ",");
+        let date = NaiveDate::from_ymd_opt(2026, 9, 22).unwrap();
+        let report = selection.resolve(master.as_bytes(), date).unwrap();
+        let live =
+            kite_adapter::instruments::contract::build(&report, super::super::data::now().into())
+                .unwrap();
+        let sim = selection.synthetic_instrument().unwrap();
+        assert_eq!(live.id, sim.id);
+        assert_eq!(live.raw_symbol, sim.raw_symbol);
+        assert_eq!(live.id.to_string(), selection.instrument);
+        let wrong_expiry = master.replace("2026-10-19", "2026-10-20");
+        assert!(selection.resolve(wrong_expiry.as_bytes(), date).is_err());
+        let wrong_token = master.replace(&selection.instrument_token.to_string(), "144870151");
+        assert!(selection.resolve(wrong_token.as_bytes(), date).is_err());
+        assert!(
+            selection
+                .resolve(
+                    master.as_bytes(),
+                    NaiveDate::from_ymd_opt(2026, 10, 20).unwrap()
+                )
+                .is_err()
+        );
+    }
+    #[test]
+    fn missing_calendar_wrong_expiry_month_and_short_coverage_fail_closed() {
+        let base: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../config/production-supertrend.json"
+        ))
+        .unwrap();
+        let mut value = base.clone();
+        value.as_object_mut().unwrap().remove("session_calendar");
+        assert!(serde_json::from_value::<Selection>(value).is_err());
+        let mut value = base.clone();
+        value["expected_expiry"] = serde_json::json!("2026-09-21");
+        assert!(
+            serde_json::from_value::<Selection>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let mut value = base;
+        value["session_calendar"]["valid_through"] = serde_json::json!("2026-10-18");
+        assert!(
+            serde_json::from_value::<Selection>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
     #[test]
     fn selection_rejects_real_orders_stops_and_ten_minute_changes() {
         let v = include_str!("../../../../config/production-supertrend.json");

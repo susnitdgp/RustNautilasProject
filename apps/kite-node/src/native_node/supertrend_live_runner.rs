@@ -70,7 +70,7 @@ pub fn run_broker(config: &str, settings: &str) -> Result<()> {
     settings.validate()?;
     run_backend(
         config,
-        super::supertrend_session::duration(data::now())?,
+        super::supertrend_session::duration(data::now(), &selection.session_calendar)?,
         false,
         false,
         Some(settings),
@@ -136,22 +136,13 @@ fn run_backend_inner(
     super::supertrend_terminal::step("Resolving instrument and data credentials");
     let (instrument, token, credentials) = if sim {
         (
-            crate::paper_flow::simulation::live_clock_fixture()?.0,
-            144870151,
+            selection.synthetic_instrument()?,
+            selection.instrument_token,
             None,
         )
     } else {
         let master = kite_adapter::http::instruments::download()?;
-        let report = kite_adapter::preflight::run_selected(
-            &selection.symbol,
-            selection.instrument_token,
-            master.as_slice(),
-            date,
-        )?;
-        ensure!(
-            report.instrument_id == selection.instrument,
-            "Configured instrument ID differs from the selected Kite contract"
-        );
+        let report = selection.resolve(&master, date)?;
         (
             kite_adapter::instruments::contract::build(&report, data::now().into())?,
             report.instrument_token,
@@ -168,12 +159,12 @@ fn run_backend_inner(
     };
     ensure!(warmup.len() >= 100, "Insufficient indicator warmup");
     if !sim {
-        bars::validate_warmup(&warmup, date, data::now())?;
+        bars::validate_warmup(&warmup, date, data::now(), &selection.session_calendar)?;
     }
     let (start, end) = if sim {
         (bars::close(warmup.last().unwrap())?, u64::MAX)
     } else {
-        let (session_start, end) = super::vwap_input::bounds(date)?;
+        let (session_start, end) = selection.session_calendar.bounds(date)?;
         ensure!(
             data::now() >= session_start && data::now() + 15_000_000_000 < end,
             "Start paper mode during the configured session"
@@ -201,6 +192,7 @@ fn run_backend_inner(
         instrument: instrument.clone(),
         token,
         date,
+        calendar: selection.session_calendar.clone(),
         synthetic_delay_ms: if kite_mock { 180 } else { 60 },
         warmup: warmup.clone(),
         simulated,
@@ -245,7 +237,7 @@ fn run_backend_inner(
             }
             handle.stop();
         });
-        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"live_orders_enabled":real}));
+        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"live_orders_enabled":real}));
         alerts.emit(format!("{} 5m: run {id} initialized; real_orders={real}", selection.symbol));
         let mut was_paused=false;
         let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock,&selection.symbol);
@@ -303,7 +295,7 @@ fn run_backend_inner(
     super::backtest_report::json(&folder, "signals.json", &s.signals)?;
     super::backtest_report::json(&folder, "fills.json", &s.fills)?;
     super::backtest_report::json(&folder, "recoveries.json", &s.rebuilds)?;
-    let output = serde_json::json!({"event":"supertrend_live_complete","namespace":id.to_string(),"status":if clean{"Clean"}else{"ReviewRequired"},
+    let output = serde_json::json!({"event":"supertrend_live_complete","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"status":if clean{"Clean"}else{"ReviewRequired"},
         "runtime":"LiveNode","strategy":"supertrend_macd_vwap","interval":"5minute","contracts":1,"atr_stop_enabled":false,
         "simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
         "bars":s.indicators.len(),"warmup_bars":warmup.len(),"signals":s.signals.len(),"fills":s.fills.len(),"open_contracts":position,

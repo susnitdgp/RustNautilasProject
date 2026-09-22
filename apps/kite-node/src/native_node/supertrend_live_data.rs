@@ -28,6 +28,7 @@ pub struct Config {
     pub token: u32,
     pub synthetic_delay_ms: u64,
     pub date: chrono::NaiveDate,
+    pub calendar: super::session_calendar::Calendar,
     pub warmup: Vec<Candle>,
     pub simulated: Vec<Candle>,
     pub control: Control,
@@ -141,7 +142,8 @@ impl Client {
                     }
                     return Ok::<_, anyhow::Error>(());
                 }
-                let mut history = super::supertrend_revision::History::new(&c.warmup)?;
+                let mut history =
+                    super::supertrend_revision::History::new(&c.warmup, c.calendar.clone())?;
                 let mut failures = 0;
                 while !c.control.stopping.load(Ordering::Acquire) {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;

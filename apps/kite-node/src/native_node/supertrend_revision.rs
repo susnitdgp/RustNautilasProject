@@ -5,6 +5,7 @@ use kite_adapter::http::historical::Candle;
 use std::collections::BTreeMap;
 pub struct History {
     candles: BTreeMap<u64, Candle>,
+    calendar: super::session_calendar::Calendar,
 }
 pub struct Update {
     pub all: Vec<Candle>,
@@ -12,8 +13,9 @@ pub struct Update {
     pub revised: usize,
 }
 impl History {
-    pub fn new(candles: &[Candle]) -> Result<Self> {
+    pub fn new(candles: &[Candle], calendar: super::session_calendar::Calendar) -> Result<Self> {
         Ok(Self {
+            calendar,
             candles: candles
                 .iter()
                 .map(|c| Ok((close(c)?, c.clone())))
@@ -53,7 +55,7 @@ impl History {
             merged.insert(ts, c);
         }
         let all: Vec<_> = merged.values().cloned().collect();
-        validate_warmup(&all, date, now)?;
+        validate_warmup(&all, date, now, &self.calendar)?;
         self.candles = merged;
         Ok(Update { all, new, revised })
     }
@@ -81,9 +83,49 @@ mod tests {
         (rows, date, b + 2_000_000_000)
     }
     #[test]
+    fn october_history_skips_closed_holiday_but_rejects_missing_trading_bars() {
+        let calendar = super::super::session_calendar::fixture();
+        let first = chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+        let mut rows = Vec::new();
+        for day in calendar.range(first, date).unwrap() {
+            let (a, b) = calendar.bounds(day).unwrap();
+            for ts in (a..b).step_by(300_000_000_000usize) {
+                rows.push(Candle {
+                    timestamp: chrono::DateTime::from_timestamp_nanos(ts as i64)
+                        .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+                        .to_rfc3339(),
+                    open: 100.,
+                    high: 102.,
+                    low: 99.,
+                    close: 101.,
+                    volume: 10,
+                    oi: 10,
+                });
+            }
+        }
+        assert_eq!(rows.len(), 348);
+        let now = calendar.bounds(date).unwrap().1 + 2_000_000_000;
+        let mut history = History::new(&rows[..174], calendar).unwrap();
+        let mut missing = rows[174..].to_vec();
+        missing.remove(12);
+        assert!(history.update(missing, date, now).is_err());
+        assert_eq!(
+            history
+                .update(rows[174..].to_vec(), date, now)
+                .unwrap()
+                .new
+                .len(),
+            174
+        );
+        let mut revised = rows;
+        revised[50].volume += 1;
+        assert_eq!(history.update(revised, date, now).unwrap().revised, 1);
+    }
+    #[test]
     fn corrections_rebuild_once_and_gaps_do_not_commit_partial_history() {
         let (rows, date, now) = fixture();
-        let mut h = History::new(&rows[..100]).unwrap();
+        let mut h = History::new(&rows[..100], super::super::session_calendar::fixture()).unwrap();
         let mut missing = rows[100..].to_vec();
         missing.remove(2);
         assert!(h.update(missing, date, now).is_err());

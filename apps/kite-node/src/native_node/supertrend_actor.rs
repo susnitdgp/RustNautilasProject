@@ -304,7 +304,7 @@ nautilus_strategy!(BarStrategy, {
         if let Some(control) = &self.live {
             control.flat.store(self.position() == 0., Ordering::Release);
         }
-        self.state.borrow_mut().fills.push(serde_json::json!({"timestamp_ns":event.ts_event.as_u64(),"client_order_id":event.client_order_id.to_string(),"side":event.order_side.to_string(),"quantity":event.last_qty.to_string(),"price":event.last_px.to_string(),"commission":event.commission.map(|v|v.to_string())}));
+        self.state.borrow_mut().fills.push(serde_json::json!({"instrument_id":event.instrument_id.to_string(),"timestamp_ns":event.ts_event.as_u64(),"client_order_id":event.client_order_id.to_string(),"side":event.order_side.to_string(),"quantity":event.last_qty.to_string(),"price":event.last_px.to_string(),"commission":event.commission.map(|v|v.to_string())}));
     }
     fn on_order_canceled(&mut self, _: &OrderCanceled) {
         self.pending = false;

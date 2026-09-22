@@ -1,8 +1,8 @@
 {
   "strategy": "supertrend_macd_vwap",
-  "instrument": "CRUDEOIL26SEPFUT.MCX",
-  "symbol": "CRUDEOIL26SEPFUT",
-  "instrument_token": 144870151,
+  "instrument": "CRUDEOIL26OCTFUT.MCX",
+  "symbol": "CRUDEOIL26OCTFUT",
+  "instrument_token": 145894407,
   "interval": "5minute",
   "contracts": 1,
   "supertrend_period": 7,
@@ -12,5 +12,22 @@
   "macd_signal": 9,
   "session_vwap": true,
   "atr_stop_enabled": false,
-  "live_orders_enabled": false
+  "live_orders_enabled": false,
+  "expected_expiry": "2026-10-19",
+  "session_calendar": {
+    "timezone": "Asia/Kolkata",
+    "valid_from": "2026-08-17",
+    "valid_through": "2026-10-19",
+    "regular": {
+      "open": "09:00:00",
+      "close": "23:30:00"
+    },
+    "overrides": {
+      "2026-09-14": {
+        "open": "17:00:00",
+        "close": "23:30:00"
+      },
+      "2026-10-02": null
+    }
+  }
 }

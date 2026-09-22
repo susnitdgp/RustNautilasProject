@@ -368,6 +368,27 @@ fn selected_strategy_uses_native_kite_protected_market_dispatch() {
         .canonicalize()
         .unwrap();
     let result = redis.run(&["native-supertrend-kite-mock", config.to_str().unwrap()]);
+    let selection: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(result["instrument"], selection["instrument"]);
+    assert_eq!(result["instrument_token"], selection["instrument_token"]);
+    let fills: Vec<serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(
+            redis
+                .dir
+                .path()
+                .join(result["report_directory"].as_str().unwrap())
+                .join("fills.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(!fills.is_empty());
+    assert!(
+        fills
+            .iter()
+            .all(|fill| fill["instrument_id"] == selection["instrument"])
+    );
     assert_eq!(result["execution"], "Kite native mock");
     assert_eq!(result["status"], "Clean");
     assert_eq!(result["live_orders_enabled"], false);
