@@ -737,3 +737,58 @@ fn pivot_point_cannot_activate_production_or_load_the_wrong_strategy() {
         "Rejected activation created Redis state"
     );
 }
+
+#[test]
+fn pivot_recovery_while_flat_waits_for_fresh_flip() {
+    let redis = Redis::start();
+    let source =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/pivot-point-supertrend.json");
+    let mut selection: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(source).unwrap()).unwrap();
+    // The earlier fixture close puts startup and the recovery in the same
+    // established SHORT trend, before the next fresh LONG flip.
+    selection["session_calendar"]["regular"]["close"] = "22:00:00".into();
+    selection["pivot_point"]["session"]["end"] = "21:45:00".into();
+    let config = redis.dir.path().join("pivot-recovery.json");
+    std::fs::write(&config, serde_json::to_vec(&selection).unwrap()).unwrap();
+    let mut decisions = Vec::new();
+    for command in ["native-pivot-sim", "native-supertrend-recovery-sim"] {
+        let result = redis.run(&[command, config.to_str().unwrap()]);
+        assert_eq!(result["status"], "Clean");
+        assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+        assert_eq!(result["open_orders"], 0);
+        assert_eq!(result["live_orders_enabled"], false);
+        assert_eq!(
+            result["indicator_rebuilds"].as_u64(),
+            Some(u64::from(command == "native-supertrend-recovery-sim"))
+        );
+        let folder = redis
+            .dir
+            .path()
+            .join(result["report_directory"].as_str().unwrap());
+        let indicators: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(folder.join("indicators.json")).unwrap())
+                .unwrap();
+        let warmup = result["warmup_bars"].as_u64().unwrap() as usize;
+        for bar in &indicators[warmup - 1..=warmup + 10] {
+            assert_eq!(bar["direction"], -1);
+            assert_eq!(
+                bar["signal"], 0,
+                "Fixture must have no entry before recovery"
+            );
+        }
+        let signals: Vec<serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(folder.join("signals.json")).unwrap()).unwrap();
+        let intents: Vec<String> = signals
+            .iter()
+            .map(|s| s["intent"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            intents,
+            ["BUY", "BUY_EXIT"],
+            "{command}: recovery while flat must not open an existing SHORT trend"
+        );
+        decisions.push(intents);
+    }
+    assert_eq!(decisions[0], decisions[1]);
+}

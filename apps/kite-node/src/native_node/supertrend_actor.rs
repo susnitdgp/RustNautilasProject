@@ -352,11 +352,14 @@ impl DataActor for BarStrategy {
                         .and_then(|v| v["direction"].as_i64())
                         .unwrap_or(0);
                     let inside = latest.as_ref().is_some_and(|v| v["in_session"] == true);
-                    self.target = if inside && position.signum() == direction as f64 {
-                        direction as i8
-                    } else {
-                        0
-                    };
+                    // An empty position sum is -0.0, whose signum is -1.0.
+                    // Neither signed zero is an open position to preserve.
+                    self.target =
+                        if inside && position != 0. && position.signum() == direction as f64 {
+                            direction as i8
+                        } else {
+                            0
+                        };
                 }
                 self.state.borrow_mut().rebuilds.push(serde_json::json!({"epoch":epoch,"previous_bar":previous,"rebuilt_bar":self.last_bar,"received_ns":q.ts_init.as_u64(),"past_orders_replayed":false}));
                 control.recoveries.fetch_add(1, Ordering::AcqRel);

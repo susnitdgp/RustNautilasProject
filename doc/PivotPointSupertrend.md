@@ -25,7 +25,7 @@ A pivot is available only after its right-hand bars have closed. There are no or
 
 The first pivot initializes the center. Later pivots apply `(2 × previous_center + new_pivot) / 3`. The bands are center ± factor × ATR; the trailing-band recurrence and trend comparisons use previous-bar values. ATR uses the mean of the first N true ranges, followed by Wilder smoothing, including gaps from the previous close. It does not use the older strategy's first-true-range seed.
 
-Like the supplied script's `Trend = 0`, a fresh session starts neutral. Establishing the first direction is not an entry signal: entry requires a subsequent transition between -1 and +1. Historical warmup never places an entry. A history rebuild may require an exit but cannot replay an old entry.
+Like the supplied script's `Trend = 0`, a fresh session starts neutral. Establishing the first direction is not an entry signal: entry requires a subsequent transition between -1 and +1. Historical warmup never places an entry. A history rebuild may require an exit but cannot replay an old entry. A flat position remains flat after recovery (including a cached total of `-0.0`); only an actual nonzero position that still agrees with the rebuilt trend is retained.
 
 Nautilus tracks the actual position and order fills. A reversal submits a reducing exit first, waits for confirmation, then may enter the opposite side. Submission acknowledgements are not fills. Existing persistence, ownership, reconciliation and order-deadline checks remain in force.
 
