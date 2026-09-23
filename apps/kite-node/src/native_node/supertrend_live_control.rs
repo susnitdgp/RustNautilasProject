@@ -12,6 +12,7 @@ pub struct Control {
     pub recoveries: Arc<AtomicU64>,
     pub rebuild: Rebuild,
     pub order_deadline: Arc<AtomicU64>,
+    pub bar_ns: u64,
     pub sim: bool,
     pub real: bool,
     pub recovery_fixture: bool,
@@ -29,6 +30,7 @@ impl Control {
             recoveries: Arc::new(AtomicU64::new(0)),
             rebuild: Arc::new(Mutex::new(None)),
             order_deadline: Arc::new(AtomicU64::new(0)),
+            bar_ns: 300_000_000_000,
             sim,
             real: false,
             recovery_fixture: false,
@@ -37,6 +39,11 @@ impl Control {
             flat: Arc::new(AtomicBool::new(true)),
             fault: Arc::new(Mutex::new(None)),
         }
+    }
+    pub fn with_bar_ns(mut self, bar_ns: u64) -> Self {
+        assert!(bar_ns > 0, "bar interval must be positive");
+        self.bar_ns = bar_ns;
+        self
     }
     pub fn pause(&self) -> u64 {
         self.paused.store(true, Ordering::Release);
@@ -55,7 +62,7 @@ impl Control {
         self.sim
             || (bar > 0
                 && bar <= now
-                && bar == now.saturating_sub(2_000_000_000) / 300_000_000_000 * 300_000_000_000)
+                && bar == now.saturating_sub(2_000_000_000) / self.bar_ns * self.bar_ns)
     }
     pub fn fresh_quote(&self, event: u64, received: u64, now: u64) -> bool {
         self.sim
@@ -78,6 +85,10 @@ mod tests {
         let last = (now - 2_000_000_000) / 300_000_000_000 * 300_000_000_000;
         assert!(c.current_bar(last, now));
         assert!(!c.current_bar(last - 300_000_000_000, now));
+        let three = Control::new(false).with_bar_ns(180_000_000_000);
+        let last_three = (now - 2_000_000_000) / three.bar_ns * three.bar_ns;
+        assert!(three.current_bar(last_three, now));
+        assert!(!three.current_bar(last_three - three.bar_ns, now));
         c.fail("gap");
         assert!(c.stopping.load(Ordering::Acquire));
         assert!(c.done.load(Ordering::Acquire));

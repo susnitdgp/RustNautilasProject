@@ -2,6 +2,31 @@
 use anyhow::{Result, ensure};
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Timelike};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum Interval {
+    #[serde(rename = "3minute")]
+    ThreeMinute,
+    #[serde(rename = "5minute")]
+    FiveMinute,
+}
+impl Interval {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ThreeMinute => "3minute",
+            Self::FiveMinute => "5minute",
+        }
+    }
+    pub const fn minutes(self) -> u64 {
+        match self {
+            Self::ThreeMinute => 3,
+            Self::FiveMinute => 5,
+        }
+    }
+    pub const fn nanoseconds(self) -> u64 {
+        self.minutes() * 60_000_000_000
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Candle {
     pub timestamp: String,
@@ -27,6 +52,14 @@ pub async fn fetch(token: u32, date: NaiveDate) -> Result<Vec<Candle>> {
     fetch_window(token, date, 7).await
 }
 pub async fn fetch_window(token: u32, date: NaiveDate, days: i64) -> Result<Vec<Candle>> {
+    fetch_window_for(token, date, days, Interval::FiveMinute).await
+}
+pub async fn fetch_window_for(
+    token: u32,
+    date: NaiveDate,
+    days: i64,
+    interval: Interval,
+) -> Result<Vec<Candle>> {
     ensure!(
         (1..=30).contains(&days),
         "Historical lookback must be 1..30 calendar days"
@@ -37,7 +70,9 @@ pub async fn fetch_window(token: u32, date: NaiveDate, days: i64) -> Result<Vec<
     let from = date
         .checked_sub_signed(Duration::days(days))
         .ok_or_else(|| anyhow::anyhow!("Date overflow"))?;
-    let response: Response = client.historical(token, from, date).await?;
+    let response: Response = client
+        .historical(token, from, date, interval.as_str())
+        .await?;
     let candles: Vec<_> = response
         .candles
         .into_iter()
@@ -51,10 +86,13 @@ pub async fn fetch_window(token: u32, date: NaiveDate, days: i64) -> Result<Vec<
             oi,
         })
         .collect();
-    validate(&candles)?;
+    validate_for(&candles, interval)?;
     Ok(candles)
 }
 pub fn validate(candles: &[Candle]) -> Result<()> {
+    validate_for(candles, Interval::FiveMinute)
+}
+pub fn validate_for(candles: &[Candle], interval: Interval) -> Result<()> {
     ensure!(!candles.is_empty(), "Historical API returned no candles");
     let mut previous = None;
     for c in candles {
@@ -64,8 +102,10 @@ pub fn validate(candles: &[Candle]) -> Result<()> {
             "Candle timestamp must use IST +05:30"
         );
         ensure!(
-            t.minute() % 5 == 0 && t.second() == 0 && t.nanosecond() == 0,
-            "Candle is not aligned to five minutes"
+            u64::from(t.minute()) % interval.minutes() == 0
+                && t.second() == 0
+                && t.nanosecond() == 0,
+            "Candle is not aligned to the configured interval"
         );
         ensure!(
             previous.is_none_or(|p| t > p),
@@ -110,5 +150,20 @@ mod tests {
         let mut bad = c;
         bad.timestamp = "2026-09-15T09:01:00+05:30".into();
         assert!(validate(&[bad]).is_err());
+    }
+    #[test]
+    fn three_minute_validation_is_interval_specific() {
+        let candle = Candle {
+            timestamp: "2026-09-15T09:03:00+05:30".into(),
+            open: 6000.,
+            high: 6010.,
+            low: 5990.,
+            close: 6001.,
+            volume: 10,
+            oi: 20,
+        };
+        assert!(validate_for(std::slice::from_ref(&candle), Interval::ThreeMinute).is_ok());
+        assert!(validate_for(&[candle], Interval::FiveMinute).is_err());
+        assert_eq!(Interval::ThreeMinute.nanoseconds(), 180_000_000_000);
     }
 }

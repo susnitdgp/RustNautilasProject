@@ -6,10 +6,10 @@
 
 | File | Purpose |
 | --- | --- |
-| `production-trend-ribbon.json` | Trend Ribbon parameters, contract, calendar and strategy gate |
+| `production-trend-ribbon.json` | Trend Ribbon parameters, candle interval, contract, calendar and strategy gate |
 | `kite-production.json` | Private account settings and broker execution gate |
 
-The shared release binary is not built with a JSON file embedded as its live selection. Changing the folder layout does not start a strategy or select another one.
+The `interval` field in the selected JSON controls the Trend Ribbon candle duration. The reviewed live selection currently uses `5minute`; `3minute` remains supported. The shared release binary is not built with a JSON file embedded as its live selection. Changing the folder layout does not start a strategy or select another one.
 
 ## Optional presets
 

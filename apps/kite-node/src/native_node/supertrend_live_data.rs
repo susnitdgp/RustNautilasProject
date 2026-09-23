@@ -2,7 +2,7 @@
 use super::{data::now, supertrend_live_bars as bars, supertrend_live_control::Control};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
-use kite_adapter::http::historical::{self, Candle};
+use kite_adapter::http::historical::{self, Candle, Interval};
 use nautilus_common::{
     cache::CacheView,
     clients::DataClient,
@@ -29,6 +29,7 @@ pub struct Config {
     pub synthetic_delay_ms: u64,
     pub date: chrono::NaiveDate,
     pub calendar: super::session_calendar::Calendar,
+    pub interval: Interval,
     pub warmup: Vec<Candle>,
     pub simulated: Vec<Candle>,
     pub control: Control,
@@ -81,7 +82,12 @@ impl Client {
         let tx = get_data_event_sender();
         self.task = Some(tokio::spawn(async move {
             let result = async {
-                let bt: BarType = format!("{}-5-MINUTE-LAST-EXTERNAL", c.instrument.id).parse()?;
+                let bt: BarType = format!(
+                    "{}-{}-MINUTE-LAST-EXTERNAL",
+                    c.instrument.id,
+                    c.interval.minutes()
+                )
+                .parse()?;
                 let emit = |v: Data| -> Result<()> {
                     tx.send(DataEvent::Data(v))
                         .map_err(|_| anyhow!("Native bar channel closed"))
@@ -99,14 +105,14 @@ impl Client {
                     ))
                 };
                 for bar in &c.warmup {
-                    emit(Data::Bar(bars::bar(bar, bt, now())?))?;
+                    emit(Data::Bar(bars::bar_for(bar, bt, now(), c.interval)?))?;
                 }
                 if c.control.sim {
                     for (index, bar) in c.simulated.iter().enumerate() {
                         if c.control.stopping.load(Ordering::Acquire) {
                             break;
                         }
-                        let open = bars::close(bar)? - 300_000_000_000;
+                        let open = bars::close_for(bar, c.interval)? - c.interval.nanoseconds();
                         emit(quote(bar.open, open + 2))?;
                         tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
                             .await;
@@ -120,12 +126,12 @@ impl Client {
                             let epoch = c.control.pause();
                             let replay = corrected
                                 .iter()
-                                .map(|b| bars::bar(b, bt, now()))
+                                .map(|b| bars::bar_for(b, bt, now(), c.interval))
                                 .collect::<Result<Vec<_>>>()?;
                             *c.control.rebuild.lock().expect("rebuild lock") =
                                 Some((epoch, replay));
                         } else {
-                            emit(Data::Bar(bars::bar(bar, bt, now())?))?;
+                            emit(Data::Bar(bars::bar_for(bar, bt, now(), c.interval)?))?;
                         }
 
                         tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
@@ -137,13 +143,16 @@ impl Client {
                         .last()
                         .ok_or_else(|| anyhow!("No simulation bars"))?;
                     for _ in 0..30 {
-                        emit(quote(last.close, bars::close(last)? + 2))?;
+                        emit(quote(last.close, bars::close_for(last, c.interval)? + 2))?;
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                     return Ok::<_, anyhow::Error>(());
                 }
-                let mut history =
-                    super::supertrend_revision::History::new(&c.warmup, c.calendar.clone())?;
+                let mut history = super::supertrend_revision::History::new_for(
+                    &c.warmup,
+                    c.calendar.clone(),
+                    c.interval,
+                )?;
                 let mut failures = 0;
                 while !c.control.stopping.load(Ordering::Acquire) {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -152,8 +161,13 @@ impl Client {
                     }
                     let epoch = c.control.epoch.load(Ordering::Acquire);
                     let update = async {
-                        let candles = historical::fetch_window(c.token, c.date, 7).await?;
-                        history.update(bars::completed(candles, now())?, c.date, now())
+                        let candles =
+                            historical::fetch_window_for(c.token, c.date, 7, c.interval).await?;
+                        history.update(
+                            bars::completed_for(candles, now(), c.interval)?,
+                            c.date,
+                            now(),
+                        )
                     }
                     .await;
                     let update = match update {
@@ -178,12 +192,12 @@ impl Client {
                         let rebuilt = update
                             .all
                             .iter()
-                            .map(|b| bars::bar(b, bt, now()))
+                            .map(|b| bars::bar_for(b, bt, now(), c.interval))
                             .collect::<Result<Vec<_>>>()?;
                         *c.control.rebuild.lock().expect("rebuild lock") = Some((epoch, rebuilt));
                     } else {
                         for bar in update.new {
-                            emit(Data::Bar(bars::bar(&bar, bt, now())?))?;
+                            emit(Data::Bar(bars::bar_for(&bar, bt, now(), c.interval)?))?;
                         }
                     }
                 }
@@ -254,8 +268,12 @@ impl DataClient for Client {
         Ok(())
     }
     fn subscribe_bars(&mut self, cmd: SubscribeBars) -> Result<()> {
-        let bt: BarType =
-            format!("{}-5-MINUTE-LAST-EXTERNAL", self.config.instrument.id).parse()?;
+        let bt: BarType = format!(
+            "{}-{}-MINUTE-LAST-EXTERNAL",
+            self.config.instrument.id,
+            self.config.interval.minutes()
+        )
+        .parse()?;
         ensure!(cmd.bar_type == bt, "Wrong live bar type");
         self.begin()
     }

@@ -23,6 +23,7 @@ pub fn check(config: &str, broker: &str) -> Result<()> {
             "event": "strategy_production_configuration_check",
             "configuration_valid": true,
             "strategy": selection.strategy,
+            "interval": selection.interval_name(),
             "instrument": selection.instrument,
             "instrument_token": settings.instrument_token,
             "product": settings.product,

@@ -85,12 +85,15 @@ impl BarStrategy {
         self.filtered = false;
         Ok(self)
     }
-    pub fn with_ribbon(
+    pub fn with_ribbon_interval(
         mut self,
         settings: super::trend_ribbon::Settings,
         calendar: super::session_calendar::Calendar,
+        bar_ns: u64,
     ) -> Result<Self> {
-        self.ribbon = Some(super::trend_ribbon::TrendRibbon::new(settings, calendar)?);
+        self.ribbon = Some(super::trend_ribbon::TrendRibbon::new_for_interval(
+            settings, calendar, bar_ns,
+        )?);
         self.filtered = false;
         Ok(self)
     }

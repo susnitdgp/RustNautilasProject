@@ -1,11 +1,12 @@
 //! Merge corrected broker history atomically, before rebuilding indicators.
-use super::supertrend_live_bars::{close, validate_warmup};
+use super::supertrend_live_bars::{close_for, validate_warmup_for};
 use anyhow::{Result, ensure};
-use kite_adapter::http::historical::Candle;
+use kite_adapter::http::historical::{Candle, Interval};
 use std::collections::BTreeMap;
 pub struct History {
     candles: BTreeMap<u64, Candle>,
     calendar: super::session_calendar::Calendar,
+    interval: Interval,
 }
 pub struct Update {
     pub all: Vec<Candle>,
@@ -13,12 +14,21 @@ pub struct Update {
     pub revised: usize,
 }
 impl History {
+    #[cfg(test)]
     pub fn new(candles: &[Candle], calendar: super::session_calendar::Calendar) -> Result<Self> {
+        Self::new_for(candles, calendar, Interval::FiveMinute)
+    }
+    pub fn new_for(
+        candles: &[Candle],
+        calendar: super::session_calendar::Calendar,
+        interval: Interval,
+    ) -> Result<Self> {
         Ok(Self {
             calendar,
+            interval,
             candles: candles
                 .iter()
-                .map(|c| Ok((close(c)?, c.clone())))
+                .map(|c| Ok((close_for(c, interval)?, c.clone())))
                 .collect::<Result<_>>()?,
         })
     }
@@ -28,7 +38,7 @@ impl History {
         date: chrono::NaiveDate,
         now: u64,
     ) -> Result<Update> {
-        kite_adapter::http::historical::validate(&incoming)?;
+        kite_adapter::http::historical::validate_for(&incoming, self.interval)?;
         let mut merged = self.candles.clone();
         let mut revised = 0;
         let mut new = Vec::new();
@@ -37,7 +47,7 @@ impl History {
             .ok_or_else(|| anyhow::anyhow!("Empty history"))?
             .0;
         for c in incoming {
-            let ts = close(&c)?;
+            let ts = close_for(&c, self.interval)?;
             ensure!(
                 ts <= now.saturating_sub(2_000_000_000),
                 "Unfinished correction"
@@ -55,7 +65,7 @@ impl History {
             merged.insert(ts, c);
         }
         let all: Vec<_> = merged.values().cloned().collect();
-        validate_warmup(&all, date, now, &self.calendar)?;
+        validate_warmup_for(&all, date, now, &self.calendar, self.interval)?;
         self.candles = merged;
         Ok(Update { all, new, revised })
     }

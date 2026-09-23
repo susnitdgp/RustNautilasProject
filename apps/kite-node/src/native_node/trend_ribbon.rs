@@ -108,11 +108,20 @@ pub struct TrendRibbon {
     trend: i8,
     session_date: Option<chrono::NaiveDate>,
     last_bar: u64,
+    bar_ns: u64,
 }
 impl TrendRibbon {
+    #[cfg(test)]
     pub fn new(settings: Settings, calendar: Calendar) -> Result<Self> {
+        Self::new_for_interval(settings, calendar, BAR_NS)
+    }
+    pub fn new_for_interval(settings: Settings, calendar: Calendar, bar_ns: u64) -> Result<Self> {
         settings.validate()?;
         calendar.validate()?;
+        ensure!(
+            matches!(bar_ns, 180_000_000_000 | BAR_NS),
+            "Trend Ribbon interval must be three or five minutes"
+        );
         Ok(Self {
             atr: Atr::new(settings.atr_length),
             settings,
@@ -122,10 +131,11 @@ impl TrendRibbon {
             trend: 0,
             session_date: None,
             last_bar: 0,
+            bar_ns,
         })
     }
     pub fn rebuild_empty(&self) -> Result<Self> {
-        Self::new(self.settings.clone(), self.calendar.clone())
+        Self::new_for_interval(self.settings.clone(), self.calendar.clone(), self.bar_ns)
     }
     pub fn in_session(&self, ns: u64) -> Result<bool> {
         self.settings.session.contains(ns, &self.calendar)
@@ -164,10 +174,10 @@ impl TrendRibbon {
         bar_close_ns: u64,
     ) -> Result<Observation> {
         ensure!(
-            bar_close_ns >= BAR_NS
+            bar_close_ns >= self.bar_ns
                 && bar_close_ns > self.last_bar
-                && bar_close_ns.is_multiple_of(BAR_NS),
-            "Trend Ribbon bars must be ordered completed five-minute candles"
+                && bar_close_ns.is_multiple_of(self.bar_ns),
+            "Trend Ribbon bars must be ordered completed configured-interval candles"
         );
         ensure!(
             [high, low, close].iter().all(|x| x.is_finite() && *x > 0.)
@@ -175,7 +185,7 @@ impl TrendRibbon {
                 && close >= low,
             "Invalid Trend Ribbon OHLC"
         );
-        let open_ns = bar_close_ns - BAR_NS;
+        let open_ns = bar_close_ns - self.bar_ns;
         let inside = self.in_session(open_ns)?;
         let day = super::pivot_session::date(open_ns);
         let new_session = inside && self.session_date != Some(day);
@@ -302,6 +312,28 @@ mod tests {
     fn session_gate_prevents_late_entry() {
         let a = TrendRibbon::new(settings(), super::super::session_calendar::fixture()).unwrap();
         assert!(!a.in_session(ts("2026-09-22T23:15:00+05:30")).unwrap())
+    }
+    #[test]
+    fn three_minute_engine_uses_configured_bar_step() {
+        let mut engine = TrendRibbon::new_for_interval(
+            settings(),
+            super::super::session_calendar::fixture(),
+            180_000_000_000,
+        )
+        .unwrap();
+        let first = ts("2026-09-22T09:03:00+05:30");
+        engine.update(101., 99., 100., first).unwrap();
+        assert!(
+            engine
+                .update(101., 99., 100., first + 180_000_000_000)
+                .is_ok()
+        );
+        assert!(
+            engine
+                .update(101., 99., 100., first + 300_000_000_000)
+                .is_err()
+        );
+        assert_eq!(engine.rebuild_empty().unwrap().bar_ns, 180_000_000_000);
     }
     #[test]
     fn real_kite_sep18_21_22_matches_reviewed_tradingview_flip_times() {

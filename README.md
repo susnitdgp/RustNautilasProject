@@ -4,13 +4,13 @@ Rust trading workspace using NautilusTrader, Kite market data and execution, and
 
 ## Trend Ribbon configuration layout
 
-The Trend Ribbon live launcher reads `config/production-trend-ribbon.json` and the private `config/kite-production.json`. Other JSON presets have moved to `config/backup/`; their contents and live-order flags are unchanged. The optional launchers, source defaults and tests reference the new locations. Existing TOML files remain in place. See [configuration guide](config/README.md). This is a file-layout change, not a strategy or safety fix.
+The Trend Ribbon live launcher reads `config/production-trend-ribbon.json` and the private `config/kite-production.json`. The strategy JSON `interval` field is the source of truth for three- versus five-minute Trend Ribbon bars. Other JSON presets have moved to `config/backup/`; their contents and live-order flags are unchanged. The optional launchers, source defaults and tests reference the new locations. Existing TOML files remain in place. See [configuration guide](config/README.md). This is a file-layout change, not a strategy or safety fix.
 
 ## Current setup
 
 **Release v2.0.0** packages the current Trend Ribbon and Pivot implementations, WebSocket-triggered order reconciliation, engineering documentation, and the reorganized configuration layout. The `kite-node` application package is version `2.0.0`; internal library crate and pinned Nautilus versions are unchanged. Local broker configuration and release artifacts are managed separately from Git. See [v2.0.0 release notes](doc/releases/v2.0.0.md).
 
-- Instrument: CRUDEOIL26OCTFUT (expiry October 19, 2026); five-minute completed candles; one lot.
+- Instrument: CRUDEOIL26OCTFUT (expiry October 19, 2026); JSON-selected completed candles; one lot. The active Trend Ribbon selection currently uses five-minute candles; three-minute remains supported through JSON.
 - Active selection: Trend Ribbon [BOSWaves], ALMA(34, 0.85, 6), deviation(34) x 0.65, ATR(14), 3-bar slope threshold 0.08. The original Supertrend/MACD/VWAP and Pivot presets remain available under `config/backup/`.
 - Exits: opposite selected trend, session shutdown or graceful stop. Additional ATR stop disabled. Trend Ribbon has the documented quote-outage square-off limitation below.
 - Production orders: MARKET / MIS / DAY with `market_protection=-1`.
@@ -50,6 +50,7 @@ The selected strategy JSON is the contract source of truth: `config/production-t
   "instrument": "CRUDEOIL26OCTFUT.MCX",
   "symbol": "CRUDEOIL26OCTFUT",
   "instrument_token": 145894407,
+  "interval": "5minute",
   "expected_expiry": "2026-10-19",
   "session_calendar": {
     "timezone": "Asia/Kolkata",
@@ -66,7 +67,7 @@ The selected strategy JSON is the contract source of truth: `config/production-t
 
 This is the contract/calendar portion of the file; retain its strategy fields. At the next rollover, stop the node, review the prior contract's positions and orders, then update the exact symbol, instrument ID, token and expiry from the current Kite master. Review calendar coverage, hours and holiday overrides for the new period, including at least the preceding seven calendar days for warmup. `null` marks a fully closed holiday; an hours object marks a shortened session. Weekends are closed, and dates outside the configured range fail validation. The October 2 closure follows [Zerodha's 2026 MCX holiday calendar](https://zerodha.com/marketintel/holiday-calendar/).
 
-The same JSON calendar controls live startup, the existing 30-minute exit buffer, warmup validation and corrected-history recovery. No contract is automatically selected at expiry. The broker token in `config/kite-production.json` is overridden by this selection for Supertrend; account, product, live-order gate and webhook settings remain in the broker file. Legacy September historical replay/crossover fixtures are separate from this live selection.
+The same JSON interval and calendar control historical API requests, Nautilus bar type, completed-bar timing, warmup validation, corrected-history recovery, dashboard countdown, live startup and the existing 30-minute exit buffer. No contract is automatically selected at expiry. The broker token in `config/kite-production.json` is overridden by this selection for Supertrend; account, product, live-order gate and webhook settings remain in the broker file. Legacy September historical replay/crossover fixtures are separate from this live selection.
 
 Check the selected contract and calendar without starting trading, reading account credentials or calling webhooks:
 

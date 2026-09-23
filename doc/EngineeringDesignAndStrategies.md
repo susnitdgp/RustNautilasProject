@@ -14,6 +14,8 @@ Prepared for manual engineering review. No strategy was started, no broker order
 
 **Configuration-layout update (23 September 2026):** Optional JSON presets were relocated to `config/backup/` after this as-built review. Command examples and configuration-file references below use their new locations. The reviewed trading logic, source baseline, release-binary fingerprint and outstanding findings are unchanged.
 
+**Supervised live-run update (23 September 2026):** Run `e387c856-52e2-417c-94b7-f1d091bfe19d` produced one Trend Ribbon long entry and one graceful shutdown exit through Kite production. The saved report recorded two observed fills, `status: Clean`, `open_contracts: 0` and `open_orders: 0`. This is evidence for one supervised entry/exit path, not full-session or failure-mode qualification. [V4]
+
 ## Document control and reading guide
 
 The repository and source files were inspected on 23 September 2026. The initial host snapshot was taken at **00:58:37 IST**. `main` and the local `origin/main` reference both pointed to `5566a62`; only `config/kite-production.json` and `config/kite-sandbox.toml` were modified before documentation work. Neither private file's contents are reproduced here. No `kite-node` process was observed in that snapshot. This does not establish the broker account's current position. [V1]
@@ -42,7 +44,7 @@ The installed release executable had SHA-256:
 
 The selected production path is a **single-process Rust application hosting a Nautilus LiveNode**, with a project-specific Kite data adapter, a project-specific Kite execution adapter, and Redis-backed state. Separate command-line selections choose **Trend Ribbon [BOSWaves]**, **Pivot Point SuperTrend**, or the original **Supertrend + MACD + session VWAP** strategy. These selections reuse the same `BarStrategy` actor and execution infrastructure; they are not three independent order engines. [S01, S02, S03]
 
-The configured production scope is one standard CRUDEOIL October 2026 futures contract, completed five-minute candles, and MIS protected MARKET/DAY orders. Production startup requires explicit activation gates, valid routing identity, usable credentials, clean ownership and a flat account with no open broker orders. New positions are not silently adopted from a previous process. [S03, S04, S08, S09, S15]
+The configured production scope is one standard CRUDEOIL October 2026 futures contract, JSON-selected completed candles, and MIS protected MARKET/DAY orders. Trend Ribbon supports three- and five-minute bars; the active JSON currently selects five-minute. Pivot and the original Supertrend/MACD/VWAP remain five-minute. Production startup requires explicit activation gates, valid routing identity, usable credentials, clean ownership and a flat account with no open broker orders. New positions are not silently adopted from a previous process. [S03, S04, S08, S09, S15]
 
 Three states must not be conflated: **indicator direction** is a calculated trend; **target** is the actor's desired exposure; **position** is exposure represented by confirmed execution events in the native cache and checked against the broker. A trend can be bullish while the process intentionally remains flat. [S03, S10]
 
@@ -52,7 +54,7 @@ Three states must not be conflated: **indicator direction** is a calculated tren
 
 **The dedicated square-off timer is wired for Pivot only.** The shared actor registers its 250 ms clock callback only when a Pivot engine is selected. Trend Ribbon still has the run deadline, quote-driven exits and final reconciliation, but does not have that independent timer. If fresh quotes stop, a reducing Ribbon exit is not guaranteed by the timer path. This needs explicit review before unattended live use. [S03:194–239, S02:292–303, S09:402–435]
 
-**A successful build or configuration check is not live certification.** Real broker fills, externally exported TradingView numerical parity, and Ribbon-specific outage-at-cutoff qualification remain unverified. Reconciliation deliberately stops on uncertainty; it cannot promise that a broker or network error will never occur. [S07, S12, V2, V3]
+**A successful build or configuration check is not live certification.** One supervised real entry and graceful exit have now been observed, but broader fill behavior, externally exported TradingView numerical parity, full-session reliability and Ribbon-specific outage-at-cutoff qualification remain unverified. Reconciliation deliberately stops on uncertainty; it cannot promise that a broker or network error will never occur. [S07, S12, V2, V3, V4]
 
 # 2. Scope and workspace structure
 
@@ -80,7 +82,7 @@ The selected live runner does not activate every crate capability. The existence
 |---|---|---|
 | Manual launcher | Selects command, strategy JSON and private broker JSON | `deploy/run-trend-ribbon-live.sh` |
 | Selection/startup | Validates settings, calendar, contract, history and ownership | `production.rs`, `supertrend_live_runner.rs` |
-| `STBARS` client | Publishes completed external five-minute bars | `supertrend_live_data.rs` |
+| `STBARS` client | Publishes completed external bars at the selected JSON interval | `supertrend_live_data.rs` |
 | `KITE` client | Publishes quotes and feed-status events | `data.rs` |
 | `BarStrategy` | Updates indicator on bars; attempts target transitions on eligible quotes | `supertrend_actor.rs` |
 | Nautilus risk/execution | Routes native orders and execution events | LiveNode configured in the runner |
@@ -109,7 +111,7 @@ Reusing one actor/adapter path reduces duplicated order logic, but makes changes
 
 ## 4.1 Two separate feeds
 
-`KITE` supplies executable bid/ask quotes and feed-status events from the market-data WebSocket. `STBARS` supplies the indicator's five-minute OHLCV bars from the **Kite historical API**, not by locally aggregating the quote stream. Historical candles also retain OI, although OI does not enter these selected indicators. [S04, S05, S06]
+`KITE` supplies executable bid/ask quotes and feed-status events from the market-data WebSocket. `STBARS` supplies the indicator's OHLCV bars at the selected JSON interval from the **Kite historical API**, not by locally aggregating the quote stream. Historical candles also retain OI, although OI does not enter these selected indicators. [S04, S05, S06]
 
 Before node operation, the runner fetches seven calendar days of history ending on the current IST date. It removes unfinished candles and validates coverage against the configured calendar. For default Ribbon parameters, the general minimum is 100 completed warm-up bars; the formula also raises this requirement for larger configured lengths. Warm-up rebuilds calculations but does not authorize a historical Ribbon/Pivot entry. [S02:189–221, S03:278–318]
 
@@ -117,7 +119,7 @@ The running bar task sleeps ten seconds between retrieval cycles and re-fetches 
 
 ## 4.2 Completed bars and decision time
 
-Kite candle timestamps are treated as **bar-open timestamps**. The native bar's `ts_event` is the candle open plus 300 seconds; `ts_init` records receipt. A candle becomes eligible only when its close is at least two seconds behind the current clock. Bars must be ordered, five-minute aligned, and have valid positive OHLC values. Calendar validation rejects missing required bars instead of inventing them. [S05]
+Kite candle timestamps are treated as **bar-open timestamps**. The native bar's `ts_event` is the candle open plus the selected interval (180 seconds for `3minute`, 300 seconds for `5minute`); `ts_init` records receipt. A candle becomes eligible only when its close is at least two seconds behind the current clock. Bars must be ordered, aligned to the selected interval, and have valid positive OHLC values. Calendar validation rejects missing required bars instead of inventing them. [S05]
 
 **Example:** the regression label `12:35 SHORT` identifies the **12:35–12:40 candle**, not an order sent at 12:35. The strategy can evaluate that completed candle only after 12:40, subject to the two-second allowance, history polling, an eligible later quote and execution checks. Actual fill time and price are separate facts. [S05:11–38, S03, S18]
 
@@ -131,7 +133,7 @@ A quote-feed gap marks the feed offline and pauses processing. Rebuild requests 
 
 The selected JSON is the routing source of truth: instrument ID, symbol, token, expected expiry, strategy type and calendar. When loading broker settings, its token replaces the broker JSON token. Product, expected account identity and broker activation remain private broker-file responsibilities. [S08]
 
-The inspected selections use `CRUDEOIL26OCTFUT.MCX`, token `145894407`, expected expiry `2026-10-19`, one contract and five-minute bars. These are **configured values**, not a new exchange-master validation performed for this document. Instrument construction requires broker lot size 1 and tick size 1, and sets a Nautilus economic multiplier of 100. Order quantity 1 is not multiplied into 100 broker order units by the translation code. [S08, S15, S16]
+The inspected selections use `CRUDEOIL26OCTFUT.MCX`, token `145894407`, expected expiry `2026-10-19` and one contract. Trend Ribbon reads `3minute` or `5minute` from JSON; the active production JSON now selects `5minute`, while the archived strategies remain five-minute. These are **configured values**, not a new exchange-master validation performed for this document. Instrument construction requires broker lot size 1 and tick size 1, and sets a Nautilus economic multiplier of 100. Order quantity 1 is not multiplied into 100 broker order units by the translation code. [S08, S15, S16]
 
 The calendar uses `Asia/Kolkata`, covers `2026-08-17` through `2026-10-19`, and configures regular hours 09:00–23:30. It includes an evening-only override for 14 September and a closed override for 2 October. These are repository calendar inputs, not independently researched market notices. Weekends and dates outside coverage are rejected; weekend special sessions are unsupported. [S08, S16]
 
@@ -451,6 +453,7 @@ The repository's systemd unit is for the original **paper** strategy and specifi
 | Earlier static/build checks | Clippy with warnings denied, format/diff checks and release compilation succeeded in the preceding work. [V3] |
 | Earlier synthetic Ribbon run | 174 bars, 4 order intents/fills, flat final cache and Clean report using simulated data and Sandbox execution. Not live fills. [V3] |
 | Earlier production-config checks | Both Ribbon and Pivot passed offline checks, reported 23:00 cutoff, and explicitly reported no engine/account/master check or orders. [V3] |
+| Supervised Kite production run | One five-minute Ribbon `SHORT→LONG` transition opened one long contract; Ctrl-C produced one reducing exit. The report recorded 2 signals, 2 observed fills, Clean shutdown, zero contracts and zero open orders. [V4] |
 
 The current focused test command was:
 
@@ -461,7 +464,7 @@ cargo test --locked -p kite-node --bin kite-node \
 
 ## 13.2 What remains unproved
 
-The screenshots provide a visual reference, not exact exported Pine calculation series. No automated TradingView execution of the supplied source was performed. The pinned regression has no independent Pine reference for square-off or the four alert Booleans. Nor does a synthetic run establish broker fill latency, slippage, full-session reliability, profitability, or behavior under every market-data/order-stream failure. [P1, S18, V3]
+The screenshots provide a visual reference, not exact exported Pine calculation series. No automated TradingView execution of the supplied source was performed. The pinned regression has no independent Pine reference for square-off or the four alert Booleans. The single supervised live run establishes neither fill-latency or slippage distributions nor full-session reliability, profitability, or behavior under every market-data/order-stream failure. [P1, S18, V3, V4]
 
 The fixture starts with a limited prior-history slice. Matching its expected flip labels does not establish that ATR or every indicator value is identical to a chart initialized from a much longer series. Actual TradingView parity requires identical contract, candle data, source selection, settings, session treatment, timestamp conventions and evaluation mode, with explicit numerical and signal comparisons. This is a validation requirement, not a completed result. [S10, S18, P1]
 
@@ -572,6 +575,8 @@ All repository paths below are relative to `/home/ubuntu/RustNautilasProject` an
 **[V2] Focused current test.** During this document preparation, `cargo test --locked -p kite-node --bin kite-node native_node::trend_ribbon::tests -- --nocapture` completed with 4 passed, 0 failed and 75 filtered out. This is a unit-test execution, not a broker, paper-session or production launch.
 
 **[V3] Earlier session evidence.** Tool results in the preceding implementation work show the 78-unit/17-integration application run, later separate real-market regression, Clippy/diff checks, live-capable release build, synthetic Ribbon run and offline production checks. These are historical results from this conversation, explicitly separated from the focused current test. Exact TradingView series and real broker fills were not verified by those commands.
+
+**[V4] Supervised Kite production run.** The saved report at `data/supertrend-live/e387c856-52e2-417c-94b7-f1d091bfe19d` records a five-minute Trend Ribbon run with one BUY fill, one reducing SELL fill requested by graceful shutdown, final `status: Clean`, no run/feed error, `open_contracts: 0` and `open_orders: 0`. The broker account was independently read as flat with no pending orders after shutdown. This is a single-run observation, not statistical or unattended qualification.
 
 For repeatable engineering review, retain the full source commit, selected non-secret JSON, binary checksum, test command/output, fixture version and all relevant run reports. Preserve private configuration locally and review changes before staging. Changes to strategy session semantics require new expected-result evidence; changing a test's expected timestamps alone is not validation.
 

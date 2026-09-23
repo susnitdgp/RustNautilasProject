@@ -22,6 +22,9 @@ pub struct Display {
     mock: bool,
     id: String,
     symbol: String,
+    interval_minutes: u64,
+    bar_ns: u64,
+    strategy_start_ns: u64,
     pivot: Option<super::pivot_point::Settings>,
     ribbon: Option<super::trend_ribbon::Settings>,
     production_cutoff: Option<String>,
@@ -49,6 +52,9 @@ impl Display {
             mock,
             id: id.into(),
             symbol: selection.symbol.clone(),
+            interval_minutes: selection.interval_minutes(),
+            bar_ns: selection.bar_ns(),
+            strategy_start_ns: u64::MAX,
             pivot: selection.pivot_point.clone(),
             ribbon: selection.trend_ribbon.clone(),
             production_cutoff: if real
@@ -70,15 +76,21 @@ impl Display {
         };
         if !dashboard {
             line(&format!(
-                "{} | {} | 5m | 1 lot\nFeed: {} | Execution: {} | REAL ORDERS: {}\nRun: {id} | Limit: {seconds}s | Ctrl-C: graceful stop",
+                "{} | {} | {}m | 1 lot\nFeed: {} | Execution: {} | REAL ORDERS: {}\nRun: {id} | Limit: {seconds}s | Ctrl-C: graceful stop",
                 selection.strategy,
                 display.symbol,
+                display.interval_minutes,
                 display.feed(),
                 display.execution(),
                 display.orders()
             ));
         }
         display
+    }
+
+    pub fn with_strategy_start_ns(mut self, strategy_start_ns: u64) -> Self {
+        self.strategy_start_ns = strategy_start_ns;
+        self
     }
 
     pub fn render(&self, s: &State, c: &Control) {
@@ -140,6 +152,7 @@ struct Snapshot {
     upper_confirm: Option<f64>,
     lower_confirm: Option<f64>,
     initialized: bool,
+    transition: Option<String>,
     deadline: u64,
     bars: usize,
     quotes: u64,
@@ -217,6 +230,8 @@ impl Snapshot {
         let signal = s.signals.last();
         let intent = text_metric(signal, "intent").unwrap_or("none").to_string();
         let reason = text_metric(signal, "reason").unwrap_or("--").to_string();
+        let transition = (display.ribbon.is_some() || display.pivot.is_some())
+            .then(|| transition_text(display, s, latest));
         Self {
             now,
             bar,
@@ -246,6 +261,7 @@ impl Snapshot {
             upper_confirm: f64_metric(latest, "upper_confirm"),
             lower_confirm: f64_metric(latest, "lower_confirm"),
             initialized: bool_metric(latest, "initialized").unwrap_or(false),
+            transition,
             deadline: c.order_deadline.load(Ordering::Acquire),
             bars: s.indicators.len(),
             quotes: s.live_quotes,
@@ -317,7 +333,10 @@ impl Snapshot {
         ));
         output.push_str(&row(
             "Instrument",
-            &format!("{} | 5-minute | 1 lot", display.symbol),
+            &format!(
+                "{} | {}-minute | 1 lot",
+                display.symbol, display.interval_minutes
+            ),
         ));
         if let Some(p) = &display.pivot {
             output.push_str(&row(
@@ -350,7 +369,7 @@ impl Snapshot {
             output.push_str(&row(
                 "Filters",
                 &format!(
-                    "StDev({}) x {:.2} | slope {} min {:.2} | ATR({})",
+                    "StDev({}) x {:.2} | slope {} bars min {:.2} | ATR({})",
                     r.deviation_length,
                     r.deviation_multiplier,
                     r.slope_length,
@@ -386,7 +405,7 @@ impl Snapshot {
             &format!(
                 "spread {spread} | age {age} | bar {} | next candle {}",
                 ist(self.bar),
-                candle_countdown(self.now)
+                candle_countdown(self.now, display.bar_ns)
             ),
         ));
         if display.ribbon.is_some() {
@@ -453,6 +472,9 @@ impl Snapshot {
                 ));
             }
         }
+        if let Some(transition) = &self.transition {
+            output.push_str(&row("Transition", transition));
+        }
         output.push_str(&section("Position and safety"));
         output.push_str(&row(
             "Position",
@@ -515,6 +537,9 @@ impl Snapshot {
             self.intent,
             self.fills
         );
+        if let Some(transition) = &self.transition {
+            output.push_str(&format!("\n  Transition: {transition}"));
+        }
         if let Some(reason) = &self.fault {
             output.push_str(&format!("\n  STOP REASON: {}", clean(reason)));
         }
@@ -592,11 +617,69 @@ fn bool_metric(v: Option<&Value>, key: &str) -> Option<bool> {
     v.and_then(|v| v[key].as_bool())
 }
 
+fn transition_text(display: &Display, state: &State, latest: Option<&Value>) -> String {
+    let transition = state.indicators.iter().enumerate().rev().find(|(_, row)| {
+        u64_metric(Some(*row), "bar_close_ns").is_some_and(|ts| ts > display.strategy_start_ns)
+            && i64_metric(Some(*row), "signal").is_some_and(|signal| signal != 0)
+    });
+    let Some((index, row)) = transition else {
+        if !bool_metric(latest, "initialized").unwrap_or(false) {
+            return "none | waiting for initialized direction".into();
+        }
+        return format!(
+            "none since start | state {} inherited from warmup/rebuild",
+            direction(i64_metric(latest, "direction"))
+        );
+    };
+    let timestamp = u64_metric(Some(row), "bar_close_ns").unwrap_or(0);
+    let signal = i64_metric(Some(row), "signal").unwrap_or(0);
+    let previous = state.indicators[..index]
+        .iter()
+        .rev()
+        .find_map(|row| i64_metric(Some(row), "direction"))
+        .unwrap_or(0);
+    let source =
+        if state.rebuilds.iter().rev().any(|rebuild| {
+            u64_metric(Some(rebuild), "rebuilt_bar").is_some_and(|bar| bar >= timestamp)
+        }) {
+            "REBUILT"
+        } else {
+            "LIVE"
+        };
+    if display.ribbon.is_some() {
+        let (comparison, band_name, band) = if signal > 0 {
+            ('>', "U", f64_metric(Some(row), "upper_confirm"))
+        } else {
+            ('<', "L", f64_metric(Some(row), "lower_confirm"))
+        };
+        return format!(
+            "{}→{} @{} raw{signal:+} | C{}{comparison}{band_name}{} S{} | {source}",
+            direction(Some(previous)),
+            direction(Some(signal)),
+            ist_clock(timestamp),
+            show(f64_metric(Some(row), "close")),
+            show(band),
+            show_signed4(f64_metric(Some(row), "slope_score"))
+        );
+    }
+    format!(
+        "{}→{} @{} raw{signal:+} | close {} ST {} | {source}",
+        direction(Some(previous)),
+        direction(Some(signal)),
+        ist_clock(timestamp),
+        show(f64_metric(Some(row), "close")),
+        show(f64_metric(Some(row), "supertrend"))
+    )
+}
+
 fn show(v: Option<f64>) -> String {
     v.map(|v| format!("{v:.2}")).unwrap_or_else(|| "--".into())
 }
 fn show4(v: Option<f64>) -> String {
     v.map(|v| format!("{v:.4}")).unwrap_or_else(|| "--".into())
+}
+fn show_signed4(v: Option<f64>) -> String {
+    v.map(|v| format!("{v:+.4}")).unwrap_or_else(|| "--".into())
 }
 fn direction(v: Option<i64>) -> &'static str {
     match v {
@@ -610,10 +693,9 @@ fn truncate(value: &str, width: usize) -> String {
     let clean = clean(value);
     clean.chars().take(width).collect()
 }
-fn candle_countdown(now: u64) -> String {
-    const FIVE_MINUTES_NS: u64 = 300_000_000_000;
+fn candle_countdown(now: u64, bar_ns: u64) -> String {
     const ONE_SECOND_NS: u64 = 1_000_000_000;
-    let remaining_ns = FIVE_MINUTES_NS - now % FIVE_MINUTES_NS;
+    let remaining_ns = bar_ns - now % bar_ns;
     let seconds = remaining_ns.div_ceil(ONE_SECOND_NS);
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
@@ -632,6 +714,15 @@ fn ist(ts: u64) -> String {
     chrono::DateTime::from_timestamp_nanos(ts as i64)
         .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
         .format("%d-%m %H:%M:%S")
+        .to_string()
+}
+fn ist_clock(ts: u64) -> String {
+    if ts == 0 {
+        return "--".into();
+    }
+    chrono::DateTime::from_timestamp_nanos(ts as i64)
+        .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+        .format("%H:%M")
         .to_string()
 }
 fn clean(s: &str) -> String {
@@ -694,9 +785,10 @@ mod tests {
         assert_eq!(row("Status", "OK").chars().count(), 87);
         assert_eq!(direction(Some(-1)), "SHORT");
         assert_eq!(truncate("123456", 4), "1234");
-        assert_eq!(candle_countdown(300_000_000_000), "05:00");
-        assert_eq!(candle_countdown(60_000_000_000), "04:00");
-        assert_eq!(candle_countdown(299_200_000_000), "00:01");
+        assert_eq!(candle_countdown(300_000_000_000, 300_000_000_000), "05:00");
+        assert_eq!(candle_countdown(60_000_000_000, 300_000_000_000), "04:00");
+        assert_eq!(candle_countdown(299_200_000_000, 300_000_000_000), "00:01");
+        assert_eq!(candle_countdown(60_000_000_000, 180_000_000_000), "02:00");
         assert_eq!(ist_title(0), "01-01-1970 05:30:00");
     }
 
@@ -706,9 +798,12 @@ mod tests {
             .join("../../config/production-trend-ribbon.json");
         let selection =
             super::super::production::Selection::load(config.to_str().unwrap()).unwrap();
-        let display = Display::new(300, 1, true, "test-run", false, false, &selection);
+        let start = 1_790_184_600_000_000_000u64;
+        let display = Display::new(300, 1, true, "test-run", false, false, &selection)
+            .with_strategy_start_ns(start);
         assert!(display.ribbon.is_some());
         assert!(display.pivot.is_none());
+        assert_eq!(display.interval_minutes, 5);
         let mut state = State {
             started: true,
             ..Default::default()
@@ -723,15 +818,67 @@ mod tests {
             "upper_confirm": 8736.14,
             "lower_confirm": 8676.36,
             "direction": -1,
+            "signal": 0,
             "initialized": true
         }));
         let control = Control::new(true);
         let dashboard = Snapshot::new(&display, &state, &control).dashboard(&display);
         assert!(dashboard.contains("Trend Ribbon [BOSWaves]"));
         assert!(dashboard.contains("ALMA(34,0.85,6.0)"));
+        assert!(dashboard.contains("slope 3 bars min 0.08"));
         assert!(dashboard.contains("slope -0.8411"));
         assert!(dashboard.contains("Trend Ribbon SHORT | initialized true"));
+        assert!(dashboard.contains("none since start | state SHORT inherited from warmup/rebuild"));
         assert!(!dashboard.contains("Supertrend ATR(7) Wilder x 2"));
         assert!(!dashboard.contains("MACD EMA(12,26,9) + session VWAP"));
+    }
+
+    #[test]
+    fn transition_row_reports_live_and_rebuilt_ribbon_flips() {
+        let config = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/production-trend-ribbon.json");
+        let selection =
+            super::super::production::Selection::load(config.to_str().unwrap()).unwrap();
+        let start = 300_000_000_000u64;
+        let display = Display::new(300, 1, true, "test-run", false, false, &selection)
+            .with_strategy_start_ns(start);
+        let mut state = State {
+            started: true,
+            ..Default::default()
+        };
+        state.indicators.push(serde_json::json!({
+            "bar_close_ns": start,
+            "direction": -1,
+            "signal": 0,
+            "initialized": true
+        }));
+        let transition_bar = start + selection.bar_ns();
+        state.indicators.push(serde_json::json!({
+            "bar_close_ns": transition_bar,
+            "close": 8642.0,
+            "slope_score": 0.112,
+            "upper_confirm": 8638.0,
+            "lower_confirm": 8600.0,
+            "direction": 1,
+            "signal": 1,
+            "initialized": true
+        }));
+        let control = Control::new(true);
+        let live = Snapshot::new(&display, &state, &control)
+            .transition
+            .unwrap();
+        assert!(live.contains("SHORT→LONG"));
+        assert!(live.contains("raw+1"));
+        assert!(live.contains("C8642.00>U8638.00"));
+        assert!(live.contains("S+0.1120"));
+        assert!(live.ends_with("| LIVE"));
+
+        state
+            .rebuilds
+            .push(serde_json::json!({"rebuilt_bar": transition_bar}));
+        let rebuilt = Snapshot::new(&display, &state, &control)
+            .transition
+            .unwrap();
+        assert!(rebuilt.ends_with("| REBUILT"));
     }
 }

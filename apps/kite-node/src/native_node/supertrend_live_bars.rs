@@ -1,32 +1,41 @@
 //! Completed-candle selection, revision/gap detection and native bar conversion.
 use anyhow::{Result, ensure};
-use kite_adapter::http::historical::Candle;
+use kite_adapter::http::historical::{Candle, Interval};
 use nautilus_model::{
     data::{Bar, BarType},
     types::{Price, Quantity},
 };
 #[cfg(test)]
 use std::collections::BTreeMap;
+#[cfg(test)]
 const STEP: u64 = 300_000_000_000;
+#[cfg(test)]
 pub fn close(c: &Candle) -> Result<u64> {
+    close_for(c, Interval::FiveMinute)
+}
+pub fn close_for(c: &Candle, interval: Interval) -> Result<u64> {
     Ok(u64::try_from(
         c.time()?
             .timestamp_nanos_opt()
             .ok_or_else(|| anyhow::anyhow!("Timestamp overflow"))?,
-    )? + STEP)
+    )? + interval.nanoseconds())
 }
+#[cfg(test)]
 pub fn completed(candles: Vec<Candle>, now: u64) -> Result<Vec<Candle>> {
-    kite_adapter::http::historical::validate(&candles)?;
+    completed_for(candles, now, Interval::FiveMinute)
+}
+pub fn completed_for(candles: Vec<Candle>, now: u64, interval: Interval) -> Result<Vec<Candle>> {
+    kite_adapter::http::historical::validate_for(&candles, interval)?;
     let mut out = Vec::new();
     for c in candles {
-        if close(&c)? <= now.saturating_sub(2_000_000_000) {
+        if close_for(&c, interval)? <= now.saturating_sub(2_000_000_000) {
             out.push(c);
         }
     }
     ensure!(!out.is_empty(), "No completed candles");
     Ok(out)
 }
-pub fn bar(c: &Candle, bt: BarType, received: u64) -> Result<Bar> {
+pub fn bar_for(c: &Candle, bt: BarType, received: u64, interval: Interval) -> Result<Bar> {
     Ok(Bar::new(
         bt,
         Price::new(c.open, 0),
@@ -34,7 +43,7 @@ pub fn bar(c: &Candle, bt: BarType, received: u64) -> Result<Bar> {
         Price::new(c.low, 0),
         Price::new(c.close, 0),
         Quantity::from(c.volume),
-        close(c)?.into(),
+        close_for(c, interval)?.into(),
         received.into(),
     ))
 }
@@ -102,11 +111,21 @@ mod tests {
     }
 }
 
+#[cfg(test)]
 pub fn validate_warmup(
     candles: &[Candle],
     date: chrono::NaiveDate,
     now: u64,
     calendar: &super::session_calendar::Calendar,
+) -> Result<()> {
+    validate_warmup_for(candles, date, now, calendar, Interval::FiveMinute)
+}
+pub fn validate_warmup_for(
+    candles: &[Candle],
+    date: chrono::NaiveDate,
+    now: u64,
+    calendar: &super::session_calendar::Calendar,
+    interval: Interval,
 ) -> Result<()> {
     let first = candles
         .first()
@@ -121,14 +140,17 @@ pub fn validate_warmup(
         } else {
             end
         };
-        let mut expected = start + STEP;
+        let mut expected = start + interval.nanoseconds();
         while expected <= cutoff {
             let c = candles
                 .get(index)
                 .ok_or_else(|| anyhow::anyhow!("Missing completed warmup candle"))?;
-            ensure!(close(c)? == expected, "Gap or out-of-session warmup candle");
+            ensure!(
+                close_for(c, interval)? == expected,
+                "Gap or out-of-session warmup candle"
+            );
             index += 1;
-            expected += STEP;
+            expected += interval.nanoseconds();
         }
     }
     ensure!(index == candles.len(), "Unexpected warmup candles");
@@ -163,4 +185,34 @@ fn warmup_requires_complete_sessions_and_latest_closed_candle() {
     assert!(validate_warmup(&candles[..candles.len() - 1], date, now, &calendar).is_err());
     candles.remove(12);
     assert!(validate_warmup(&candles, date, now, &calendar).is_err());
+}
+
+#[test]
+fn three_minute_completed_bars_and_warmup_use_json_interval_step() {
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let calendar = super::session_calendar::fixture();
+    let (start, _) = calendar.bounds(date).unwrap();
+    let interval = Interval::ThreeMinute;
+    let now = start + 3 * interval.nanoseconds() + 2_000_000_000;
+    let mut candles = Vec::new();
+    for ts in (start..start + 3 * interval.nanoseconds()).step_by(interval.nanoseconds() as usize) {
+        candles.push(Candle {
+            timestamp: chrono::DateTime::from_timestamp_nanos(ts as i64)
+                .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+                .to_rfc3339(),
+            open: 100.,
+            high: 101.,
+            low: 99.,
+            close: 100.,
+            volume: 10,
+            oi: 10,
+        });
+    }
+    let completed = completed_for(candles.clone(), now, interval).unwrap();
+    assert_eq!(completed.len(), 3);
+    assert_eq!(
+        close_for(&completed[0], interval).unwrap(),
+        start + interval.nanoseconds()
+    );
+    assert!(validate_warmup_for(&candles, date, now, &calendar, interval).is_ok());
 }

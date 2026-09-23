@@ -12,8 +12,17 @@
     "timezone": "Asia/Kolkata",
     "valid_from": "2026-08-17",
     "valid_through": "2026-10-19",
-    "regular": {"open": "09:00:00", "close": "23:30:00"},
-    "overrides": {"2026-09-14": {"open": "17:00:00", "close": "23:30:00"}, "2026-10-02": null}
+    "regular": {
+      "open": "09:00:00",
+      "close": "23:30:00"
+    },
+    "overrides": {
+      "2026-09-14": {
+        "open": "17:00:00",
+        "close": "23:30:00"
+      },
+      "2026-10-02": null
+    }
   },
   "trend_ribbon": {
     "alma_length": 34,
@@ -24,6 +33,11 @@
     "slope_length": 3,
     "minimum_slope": 0.08,
     "atr_length": 14,
-    "session": {"start": "09:00:00", "end": "23:15:00", "days": "23456", "reset_daily": false}
+    "session": {
+      "start": "09:00:00",
+      "end": "23:15:00",
+      "days": "23456",
+      "reset_daily": false
+    }
   }
 }

@@ -82,12 +82,17 @@ impl ReadClient {
         token: u32,
         from: chrono::NaiveDate,
         to: chrono::NaiveDate,
+        interval: &str,
     ) -> Result<T> {
         ensure!(
             self.root == "https://api.kite.trade",
             "Historical reads require the market-data host"
         );
-        let url = format!("{}/instruments/historical/{}/5minute", self.root, token);
+        ensure!(
+            matches!(interval, "3minute" | "5minute"),
+            "Unsupported historical interval"
+        );
+        let url = format!("{}/instruments/historical/{token}/{interval}", self.root);
         self.read_response(self.client.get(url).query(&[
             ("from", format!("{from} 00:00:00")),
             ("to", format!("{to} 23:30:00")),

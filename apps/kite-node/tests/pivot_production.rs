@@ -6,6 +6,11 @@ fn config(name: &str) -> PathBuf {
         .join("../../config/backup")
         .join(name)
 }
+fn active_config(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config")
+        .join(name)
+}
 #[test]
 fn production_gates_and_configuration_check_do_not_start_trading_or_write_redis() {
     let redis = Redis::start();
@@ -119,6 +124,50 @@ fn production_pivot_selection_uses_native_mock_and_reconciles_both_sides() {
     assert_eq!(recovered["orders"], result["fills"]);
     let health = redis.run(&["native-kite-status", "MOCK"]);
     assert_eq!(health["state"], "Clean");
+}
+
+#[test]
+fn trend_ribbon_json_selects_three_minute_bars_through_live_node() {
+    let redis = Redis::start();
+    let mut selection: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(active_config("production-trend-ribbon.json")).unwrap(),
+    )
+    .unwrap();
+    selection["interval"] = serde_json::json!("3minute");
+    let selection_path = redis.dir.path().join("trend-ribbon-3minute.json");
+    std::fs::write(
+        &selection_path,
+        serde_json::to_vec_pretty(&selection).unwrap(),
+    )
+    .unwrap();
+    let result = redis.run(&[
+        "native-trend-ribbon-kite-mock",
+        selection_path.to_str().unwrap(),
+    ]);
+    assert_eq!(result["strategy"], "trend_ribbon_boswaves");
+    assert_eq!(result["interval"], "3minute");
+    assert_eq!(result["execution"], "Kite native mock");
+    assert_eq!(result["status"], "Clean");
+    assert_eq!(result["open_orders"], 0);
+    assert_eq!(result["open_contracts"].as_f64(), Some(0.));
+    assert_eq!(result["broker_orders_sent"], false);
+    let folder = redis
+        .dir
+        .path()
+        .join(result["report_directory"].as_str().unwrap());
+    let indicators: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(folder.join("indicators.json")).unwrap()).unwrap();
+    assert!(indicators.len() >= 250);
+    assert!(indicators.iter().all(|row| {
+        row["bar_close_ns"]
+            .as_u64()
+            .is_some_and(|ts| ts.is_multiple_of(180_000_000_000))
+    }));
+    assert!(
+        indicators
+            .iter()
+            .all(|row| row["alma"].is_number() || row["alma"].is_null())
+    );
 }
 
 #[cfg(unix)]

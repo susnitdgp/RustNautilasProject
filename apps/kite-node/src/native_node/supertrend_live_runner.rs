@@ -8,7 +8,7 @@ use super::{
     supertrend_live_lease::Lease,
 };
 use anyhow::{Result, ensure};
-use kite_adapter::http::historical::Candle;
+use kite_adapter::http::historical::{Candle, Interval};
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_core::UUID4;
 use nautilus_live::config::LiveNodeConfig;
@@ -25,8 +25,9 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
-fn synthetic() -> Result<(Vec<Candle>, Vec<Candle>)> {
-    let first = data::now() / 300_000_000_000 * 300_000_000_000 - 160 * 300_000_000_000;
+fn synthetic(interval: Interval) -> Result<(Vec<Candle>, Vec<Candle>)> {
+    let step = interval.nanoseconds();
+    let first = data::now() / step * step - 160 * step;
     let mut candles = Vec::new();
     for i in 0..160u64 {
         let x = i % 40;
@@ -36,10 +37,9 @@ fn synthetic() -> Result<(Vec<Candle>, Vec<Candle>)> {
             } else {
                 (40 - x) as f64 * 10.
             };
-        let timestamp =
-            chrono::DateTime::from_timestamp_nanos((first + i * 300_000_000_000) as i64)
-                .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
-                .to_rfc3339();
+        let timestamp = chrono::DateTime::from_timestamp_nanos((first + i * step) as i64)
+            .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+            .to_rfc3339();
         candles.push(Candle {
             timestamp,
             open: p,
@@ -59,7 +59,8 @@ fn pivot_synthetic(selection: &super::production::Selection) -> Result<(Vec<Cand
         selection.session_calendar.valid_through,
     )?[0];
     let (first, end) = selection.session_calendar.bounds(date)?;
-    let count = ((end - first) / super::pivot_session::BAR_NS) as usize;
+    let step = selection.bar_ns();
+    let count = ((end - first) / step) as usize;
     ensure!(
         count >= 140,
         "Pivot simulation fixture needs a regular full session"
@@ -73,11 +74,9 @@ fn pivot_synthetic(selection: &super::production::Selection) -> Result<(Vec<Cand
             } else {
                 (40 - x) as f64 * 10.
             };
-        let timestamp = chrono::DateTime::from_timestamp_nanos(
-            (first + i as u64 * super::pivot_session::BAR_NS) as i64,
-        )
-        .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
-        .to_rfc3339();
+        let timestamp = chrono::DateTime::from_timestamp_nanos((first + i as u64 * step) as i64)
+            .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+            .to_rfc3339();
         candles.push(Candle {
             timestamp,
             open: p,
@@ -127,10 +126,11 @@ fn run_backend(
         "PAPER/MOCK"
     };
     let selected = super::production::Selection::load(config)?;
+    let interval_minutes = selected.interval_minutes();
     let symbol = selected.symbol;
     let strategy = selected.strategy;
     alerts.emit(format!(
-        "{symbol} 5m {strategy} [{mode}]: STARTING; initialization in progress"
+        "{symbol} {interval_minutes}m {strategy} [{mode}]: STARTING; initialization in progress"
     ));
     let result = run_backend_inner(
         config,
@@ -141,7 +141,7 @@ fn run_backend(
         recovery_fixture,
         &alerts,
     );
-    alerts.emit(format!("{symbol} 5m {strategy} [{mode}]: {}", if result.is_ok() {
+    alerts.emit(format!("{symbol} {interval_minutes}m {strategy} [{mode}]: {}", if result.is_ok() {
         "CLEAN STOP: flat, no pending orders; inspect saved run report"
     } else {
         "FAILED / REVIEW REQUIRED: inspect terminal logs and Redis before restart; do not assume flat"
@@ -186,17 +186,24 @@ fn run_backend_inner(
             Some(Arc::new(kite_adapter::credentials::redis::load_from_env()?)),
         )
     };
-    super::supertrend_terminal::step("Loading completed five-minute candles for warmup");
+    super::supertrend_terminal::step(&format!(
+        "Loading completed {}-minute candles for warmup",
+        selection.interval_minutes()
+    ));
     let (warmup, simulated) = if sim {
         if selection.pivot_point.is_some() || selection.trend_ribbon.is_some() {
             pivot_synthetic(&selection)?
         } else {
-            synthetic()?
+            synthetic(selection.interval)?
         }
     } else {
-        let raw = tokio::runtime::Runtime::new()?
-            .block_on(kite_adapter::http::historical::fetch_window(token, date, 7))?;
-        (bars::completed(raw, data::now())?, Vec::new())
+        let raw = tokio::runtime::Runtime::new()?.block_on(
+            kite_adapter::http::historical::fetch_window_for(token, date, 7, selection.interval),
+        )?;
+        (
+            bars::completed_for(raw, data::now(), selection.interval)?,
+            Vec::new(),
+        )
     };
     ensure!(
         warmup.len()
@@ -208,10 +215,19 @@ fn run_backend_inner(
         "Insufficient indicator warmup"
     );
     if !sim {
-        bars::validate_warmup(&warmup, date, data::now(), &selection.session_calendar)?;
+        bars::validate_warmup_for(
+            &warmup,
+            date,
+            data::now(),
+            &selection.session_calendar,
+            selection.interval,
+        )?;
     }
     let (start, end) = if sim {
-        (bars::close(warmup.last().unwrap())?, u64::MAX)
+        (
+            bars::close_for(warmup.last().unwrap(), selection.interval)?,
+            u64::MAX,
+        )
     } else {
         let (session_start, end) = selection.execution_bounds(date, real)?;
         ensure!(
@@ -244,7 +260,7 @@ fn run_backend_inner(
         kite_adapter::execution::native_client::coordination::check_startup(account)?;
     }
     let id = UUID4::new();
-    let mut control = Control::new(sim);
+    let mut control = Control::new(sim).with_bar_ns(selection.bar_ns());
     control.real = real;
     control.recovery_fixture = recovery_fixture;
     let state = Rc::new(RefCell::new(State::default()));
@@ -254,6 +270,7 @@ fn run_backend_inner(
         token,
         date,
         calendar: selection.session_calendar.clone(),
+        interval: selection.interval,
         synthetic_delay_ms: if kite_mock { 180 } else { 60 },
         warmup: warmup.clone(),
         simulated,
@@ -282,10 +299,10 @@ fn run_backend_inner(
             use kite_adapter::execution::native_client::mock::{MockFactory,MockConfig};
             builder.add_exec_client(Some("MCX".into()),Box::new(MockFactory),Box::new(MockConfig{namespace:id.to_string(),stop_signal:control.done.clone(),product:"MIS".into(),instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),instrument_token:token}))?.build()?
         }else{builder.add_simulated_exec_client(Some("MCX".into()),Box::new(SandboxExecutionClientFactory::new()),Box::new(simulation))?.build()?};
-        let bt:BarType=format!("{}-5-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
+        let bt: BarType = selection.bar_type(&instrument.id)?;
         let mut strategy = BarStrategy::new(bt,start,end,state.clone()).with_confirmation(selection.pivot_point.is_none() && selection.trend_ribbon.is_none()).with_live(control.clone());
         if let Some(pivot) = &selection.pivot_point { strategy = strategy.with_pivot(pivot.clone(),selection.session_calendar.clone())?; }
-        if let Some(ribbon) = &selection.trend_ribbon { strategy = strategy.with_ribbon(ribbon.clone(),selection.session_calendar.clone())?; }
+        if let Some(ribbon) = &selection.trend_ribbon { strategy = strategy.with_ribbon_interval(ribbon.clone(), selection.session_calendar.clone(), selection.bar_ns())?; }
         node.add_strategy(strategy)?;
         let owner_monitor=lease.monitor(control.clone());
         let handle=node.handle();let ctl=control.clone();
@@ -301,10 +318,23 @@ fn run_backend_inner(
             }
             handle.stop();
         });
-        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":selection.strategy,"interval":"5minute","simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"square_off_ns":if sim{None}else{Some(end)},"live_orders_enabled":real}));
-        alerts.emit(format!("{} 5m: run {id} initialized; real_orders={real}", selection.symbol));
+        println!("{}",serde_json::json!({"event":"supertrend_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":selection.strategy,"interval":selection.interval_name(),"simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"square_off_ns":if sim{None}else{Some(end)},"live_orders_enabled":real}));
+        alerts.emit(format!(
+            "{} {}m: run {id} initialized; real_orders={real}",
+            selection.symbol,
+            selection.interval_minutes()
+        ));
         let mut was_paused=false;
-        let display=super::supertrend_terminal::Display::new(seconds,warmup.len(),sim,&id.to_string(),real,kite_mock,&selection);
+        let display = super::supertrend_terminal::Display::new(
+            seconds,
+            warmup.len(),
+            sim,
+            &id.to_string(),
+            real,
+            kite_mock,
+            &selection,
+        )
+        .with_strategy_start_ns(start);
         let result={
             let run=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted);
             tokio::pin!(run);
@@ -365,7 +395,7 @@ fn run_backend_inner(
     super::backtest_report::json(&folder, "fills.json", &s.fills)?;
     super::backtest_report::json(&folder, "recoveries.json", &s.rebuilds)?;
     let output = serde_json::json!({"event":"supertrend_live_complete","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"status":if clean{"Clean"}else{"ReviewRequired"},
-        "runtime":"LiveNode","strategy":selection.strategy,"interval":"5minute","contracts":1,"atr_stop_enabled":false,
+        "runtime":"LiveNode","strategy":selection.strategy,"interval":selection.interval_name(),"contracts":1,"atr_stop_enabled":false,
         "simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
         "bars":s.indicators.len(),"warmup_bars":warmup.len(),"signals":s.signals.len(),"fills":s.fills.len(),"open_contracts":position,
         "open_orders":pending,"errors":s.errors,"feed_fault":fault,"run_error":outcome.as_ref().err().map(ToString::to_string),

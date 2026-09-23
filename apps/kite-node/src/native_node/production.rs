@@ -2,6 +2,7 @@
 use super::session_calendar::Calendar;
 use anyhow::{Result, ensure};
 use chrono::{Datelike, NaiveDate};
+use kite_adapter::http::historical::Interval;
 use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -12,7 +13,7 @@ pub struct Selection {
     pub instrument_token: u32,
     pub expected_expiry: NaiveDate,
     pub session_calendar: Calendar,
-    interval: String,
+    pub interval: Interval,
     contracts: u32,
     supertrend_period: Option<u32>,
     supertrend_multiplier: Option<u32>,
@@ -30,6 +31,26 @@ impl Selection {
         let s: Self = serde_json::from_str(&std::fs::read_to_string(path)?)?;
         s.validate()?;
         Ok(s)
+    }
+    pub const fn interval_name(&self) -> &'static str {
+        self.interval.as_str()
+    }
+    pub const fn interval_minutes(&self) -> u64 {
+        self.interval.minutes()
+    }
+    pub const fn bar_ns(&self) -> u64 {
+        self.interval.nanoseconds()
+    }
+    pub fn bar_type(
+        &self,
+        instrument: &nautilus_model::identifiers::InstrumentId,
+    ) -> Result<nautilus_model::data::BarType> {
+        Ok(format!(
+            "{}-{}-MINUTE-LAST-EXTERNAL",
+            instrument,
+            self.interval_minutes()
+        )
+        .parse()?)
     }
     pub fn session_bounds(&self, date: NaiveDate) -> Result<(u64, u64)> {
         if let Some(ribbon) = &self.trend_ribbon {
@@ -156,9 +177,8 @@ impl Selection {
             kite_adapter::instruments::contract::validate_symbol(&self.symbol).is_ok()
                 && self.instrument == format!("{}.MCX", self.symbol)
                 && self.instrument_token > 0
-                && self.interval == "5minute"
                 && self.contracts == 1,
-            "Selection requires one configured MCX crude oil contract and five-minute bars"
+            "Selection requires one configured MCX crude oil contract"
         );
         match (
             self.strategy.as_str(),
@@ -167,6 +187,7 @@ impl Selection {
         ) {
             ("supertrend_macd_vwap", None, None) => ensure!(
                 !self.live_orders_enabled
+                    && self.interval == Interval::FiveMinute
                     && self.supertrend_period == Some(7)
                     && self.supertrend_multiplier == Some(2)
                     && self.macd_fast == Some(12)
@@ -178,7 +199,8 @@ impl Selection {
             ("pivot_point_supertrend", Some(pivot), None) => {
                 pivot.validate()?;
                 ensure!(
-                    self.supertrend_period.is_none()
+                    self.interval == Interval::FiveMinute
+                        && self.supertrend_period.is_none()
                         && self.supertrend_multiplier.is_none()
                         && self.macd_fast.is_none()
                         && self.macd_slow.is_none()
@@ -201,6 +223,16 @@ impl Selection {
             }
             _ => anyhow::bail!("Unsupported strategy or mismatched strategy configuration"),
         }
+        for date in self.session_calendar.range(
+            self.session_calendar.valid_from,
+            self.session_calendar.valid_through,
+        )? {
+            let (start, end) = self.session_bounds(date)?;
+            ensure!(
+                start.is_multiple_of(self.bar_ns()) && end.is_multiple_of(self.bar_ns()),
+                "Configured strategy session must align with the selected candle interval"
+            );
+        }
         Ok(())
     }
 }
@@ -220,6 +252,7 @@ pub fn contract_check(path: &str) -> Result<()> {
         "{}",
         serde_json::json!({
             "event":"selected_contract_check", "instrument":instrument.id.to_string(),
+            "interval":selection.interval_name(),
             "instrument_token":report.instrument_token, "expiry":report.expiry,
             "broker_lot_size":report.broker_lot_size, "tick_size":report.tick_size,
             "validation_date_ist":date, "session_today":session.is_some(),
@@ -234,7 +267,7 @@ pub fn preflight(path: &str) -> Result<()> {
     println!(
         "{}",
         serde_json::json!({"event":"production_readiness","selection_valid":true,
-        "strategy":selection.strategy,"interval":"5minute","contracts":1,"atr_stop_enabled":false,
+        "strategy":selection.strategy,"interval":selection.interval_name(),"contracts":1,"atr_stop_enabled":false,
         "live_orders_enabled":false,"ready_for_live_deployment":false,
         "live_node_paper_integrated":true,
         "blockers":["Session paper operation and indicator recovery are implemented; full-session qualification and manual review remain",
@@ -253,7 +286,7 @@ pub fn verify(config: &str, date: &str, input: &str, folder: &str) -> Result<()>
     let date_value = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
     let data = super::supertrend_input::load(date_value, Some(input))?;
     ensure!(
-        data.interval == s.interval && data.instrument_id == s.instrument,
+        data.interval == s.interval_name() && data.instrument_id == s.instrument,
         "Replay input differs from production selection"
     );
     super::supertrend_batch::session(date, input, folder, "confirmed")
@@ -371,7 +404,6 @@ mod tests {
         for (key, value) in [
             ("live_orders_enabled", serde_json::json!(true)),
             ("atr_stop_enabled", serde_json::json!(true)),
-            ("interval", serde_json::json!("10minute")),
             ("contracts", serde_json::json!(2)),
         ] {
             let mut modified: serde_json::Value = serde_json::from_str(v).unwrap();
@@ -379,6 +411,17 @@ mod tests {
             let s: Selection = serde_json::from_value(modified).unwrap();
             assert!(s.validate().is_err());
         }
+        let mut unsupported: serde_json::Value = serde_json::from_str(v).unwrap();
+        unsupported["interval"] = serde_json::json!("10minute");
+        assert!(serde_json::from_value::<Selection>(unsupported).is_err());
+        let mut three_minute: serde_json::Value = serde_json::from_str(v).unwrap();
+        three_minute["interval"] = serde_json::json!("3minute");
+        assert!(
+            serde_json::from_value::<Selection>(three_minute)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
@@ -399,6 +442,33 @@ mod tests {
         rolled["instrument_token"] = serde_json::json!(0);
         let zero_token: Selection = serde_json::from_value(rolled).unwrap();
         assert!(zero_token.validate().is_err());
+    }
+    #[test]
+    fn trend_ribbon_interval_is_selected_from_json() {
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../config/production-trend-ribbon.json"
+        ))
+        .unwrap();
+        value["interval"] = serde_json::json!("3minute");
+        let selection: Selection = serde_json::from_value(value).unwrap();
+        selection.validate().unwrap();
+        assert_eq!(selection.interval, Interval::ThreeMinute);
+        assert_eq!(selection.interval_name(), "3minute");
+        assert_eq!(selection.interval_minutes(), 3);
+        assert_eq!(selection.bar_ns(), 180_000_000_000);
+        let instrument: nautilus_model::identifiers::InstrumentId =
+            "CRUDEOIL26OCTFUT.MCX".parse().unwrap();
+        assert_eq!(
+            selection.bar_type(&instrument).unwrap().to_string(),
+            "CRUDEOIL26OCTFUT.MCX-3-MINUTE-LAST-EXTERNAL"
+        );
+        let mut misaligned: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../config/production-trend-ribbon.json"
+        ))
+        .unwrap();
+        misaligned["trend_ribbon"]["session"]["end"] = serde_json::json!("23:14:00");
+        let misaligned: Selection = serde_json::from_value(misaligned).unwrap();
+        assert!(misaligned.validate().is_err());
     }
 }
 
