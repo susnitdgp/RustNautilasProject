@@ -162,12 +162,12 @@ No Redis flag alone enables production trading. Real orders require all of these
 
 1. A binary built with `kite-adapter/live-orders`.
 2. `live_orders_enabled: true` in `config/kite-production.json`.
-3. A valid expected Kite user ID, `product: MIS`, the exact token selected in `config/production-supertrend.json` (currently `145894407`), and `market_protection: -1`.
+3. A valid expected Kite user ID, `product: MIS`, the exact token selected in `config/backup/production-supertrend.json` (currently `145894407`), and `market_protection: -1`.
 4. A valid production credential pair in Redis.
 5. Clean strategy and account ownership state.
 6. Successful account, permissions, funds-ledger, order, trade, and position checks.
 
-`config/production-supertrend.json` is the reviewed strategy selection and keeps `live_orders_enabled: false`; that field is not the broker enable switch.
+`config/backup/production-supertrend.json` is the reviewed strategy selection and keeps `live_orders_enabled: false`; that field is not the broker enable switch.
 
 ## Safe inspection
 

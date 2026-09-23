@@ -18,4 +18,4 @@ printf 'Keep this terminal open. Ctrl-C requests graceful shutdown; verify the f
 # exec preserves the program exit code and delivers terminal signals directly.
 # No config edits, automatic restarts, owner-key cleanup or implicit rebuilds.
 exec ./target/release/kite-node native-supertrend-kite-production \
-    config/production-supertrend.json config/kite-production.json
+    config/backup/production-supertrend.json config/kite-production.json

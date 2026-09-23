@@ -263,7 +263,7 @@ mod tests {
     use super::*;
     #[test]
     fn pivot_selection_validates_settings_and_uses_its_own_session_deadline() {
-        let raw = include_str!("../../../../config/pivot-point-supertrend.json");
+        let raw = include_str!("../../../../config/backup/pivot-point-supertrend.json");
         let selection: Selection = serde_json::from_str(raw).unwrap();
         selection.validate().unwrap();
         assert_eq!(selection.strategy, "pivot_point_supertrend");
@@ -311,7 +311,7 @@ mod tests {
     }
     #[test]
     fn selected_metadata_matches_master_and_simulated_routing() {
-        let config = include_str!("../../../../config/production-supertrend.json");
+        let config = include_str!("../../../../config/backup/production-supertrend.json");
         let selection: Selection = serde_json::from_str(config).unwrap();
         let master = format!("instrument_token,tradingsymbol,name,expiry,tick_size,lot_size,instrument_type,segment,exchange\n{}, {},CRUDEOIL,{},1,1,FUT,MCX-FUT,MCX\n",
             selection.instrument_token, selection.symbol, selection.expected_expiry).replace(", ", ",");
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn missing_calendar_wrong_expiry_month_and_short_coverage_fail_closed() {
         let base: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../config/production-supertrend.json"
+            "../../../../config/backup/production-supertrend.json"
         ))
         .unwrap();
         let mut value = base.clone();
@@ -365,7 +365,7 @@ mod tests {
     }
     #[test]
     fn selection_rejects_real_orders_stops_and_ten_minute_changes() {
-        let v = include_str!("../../../../config/production-supertrend.json");
+        let v = include_str!("../../../../config/backup/production-supertrend.json");
         let base: Selection = serde_json::from_str(v).unwrap();
         assert!(base.validate().is_ok());
         for (key, value) in [
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn selection_accepts_explicit_rollover_identity_and_rejects_mismatch() {
-        let v = include_str!("../../../../config/production-supertrend.json");
+        let v = include_str!("../../../../config/backup/production-supertrend.json");
         let mut rolled: serde_json::Value = serde_json::from_str(v).unwrap();
         rolled["instrument"] = serde_json::json!("CRUDEOIL26OCTFUT.MCX");
         rolled["symbol"] = serde_json::json!("CRUDEOIL26OCTFUT");

@@ -18,12 +18,12 @@ Feed recovery rebuilds the indicator from validated completed bars. Rebuilds nev
 
 ## Files and commands
 
-Paper/simulation selection: `config/trend-ribbon-boswaves.json`.
+Paper/simulation selection: `config/backup/trend-ribbon-boswaves.json`.
 
 Live-capable selection: `config/production-trend-ribbon.json`.
 
 Offline simulation:
-`./target/debug/kite-node native-trend-ribbon-sim config/trend-ribbon-boswaves.json`
+`./target/debug/kite-node native-trend-ribbon-sim config/backup/trend-ribbon-boswaves.json`
 
 Production configuration check:
 `./target/release/kite-node native-trend-ribbon-production-check config/production-trend-ribbon.json config/kite-production.json`

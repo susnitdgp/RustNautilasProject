@@ -53,7 +53,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
             super::supertrend_live_runner::run_with_execution(config, 30, true, true)
         }
         ("native-supertrend-sim", []) => {
-            super::supertrend_live_runner::run("config/production-supertrend.json", 30, true)
+            super::supertrend_live_runner::run("config/backup/production-supertrend.json", 30, true)
         }
         ("native-supertrend-sim", [config]) => super::supertrend_live_runner::run(config, 30, true),
         ("native-supertrend-paper", [config, seconds]) => seconds

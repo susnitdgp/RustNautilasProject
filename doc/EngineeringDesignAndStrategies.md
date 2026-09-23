@@ -12,6 +12,8 @@ Commit: **Add production Pivot and Trend Ribbon strategies**
 
 Prepared for manual engineering review. No strategy was started, no broker order was submitted, and no trading source or private configuration was changed while preparing this document.
 
+**Configuration-layout update (23 September 2026):** Optional JSON presets were relocated to `config/backup/` after this as-built review. Command examples and configuration-file references below use their new locations. The reviewed trading logic, source baseline, release-binary fingerprint and outstanding findings are unchanged.
+
 ## Document control and reading guide
 
 The repository and source files were inspected on 23 September 2026. The initial host snapshot was taken at **00:58:37 IST**. `main` and the local `origin/main` reference both pointed to `5566a62`; only `config/kite-production.json` and `config/kite-sandbox.toml` were modified before documentation work. Neither private file's contents are reproduced here. No `kite-node` process was observed in that snapshot. This does not establish the broker account's current position. [V1]
@@ -387,7 +389,7 @@ The prior build in this session used the live-orders feature and produced the in
   config/production-trend-ribbon.json config/kite-production.json
 
 ./target/release/kite-node native-pivot-production-check \
-  config/production-pivot-supertrend.json config/kite-production.json
+  config/backup/production-pivot-supertrend.json config/kite-production.json
 ```
 
 These parse and validate configuration/build gates and report effective session bounds. They do **not** load account credentials, connect a trading node, query account exposure, validate the instrument master, or send broker orders. `configuration_valid=true` can coexist with `can_start_now_by_calendar=false`. [S07]
@@ -406,15 +408,15 @@ This command downloads instrument metadata and checks the selected contract/cale
 ```bash
 # Synthetic data with Nautilus Sandbox execution; Redis is still used.
 ./target/debug/kite-node native-trend-ribbon-sim \
-  config/trend-ribbon-boswaves.json
+  config/backup/trend-ribbon-boswaves.json
 
 # Synthetic data with native Kite mock execution.
 ./target/debug/kite-node native-trend-ribbon-kite-mock \
-  config/trend-ribbon-boswaves.json
+  config/backup/trend-ribbon-boswaves.json
 
 # Live market data, paper orders, 300-second bounded run.
 ./target/debug/kite-node native-trend-ribbon-paper \
-  config/trend-ribbon-boswaves.json 300
+  config/backup/trend-ribbon-boswaves.json 300
 ```
 
 Build a default debug executable first when required. Paper mode still needs valid market-data credentials, contract metadata and the current session. The Ribbon CLI has a bounded `paper` command; no dedicated `native-trend-ribbon-session-paper` command is currently declared. [S02, S24]
@@ -541,7 +543,7 @@ All repository paths below are relative to `/home/ubuntu/RustNautilasProject` an
 
 **[S15] Contract and order-unit representation.** `crates/kite-adapter/src/instruments/contract.rs:16–99`; `crates/kite-adapter/src/execution/native.rs:14–107`. Instrument assumptions, lot/multiplier fields and reducing/protected-market translation.
 
-**[S16] Selected configuration and launcher files.** `config/production-trend-ribbon.json:1–29`; `config/trend-ribbon-boswaves.json:1–29`; `config/production-pivot-supertrend.json:1–38`; `config/production-supertrend.json:1–33`; `deploy/run-trend-ribbon-live.sh:1–20`; the corresponding Pivot/Supertrend launchers.
+**[S16] Selected configuration and launcher files.** `config/production-trend-ribbon.json:1–29`; `config/backup/trend-ribbon-boswaves.json:1–29`; `config/backup/production-pivot-supertrend.json:1–38`; `config/backup/production-supertrend.json:1–33`; `deploy/run-trend-ribbon-live.sh:1–20`; the corresponding Pivot/Supertrend launchers.
 
 **[S17] Session and process lifecycle.** `apps/kite-node/src/native_node/pivot_session.rs:7–69`; `session_calendar.rs:7–118`; `supertrend_session.rs:1–23`; `lifecycle.rs:1–36`, all in the same native-node directory.
 

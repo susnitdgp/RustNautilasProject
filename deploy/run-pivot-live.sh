@@ -13,8 +13,8 @@ if [[ ! -x target/release/kite-node ]]; then
     exit 1
 fi
 printf 'Starting LIVE Pivot Point SuperTrend: 5m, MIS, protected MARKET orders.\n'
-printf 'Strategy: config/production-pivot-supertrend.json; broker: config/kite-production.json.\n'
+printf 'Strategy: config/backup/production-pivot-supertrend.json; broker: config/kite-production.json.\n'
 printf 'The application enforces strategy/account gates and the 30-minute market-close buffer.\n'
 printf 'Keep this terminal open. Ctrl-C requests graceful shutdown; verify the final position in Kite.\n'
 exec ./target/release/kite-node native-pivot-kite-production \
-    config/production-pivot-supertrend.json config/kite-production.json
+    config/backup/production-pivot-supertrend.json config/kite-production.json

@@ -2,7 +2,7 @@ use super::*;
 
 fn selection() -> Selection {
     serde_json::from_str(include_str!(
-        "../../../../config/production-pivot-supertrend.json"
+        "../../../../config/backup/production-pivot-supertrend.json"
     ))
     .unwrap()
 }
@@ -61,7 +61,7 @@ fn pivot_production_rejects_late_start_and_honors_calendar_overrides() {
         assert!(s.production_duration(ns(time)).is_err(), "{time}");
     }
     let mut raw: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../config/production-pivot-supertrend.json"
+        "../../../../config/backup/production-pivot-supertrend.json"
     ))
     .unwrap();
     raw["session_calendar"]["overrides"]["2026-09-22"] =
@@ -88,7 +88,7 @@ fn pivot_production_rejects_late_start_and_honors_calendar_overrides() {
 #[test]
 fn pivot_production_requires_both_config_gates_and_uses_selected_token() {
     let paper: Selection = serde_json::from_str(include_str!(
-        "../../../../config/pivot-point-supertrend.json"
+        "../../../../config/backup/pivot-point-supertrend.json"
     ))
     .unwrap();
     assert!(
@@ -136,7 +136,7 @@ fn pivot_production_requires_both_config_gates_and_uses_selected_token() {
 #[test]
 fn original_strategy_keeps_its_existing_activation_and_exit_behavior() {
     let s: Selection = serde_json::from_str(include_str!(
-        "../../../../config/production-supertrend.json"
+        "../../../../config/backup/production-supertrend.json"
     ))
     .unwrap();
     s.validate().unwrap();
@@ -146,7 +146,7 @@ fn original_strategy_keeps_its_existing_activation_and_exit_behavior() {
         14 * 3600
     );
     let paper: Selection = serde_json::from_str(include_str!(
-        "../../../../config/pivot-point-supertrend.json"
+        "../../../../config/backup/pivot-point-supertrend.json"
     ))
     .unwrap();
     assert_eq!(

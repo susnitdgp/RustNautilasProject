@@ -3,7 +3,7 @@ include!("support/redis.rs");
 
 fn config(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config")
+        .join("../../config/backup")
         .join(name)
 }
 #[test]

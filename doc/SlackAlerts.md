@@ -17,7 +17,7 @@ Use the same Redis instance as KITE_REDIS_URL if overriding the application defa
 
 Enable alerts explicitly for a manual paper run, during trading hours:
 ```bash
-KITE_SLACK_ALERTS=1 ./target/release/kite-node native-supertrend-session-paper config/production-supertrend.json
+KITE_SLACK_ALERTS=1 ./target/release/kite-node native-supertrend-session-paper config/backup/production-supertrend.json
 ```
 Build the new release first. Unset KITE_SLACK_ALERTS or set it to 0 to disable.
 Synthetic simulations/mock commands always disable Slack, even if the environment enables it.

@@ -11,7 +11,8 @@ def digest(path):
         for chunk in iter(lambda:f.read(1024*1024),b""):h.update(chunk)
     return h.hexdigest()
 binary=root/"target/release/kite-node"
-selection=root/"config/production-supertrend.json"
+# The repository preset is archived; the inactive candidate keeps its own config layout.
+selection=root/"config/backup/production-supertrend.json"
 assert binary.is_file(),"Build the release binary first"
 settings=json.loads(selection.read_text())
 assert settings["interval"]=="5minute" and settings["contracts"]==1

@@ -2,18 +2,24 @@
 
 Rust trading workspace using NautilusTrader, Kite market data and execution, and Redis persistence.
 
+## Trend Ribbon configuration layout
+
+The Trend Ribbon live launcher reads `config/production-trend-ribbon.json` and the private `config/kite-production.json`. Other JSON presets have moved to `config/backup/`; their contents and live-order flags are unchanged. The optional launchers, source defaults and tests reference the new locations. Existing TOML files remain in place. See [configuration guide](config/README.md). This is a file-layout change, not a strategy or safety fix.
+
 ## Current setup
 
-The working tree builds on **v1.0.0 (`eedbd6b`)**, with shutdown reporting fixes and WebSocket-triggered order reconciliation. Local broker configuration and the release binary are managed separately from Git.
+**Release v2.0.0** packages the current Trend Ribbon and Pivot implementations, WebSocket-triggered order reconciliation, engineering documentation, and the reorganized configuration layout. The `kite-node` application package is version `2.0.0`; internal library crate and pinned Nautilus versions are unchanged. Local broker configuration and release artifacts are managed separately from Git. See [v2.0.0 release notes](doc/releases/v2.0.0.md).
 
 - Instrument: CRUDEOIL26OCTFUT (expiry October 19, 2026); five-minute completed candles; one lot.
-- Entries: Supertrend ATR(7), Wilder smoothing, multiplier 2; matching MACD(12,26,9) and session VWAP confirmation.
-- Exits: opposite Supertrend, session shutdown or graceful stop. Additional ATR stop disabled.
+- Active selection: Trend Ribbon [BOSWaves], ALMA(34, 0.85, 6), deviation(34) x 0.65, ATR(14), 3-bar slope threshold 0.08. The original Supertrend/MACD/VWAP and Pivot presets remain available under `config/backup/`.
+- Exits: opposite selected trend, session shutdown or graceful stop. Additional ATR stop disabled. Trend Ribbon has the documented quote-outage square-off limitation below.
 - Production orders: MARKET / MIS / DAY with `market_protection=-1`.
 - Quotes: Kite WebSocket. Production order updates: a dedicated Kite order WebSocket triggers REST reconciliation; slower fallback and pending checks remain, with fills confirmed from broker trades.
 - Orders, application state and ownership: Redis. Failed runs require review before restart.
 
-Contract selection and live session coverage are configured in `config/production-supertrend.json` for the original strategy and `config/production-pivot-supertrend.json` for Pivot Point SuperTrend. The October symbol, token `145894407`, expiry `2026-10-19`, tick size and broker lot size were checked against the [Kite MCX instrument master](https://api.kite.trade/instruments/MCX) on September 22, 2026. Rollover remains manual.
+Contract selection and live session coverage use `config/production-trend-ribbon.json` for Trend Ribbon, `config/backup/production-supertrend.json` for the original strategy and `config/backup/production-pivot-supertrend.json` for Pivot Point SuperTrend. The October symbol, token `145894407`, expiry `2026-10-19`, tick size and broker lot size were checked against the [Kite MCX instrument master](https://api.kite.trade/instruments/MCX) on September 22, 2026. Rollover remains manual.
+
+**Release qualification:** this is a versioned engineering snapshot, not approval for unattended live trading. Trend Ribbon still differs from the uploaded Pine at mandatory square-off (`trend := 0` is not implemented), and its dedicated quote-independent square-off timer is missing. The pinned 17-flip regression is not exact TradingView parity proof. Real broker fills and outage-at-cutoff behavior remain unqualified. These issues are documented, not fixed, in v2.0.0. See [engineering findings](doc/EngineeringDesignAndStrategies.md).
 
 ## Build and manual operation
 
@@ -28,7 +34,7 @@ Real trading requires the live-orders build feature, enabled local broker config
 The following command **starts real trading** when those gates pass; use it only when intending to trade:
 
 ```bash
-./deploy/run-supertrend-live.sh
+./deploy/run-trend-ribbon-live.sh
 ```
 
 Keep the terminal open. Ctrl-C requests graceful shutdown and a reducing exit; verify the actual final position and open orders in Kite. Session mode must start during the configured trading hours and before its shutdown window. The application begins shutdown 30 minutes before the configured session close.
@@ -37,7 +43,7 @@ Sandbox strategy lifecycle hooks are disabled by default. To opt in, set `sandbo
 
 ## Contract rollover through JSON
 
-The selected strategy JSON is the contract source of truth: `config/production-supertrend.json` for the original live strategy, `config/production-pivot-supertrend.json` for live Pivot, and `config/pivot-point-supertrend.json` for Pivot paper/simulation. Update each selection that you intend to run at rollover. Example identity/calendar fields:
+The selected strategy JSON is the contract source of truth: `config/production-trend-ribbon.json` for live Trend Ribbon, `config/backup/production-supertrend.json` for the original live strategy, `config/backup/production-pivot-supertrend.json` for live Pivot, and `config/backup/pivot-point-supertrend.json` for Pivot paper/simulation. Update each selection that you intend to run at rollover. Example identity/calendar fields:
 
 ```json
 {
@@ -65,7 +71,7 @@ The same JSON calendar controls live startup, the existing 30-minute exit buffer
 Check the selected contract and calendar without starting trading, reading account credentials or calling webhooks:
 
 ```bash
-./target/release/kite-node native-contract-check config/production-supertrend.json
+./target/release/kite-node native-contract-check config/production-trend-ribbon.json
 ```
 
 The check verifies the exact symbol/token/expiry against Kite and validates the supported tick/lot specification. It is not an account, funds or complete trading-readiness check. JSON changes are read at startup; future rollovers do not require a Rust rebuild. Restart manually only after reviewing the check and account state. The launcher command remains unchanged.
@@ -80,20 +86,20 @@ New entries remain blocked during WebSocket recovery until a fresh reconciliatio
 
 ## Pivot Point SuperTrend
 
-The supplied intraday Pine indicator is available as `pivot_point_supertrend`, configured separately in `config/pivot-point-supertrend.json`: pivot period 2, ATR(10) × 3, Monday–Friday 09:00–23:15 IST, daily session reset, and entries only on fresh trend flips. It uses no MACD/VWAP filter. Reversals close the current position before entering the opposite side; a native clock callback requests session square-off.
+The supplied intraday Pine indicator is available as `pivot_point_supertrend`, configured separately in `config/backup/pivot-point-supertrend.json`: pivot period 2, ATR(10) × 3, Monday–Friday 09:00–23:15 IST, daily session reset, and entries only on fresh trend flips. It uses no MACD/VWAP filter. Reversals close the current position before entering the opposite side; a native clock callback requests session square-off.
 
 ```bash
-./target/release/kite-node native-pivot-kite-mock config/pivot-point-supertrend.json
+./target/release/kite-node native-pivot-kite-mock config/backup/pivot-point-supertrend.json
 ```
 
 This command uses synthetic data and the native Kite mock adapter. For live-data paper operation use `native-pivot-session-paper` with the same JSON.
 
-Pivot production uses a separate selection, `config/production-pivot-supertrend.json`, and a manual launcher. Its strategy gate is enabled in that file; the live-capable build and enabled private broker configuration are still required. The paper selection cannot start production.
+Pivot production uses a separate selection, `config/backup/production-pivot-supertrend.json`, and a manual launcher. Its strategy gate is enabled in that file; the live-capable build and enabled private broker configuration are still required. The paper selection cannot start production.
 
 ```bash
 # Offline configuration check; does not start trading or access the account.
 ./target/release/kite-node native-pivot-production-check \
-    config/production-pivot-supertrend.json config/kite-production.json
+    config/backup/production-pivot-supertrend.json config/kite-production.json
 
 # Starts REAL Pivot Point trading after the runtime gates pass.
 ./deploy/run-pivot-live.sh

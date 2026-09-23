@@ -2,7 +2,7 @@
 
 This selectable strategy ports the supplied **Pivot Point SuperTrend [Intraday - Crude Oil]** Pine indicator into the existing Nautilus bar strategy and execution path. The source-derived indicator retains the MPL-2.0 notice and attribution to LonesomeTheBlue.
 
-Paper and simulation use `config/pivot-point-supertrend.json`. Manual production uses `config/production-pivot-supertrend.json` with `deploy/run-pivot-live.sh`. The original `deploy/run-supertrend-live.sh` continues to select Supertrend + MACD/VWAP in `config/production-supertrend.json`. Both production strategies share the existing native Kite execution adapter, account ownership, Redis journal, order WebSocket and authoritative REST reconciliation.
+Paper and simulation use `config/backup/pivot-point-supertrend.json`. Manual production uses `config/backup/production-pivot-supertrend.json` with `deploy/run-pivot-live.sh`. The original `deploy/run-supertrend-live.sh` continues to select Supertrend + MACD/VWAP in `config/backup/production-supertrend.json`. Both production strategies share the existing native Kite execution adapter, account ownership, Redis journal, order WebSocket and authoritative REST reconciliation.
 
 ## Parameters and behavior
 
@@ -48,30 +48,30 @@ From `/home/ubuntu/RustNautilasProject`:
 
 ```bash
 # Synthetic candles and Nautilus simulated orders.
-./target/release/kite-node native-pivot-sim config/pivot-point-supertrend.json
+./target/release/kite-node native-pivot-sim config/backup/pivot-point-supertrend.json
 
 # Synthetic candles through the native Kite mock adapter; no broker network/orders.
-./target/release/kite-node native-pivot-kite-mock config/pivot-point-supertrend.json
+./target/release/kite-node native-pivot-kite-mock config/backup/pivot-point-supertrend.json
 
 # Live Kite quotes and history, simulated execution, until the session deadline.
-./target/release/kite-node native-pivot-session-paper config/pivot-point-supertrend.json
+./target/release/kite-node native-pivot-session-paper config/backup/pivot-point-supertrend.json
 ```
 
 Live-data paper mode requires valid data credentials and a supported trading day, and must be started inside the configured strategy session. It does not enable broker orders. Simulation creates ordinary isolated run records in Redis; automated integration tests provision a separate temporary Redis server.
 
 ## Manual production
 
-`config/production-pivot-supertrend.json` explicitly enables Pivot's strategy gate with `live_orders_enabled: true`. This file alone never starts a node. Production additionally requires the `kite-adapter/live-orders` build feature, `live_orders_enabled: true` in the local `config/kite-production.json`, a valid expected account, MIS product, automatic market protection (`-1`), valid data credentials, matching instrument metadata and clean ownership/account admission. The private broker file is not rewritten. Its instrument token is overridden by the selected strategy JSON, as for the existing strategy.
+`config/backup/production-pivot-supertrend.json` explicitly enables Pivot's strategy gate with `live_orders_enabled: true`. This file alone never starts a node. Production additionally requires the `kite-adapter/live-orders` build feature, `live_orders_enabled: true` in the local `config/kite-production.json`, a valid expected account, MIS product, automatic market protection (`-1`), valid data credentials, matching instrument metadata and clean ownership/account admission. The private broker file is not rewritten. Its instrument token is overridden by the selected strategy JSON, as for the existing strategy.
 
 ```bash
 cargo build --locked --release -p kite-node --features kite-adapter/live-orders -j 3
 
 # Offline configuration/build-gate check: no credentials, Redis or broker requests.
 ./target/release/kite-node native-pivot-production-check \
-  config/production-pivot-supertrend.json config/kite-production.json
+  config/backup/production-pivot-supertrend.json config/kite-production.json
 
 # Read-only instrument master check; no orders or account access.
-./target/release/kite-node native-contract-check config/production-pivot-supertrend.json
+./target/release/kite-node native-contract-check config/backup/production-pivot-supertrend.json
 
 # STARTS REAL TRADING when the runtime gates pass.
 ./deploy/run-pivot-live.sh
@@ -81,7 +81,7 @@ Equivalent direct command:
 
 ```bash
 ./target/release/kite-node native-pivot-kite-production \
-  config/production-pivot-supertrend.json config/kite-production.json
+  config/backup/production-pivot-supertrend.json config/kite-production.json
 ```
 
 Stop any paper session manually before switching the terminal to production, and review its final report. Keep the production terminal open. Ctrl-C requests a reducing exit, waits for execution, and performs final broker reconciliation; check the final position in Kite. No launcher rebuilds, clears Redis ownership, changes configs or restarts automatically.

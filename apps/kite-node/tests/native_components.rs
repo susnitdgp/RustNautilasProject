@@ -173,7 +173,7 @@ fn sigterm_drains_native_node_and_leaves_flat_account_restartable() {
 fn selected_supertrend_live_node_trades_both_directions_and_flattens() {
     let redis = Redis::start();
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/production-supertrend.json")
+        .join("../../config/backup/production-supertrend.json")
         .canonicalize()
         .unwrap();
     let result = redis.run(&["native-supertrend-sim", config.to_str().unwrap()]);
@@ -219,7 +219,7 @@ fn selected_supertrend_sigterm_flattens_before_stopping_node() {
     use std::io::{BufRead, BufReader};
     let redis = Redis::start();
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/production-supertrend.json")
+        .join("../../config/backup/production-supertrend.json")
         .canonicalize()
         .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_kite-node"))
@@ -268,7 +268,7 @@ fn selected_supertrend_sigterm_flattens_before_stopping_node() {
 fn selected_strategy_uses_native_kite_protected_market_dispatch() {
     let redis = Redis::start();
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/production-supertrend.json")
+        .join("../../config/backup/production-supertrend.json")
         .canonicalize()
         .unwrap();
     let result = redis.run(&["native-supertrend-kite-mock", config.to_str().unwrap()]);
@@ -307,7 +307,7 @@ fn selected_strategy_uses_native_kite_protected_market_dispatch() {
 fn revised_history_rebuilds_in_live_node_without_replaying_orders() {
     let redis = Redis::start();
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/production-supertrend.json")
+        .join("../../config/backup/production-supertrend.json")
         .canonicalize()
         .unwrap();
     let result = redis.run(&["native-supertrend-recovery-sim", config.to_str().unwrap()]);
@@ -324,7 +324,7 @@ mod unattended {
     use std::io::{BufRead, BufReader};
     fn start(redis: &Redis, command: &str) -> (Child, String) {
         let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../config/production-supertrend.json")
+            .join("../../config/backup/production-supertrend.json")
             .canonicalize()
             .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_kite-node"))
@@ -429,7 +429,7 @@ mod unattended {
         assert_eq!(health["restart_blocked"], true);
         assert_eq!(health["owner"], id);
         let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../config/production-supertrend.json");
+            .join("../../config/backup/production-supertrend.json");
         let rejected = Command::new(env!("CARGO_BIN_EXE_kite-node"))
             .args(["native-supertrend-kite-mock", config.to_str().unwrap()])
             .env("KITE_REDIS_URL", &redis.url)
@@ -494,8 +494,8 @@ fn selected_blocked_account_does_not_create_strategy_owner_or_journal() {
         .unwrap();
     let before: std::collections::BTreeMap<String, String> =
         redis::cmd("HGETALL").arg(key).query(&mut con).unwrap();
-    let config =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/production-supertrend.json");
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/backup/production-supertrend.json");
     let output = Command::new(env!("CARGO_BIN_EXE_kite-node"))
         .args(["native-supertrend-kite-mock", config.to_str().unwrap()])
         .env("KITE_REDIS_URL", &redis.url)
@@ -538,8 +538,8 @@ fn selected_initialization_failure_reports_unknown_order_count() {
         .arg("0")
         .query::<()>(&mut con)
         .unwrap();
-    let config =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/production-supertrend.json");
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/backup/production-supertrend.json");
     let output = Command::new(env!("CARGO_BIN_EXE_kite-node"))
         .args(["native-supertrend-kite-mock", config.to_str().unwrap()])
         .env("KITE_REDIS_URL", &redis.url)
@@ -565,7 +565,7 @@ fn selected_initialization_failure_reports_unknown_order_count() {
 fn pivot_point_simulation_and_kite_mock_reverse_and_square_off_without_confirmation_filter() {
     let redis = Redis::start();
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/pivot-point-supertrend.json")
+        .join("../../config/backup/pivot-point-supertrend.json")
         .canonicalize()
         .unwrap();
     for command in ["native-pivot-sim", "native-pivot-kite-mock"] {
@@ -607,14 +607,14 @@ fn pivot_point_rejects_wrong_production_command_and_wrong_strategy() {
     for args in [
         vec![
             "native-supertrend-kite-production".to_owned(),
-            root.join("config/pivot-point-supertrend.json")
+            root.join("config/backup/pivot-point-supertrend.json")
                 .display()
                 .to_string(),
             "missing-private-broker-settings.json".to_owned(),
         ],
         vec![
             "native-pivot-sim".to_owned(),
-            root.join("config/production-supertrend.json")
+            root.join("config/backup/production-supertrend.json")
                 .display()
                 .to_string(),
         ],
@@ -645,8 +645,8 @@ fn pivot_point_rejects_wrong_production_command_and_wrong_strategy() {
 #[test]
 fn pivot_recovery_while_flat_waits_for_fresh_flip() {
     let redis = Redis::start();
-    let source =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/pivot-point-supertrend.json");
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config/backup/pivot-point-supertrend.json");
     let mut selection: serde_json::Value =
         serde_json::from_slice(&std::fs::read(source).unwrap()).unwrap();
     // The earlier fixture close puts startup and the recovery in the same
