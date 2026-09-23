@@ -7,11 +7,15 @@ pub struct History {
     candles: BTreeMap<u64, Candle>,
     calendar: super::session_calendar::Calendar,
     interval: Interval,
+    volume_sensitive: bool,
 }
 pub struct Update {
     pub all: Vec<Candle>,
     pub new: Vec<Candle>,
     pub revised: usize,
+    pub price_revised: usize,
+    pub volume_only_revised: usize,
+    pub revision_samples: Vec<String>,
 }
 impl History {
     #[cfg(test)]
@@ -26,11 +30,21 @@ impl History {
         Ok(Self {
             calendar,
             interval,
+            volume_sensitive: true,
             candles: candles
                 .iter()
                 .map(|c| Ok((close_for(c, interval)?, c.clone())))
                 .collect::<Result<_>>()?,
         })
+    }
+    /// Price-only strategies need no indicator rebuild for volume-only edits.
+    /// Corrected volume is still merged; price corrections always rebuild.
+    pub fn with_volume_sensitive(mut self, sensitive: bool) -> Self {
+        self.volume_sensitive = sensitive;
+        self
+    }
+    pub fn latest_close(&self) -> u64 {
+        self.candles.last_key_value().map_or(0, |(close, _)| *close)
     }
     pub fn update(
         &mut self,
@@ -41,6 +55,9 @@ impl History {
         kite_adapter::http::historical::validate_for(&incoming, self.interval)?;
         let mut merged = self.candles.clone();
         let mut revised = 0;
+        let mut price_revised = 0;
+        let mut volume_only_revised = 0;
+        let mut revision_samples = Vec::new();
         let mut new = Vec::new();
         let last = *merged
             .last_key_value()
@@ -49,15 +66,22 @@ impl History {
         for c in incoming {
             let ts = close_for(&c, self.interval)?;
             ensure!(
-                ts <= now.saturating_sub(2_000_000_000),
+                ts <= now.saturating_sub(super::supertrend_bar_timing::COMPLETION_GRACE_NS),
                 "Unfinished correction"
             );
             if let Some(old) = merged.get(&ts) {
-                // OI does not enter this strategy's indicators.
-                if (old.open, old.high, old.low, old.close, old.volume)
-                    != (c.open, c.high, c.low, c.close, c.volume)
-                {
-                    revised += 1;
+                // OI is unused. Keep price and volume correction counts separate.
+                let price_changed =
+                    (old.open, old.high, old.low, old.close) != (c.open, c.high, c.low, c.close);
+                let volume_changed = old.volume != c.volume;
+                price_revised += usize::from(price_changed);
+                volume_only_revised += usize::from(!price_changed && volume_changed);
+                revised += usize::from(price_changed || (self.volume_sensitive && volume_changed));
+                if (price_changed || volume_changed) && revision_samples.len() < 8 {
+                    revision_samples.push(format!(
+                        "{}: OHLC={} volume={}",
+                        c.timestamp, price_changed, volume_changed
+                    ));
                 }
             } else if ts > last {
                 new.push(c.clone());
@@ -67,7 +91,14 @@ impl History {
         let all: Vec<_> = merged.values().cloned().collect();
         validate_warmup_for(&all, date, now, &self.calendar, self.interval)?;
         self.candles = merged;
-        Ok(Update { all, new, revised })
+        Ok(Update {
+            all,
+            new,
+            revised,
+            price_revised,
+            volume_only_revised,
+            revision_samples,
+        })
     }
 }
 #[cfg(test)]
@@ -132,6 +163,45 @@ mod tests {
         revised[50].volume += 1;
         assert_eq!(history.update(revised, date, now).unwrap().revised, 1);
     }
+    #[test]
+    fn ribbon_merges_volume_corrections_without_rebuild_or_losing_fresh_bars() {
+        let (mut rows, date, now) = fixture();
+        let mut history = History::new(&rows[..100], super::super::session_calendar::fixture())
+            .unwrap()
+            .with_volume_sensitive(false);
+        rows[50].volume += 10;
+        let update = history.update(rows.clone(), date, now).unwrap();
+        assert_eq!(update.revised, 0);
+        assert_eq!(update.price_revised, 0);
+        assert_eq!(update.volume_only_revised, 1);
+        assert_eq!(update.new.len(), 74);
+        assert_eq!(update.all[50].volume, rows[50].volume);
+        assert!(update.revision_samples[0].contains("OHLC=false volume=true"));
+        let repeated = history.update(rows.clone(), date, now).unwrap();
+        assert_eq!(repeated.volume_only_revised, 0);
+        rows[50].high += 1.;
+        rows[50].volume += 1;
+        let corrected = history.update(rows, date, now).unwrap();
+        assert_eq!(corrected.revised, 1);
+        assert_eq!(corrected.price_revised, 1);
+        assert_eq!(corrected.volume_only_revised, 0);
+    }
+
+    #[test]
+    fn ribbon_missing_candle_does_not_commit_a_volume_correction() {
+        let (mut rows, date, now) = fixture();
+        let mut history = History::new(&rows[..100], super::super::session_calendar::fixture())
+            .unwrap()
+            .with_volume_sensitive(false);
+        rows[50].volume += 10;
+        let mut missing = rows.clone();
+        missing.remove(120);
+        assert!(history.update(missing, date, now).is_err());
+        let update = history.update(rows, date, now).unwrap();
+        assert_eq!(update.volume_only_revised, 1);
+        assert_eq!(update.new.len(), 74);
+    }
+
     #[test]
     fn corrections_rebuild_once_and_gaps_do_not_commit_partial_history() {
         let (rows, date, now) = fixture();

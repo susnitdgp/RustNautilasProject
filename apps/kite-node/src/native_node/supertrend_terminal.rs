@@ -162,6 +162,7 @@ struct Snapshot {
     online: bool,
     paused: bool,
     recoveries: u64,
+    bar_feed: super::supertrend_bar_timing::Stats,
 }
 
 impl Snapshot {
@@ -271,6 +272,7 @@ impl Snapshot {
             online: c.online.load(Ordering::Acquire),
             paused,
             recoveries: c.recoveries.load(Ordering::Acquire),
+            bar_feed: c.bar_feed.lock().expect("bar feed stats").clone(),
         }
     }
 
@@ -403,11 +405,36 @@ impl Snapshot {
         output.push_str(&row(
             "Market",
             &format!(
-                "spread {spread} | age {age} | bar {} | next candle {}",
-                ist(self.bar),
+                "spread {spread} | age {age} | next close {}",
                 candle_countdown(self.now, display.bar_ns)
             ),
         ));
+        output.push_str(&row("Candle", &candle_window(self.bar, display.bar_ns)));
+        let arrival = if self.bar_feed.last_candle_received_ns == 0 {
+            "--".into()
+        } else {
+            format!("{}ms", self.bar_feed.last_close_to_receive_ms)
+        };
+        output.push_str(&row(
+            "Bar timing",
+            &format!(
+                "API {}ms | close-to-data {arrival} | requests {}",
+                self.bar_feed.last_fetch_ms, self.bar_feed.fetches
+            ),
+        ));
+        output.push_str(&row(
+            "Corrections",
+            &format!(
+                "price {} | volume {} (ignored {}) | rebuilds {}",
+                self.bar_feed.price_revisions,
+                self.bar_feed.volume_only_revisions,
+                self.bar_feed.ignored_volume_revisions,
+                self.bar_feed.rebuild_requests
+            ),
+        ));
+        if !self.bar_feed.last_rebuild_reason.is_empty() {
+            output.push_str(&row("Rebuild cause", &self.bar_feed.last_rebuild_reason));
+        }
         if display.ribbon.is_some() {
             output.push_str(&row(
                 "Price / ALMA",
@@ -693,6 +720,18 @@ fn truncate(value: &str, width: usize) -> String {
     let clean = clean(value);
     clean.chars().take(width).collect()
 }
+fn candle_window(close: u64, bar_ns: u64) -> String {
+    if close == 0 {
+        "waiting for completed candle".into()
+    } else {
+        format!(
+            "{} -> {} IST | CLOSED",
+            ist(close.saturating_sub(bar_ns)),
+            ist_clock(close)
+        )
+    }
+}
+
 fn candle_countdown(now: u64, bar_ns: u64) -> String {
     const ONE_SECOND_NS: u64 = 1_000_000_000;
     let remaining_ns = bar_ns - now % bar_ns;
@@ -777,6 +816,22 @@ mod tests {
         assert_eq!(clean("bad\n\u{1b}[2J"), "bad  [2J");
     }
     #[test]
+    fn candle_window_names_both_open_and_close_for_either_interval() {
+        let close = chrono::DateTime::parse_from_rfc3339("2026-09-23T21:00:00+05:30")
+            .unwrap()
+            .timestamp_nanos_opt()
+            .unwrap() as u64;
+        assert_eq!(
+            candle_window(close, 180_000_000_000),
+            "23-09 20:57:00 -> 21:00 IST | CLOSED"
+        );
+        assert_eq!(
+            candle_window(close, 300_000_000_000),
+            "23-09 20:55:00 -> 21:00 IST | CLOSED"
+        );
+        assert!(candle_window(0, 180_000_000_000).contains("waiting"));
+    }
+    #[test]
     fn dashboard_parameters_match_reviewed_strategy() {
         assert!(PARAMETERS.contains("ATR(7)"));
         assert_eq!(PARAMETERS, "Supertrend ATR(7) Wilder x 2");
@@ -803,7 +858,7 @@ mod tests {
             .with_strategy_start_ns(start);
         assert!(display.ribbon.is_some());
         assert!(display.pivot.is_none());
-        assert_eq!(display.interval_minutes, 5);
+        assert_eq!(display.interval_minutes, selection.interval_minutes());
         let mut state = State {
             started: true,
             ..Default::default()

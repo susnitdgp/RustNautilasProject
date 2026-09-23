@@ -145,7 +145,7 @@ impl BarStrategy {
             None,
             None,
         );
-        self.state.borrow_mut().signals.push(serde_json::json!({"timestamp_ns":ts,"intent":intent,"target":target,"position_before":position,"entry_filtered":self.filtered,"reason":reason}));
+        self.state.borrow_mut().signals.push(serde_json::json!({"timestamp_ns":ts,"intent":intent,"target":target,"position_before":position,"entry_filtered":self.filtered,"reason":reason,"bar_close_ns":self.last_bar,"bar_to_signal_ms":ts.saturating_sub(self.last_bar)/1_000_000}));
         if let Some(control) = &self.live {
             control.flat.store(false, Ordering::Release);
         }
@@ -398,7 +398,7 @@ impl DataActor for BarStrategy {
                             0
                         };
                 }
-                self.state.borrow_mut().rebuilds.push(serde_json::json!({"epoch":epoch,"previous_bar":previous,"rebuilt_bar":self.last_bar,"received_ns":q.ts_init.as_u64(),"past_orders_replayed":false}));
+                self.state.borrow_mut().rebuilds.push(serde_json::json!({"epoch":epoch,"previous_bar":previous,"rebuilt_bar":self.last_bar,"received_ns":q.ts_init.as_u64(),"past_orders_replayed":false,"reason":control.bar_feed.lock().expect("bar feed stats").last_rebuild_reason.clone()}));
                 control.recoveries.fetch_add(1, Ordering::AcqRel);
                 if epoch == control.epoch.load(Ordering::Acquire) {
                     control.paused.store(false, Ordering::Release);

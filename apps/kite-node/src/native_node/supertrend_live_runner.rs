@@ -271,6 +271,7 @@ fn run_backend_inner(
         date,
         calendar: selection.session_calendar.clone(),
         interval: selection.interval,
+        volume_sensitive: selection.trend_ribbon.is_none(),
         synthetic_delay_ms: if kite_mock { 180 } else { 60 },
         warmup: warmup.clone(),
         simulated,
@@ -338,7 +339,7 @@ fn run_backend_inner(
         let result={
             let run=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted);
             tokio::pin!(run);
-            let mut refresh=tokio::time::interval(Duration::from_secs(5));
+            let mut refresh=tokio::time::interval(Duration::from_secs(1));
             refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {tokio::select! {
                 result=&mut run => break result,
@@ -394,12 +395,14 @@ fn run_backend_inner(
     super::backtest_report::json(&folder, "signals.json", &s.signals)?;
     super::backtest_report::json(&folder, "fills.json", &s.fills)?;
     super::backtest_report::json(&folder, "recoveries.json", &s.rebuilds)?;
+    let bar_feed = control.bar_feed.lock().expect("bar feed stats").clone();
+    super::backtest_report::json(&folder, "bar-feed.json", &bar_feed)?;
     let output = serde_json::json!({"event":"supertrend_live_complete","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"status":if clean{"Clean"}else{"ReviewRequired"},
         "runtime":"LiveNode","strategy":selection.strategy,"interval":selection.interval_name(),"contracts":1,"atr_stop_enabled":false,
         "simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
         "bars":s.indicators.len(),"warmup_bars":warmup.len(),"signals":s.signals.len(),"fills":s.fills.len(),"open_contracts":position,
         "open_orders":pending,"errors":s.errors,"feed_fault":fault,"run_error":outcome.as_ref().err().map(ToString::to_string),
-        "square_off_ns":if sim{None}else{Some(end)},"indicator_rebuilds":control.recoveries.load(Ordering::Acquire),"automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":real,"broker_orders_sent":if real {serde_json::Value::Null}else{serde_json::json!(false)}});
+        "bar_feed":bar_feed,"square_off_ns":if sim{None}else{Some(end)},"indicator_rebuilds":control.recoveries.load(Ordering::Acquire),"automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":real,"broker_orders_sent":if real {serde_json::Value::Null}else{serde_json::json!(false)}});
     super::backtest_report::json(&folder, "summary.json", &output)?;
     println!("{output}");
     super::supertrend_terminal::finish(clean, &folder, real);

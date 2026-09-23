@@ -60,34 +60,68 @@ pub async fn fetch_window_for(
     days: i64,
     interval: Interval,
 ) -> Result<Vec<Candle>> {
-    ensure!(
-        (1..=30).contains(&days),
-        "Historical lookback must be 1..30 calendar days"
-    );
-    ensure!(token > 0, "Invalid instrument token");
-    let credentials = crate::credentials::redis::load_from_env()?;
-    let client = super::authenticated::ReadClient::new(&credentials)?;
-    let from = date
-        .checked_sub_signed(Duration::days(days))
-        .ok_or_else(|| anyhow::anyhow!("Date overflow"))?;
-    let response: Response = client
-        .historical(token, from, date, interval.as_str())
-        .await?;
-    let candles: Vec<_> = response
-        .candles
-        .into_iter()
-        .map(|(timestamp, open, high, low, close, volume, oi)| Candle {
-            timestamp,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            oi,
-        })
-        .collect();
-    validate_for(&candles, interval)?;
-    Ok(candles)
+    Reader::default()
+        .fetch_window_for(token, date, days, interval)
+        .await
+}
+
+/// Reuse HTTP/TLS connections across live reads. Authentication is still
+/// reloaded from Redis on every call, retaining the existing rotation behavior.
+#[derive(Default)]
+pub struct Reader {
+    client: Option<super::authenticated::ReadClient>,
+}
+impl Reader {
+    pub async fn fetch_window_for(
+        &mut self,
+        token: u32,
+        date: NaiveDate,
+        days: i64,
+        interval: Interval,
+    ) -> Result<Vec<Candle>> {
+        ensure!(
+            (1..=30).contains(&days),
+            "Historical lookback must be 1..30 calendar days"
+        );
+        ensure!(token > 0, "Invalid instrument token");
+        let credentials = crate::credentials::redis::load_from_env()?;
+        if let Some(client) = &mut self.client {
+            client.refresh_credentials(&credentials)?;
+        } else {
+            self.client = Some(super::authenticated::ReadClient::new(&credentials)?);
+        }
+        let client = self.client.as_ref().expect("historical client initialized");
+        let from = date
+            .checked_sub_signed(Duration::days(days))
+            .ok_or_else(|| anyhow::anyhow!("Date overflow"))?;
+        let response: Response = client
+            .historical(token, from, date, interval.as_str())
+            .await?;
+        let candles: Vec<_> = response
+            .candles
+            .into_iter()
+            .map(|(timestamp, open, high, low, close, volume, oi)| Candle {
+                timestamp,
+                open,
+                high,
+                low,
+                close,
+                volume,
+                oi,
+            })
+            .collect();
+        validate_for(&candles, interval)?;
+        Ok(candles)
+    }
+}
+
+/// Do not turn authentication rejection or a broker cooldown into rapid retries.
+pub fn terminal_read_error(error: &anyhow::Error) -> bool {
+    use crate::execution::native_client::outage::ReadFailure;
+    matches!(
+        error.downcast_ref::<ReadFailure>(),
+        Some(ReadFailure::SessionExpired | ReadFailure::RateLimited(_))
+    )
 }
 pub fn validate(candles: &[Candle]) -> Result<()> {
     validate_for(candles, Interval::FiveMinute)
@@ -150,6 +184,41 @@ mod tests {
         let mut bad = c;
         bad.timestamp = "2026-09-15T09:01:00+05:30".into();
         assert!(validate(&[bad]).is_err());
+    }
+    #[test]
+    fn auth_and_rate_limits_are_not_fast_retryable() {
+        use crate::execution::native_client::outage::ReadFailure;
+        assert!(terminal_read_error(&anyhow::anyhow!(
+            ReadFailure::SessionExpired
+        )));
+        assert!(terminal_read_error(&anyhow::anyhow!(
+            ReadFailure::RateLimited(60_000)
+        )));
+        assert!(!terminal_read_error(&anyhow::anyhow!(
+            ReadFailure::Transient
+        )));
+    }
+    #[tokio::test]
+    async fn invalid_reused_reader_input_fails_before_loading_credentials() {
+        let mut reader = Reader::default();
+        let date = NaiveDate::from_ymd_opt(2026, 9, 23).unwrap();
+        assert!(
+            reader
+                .fetch_window_for(1, date, 0, Interval::ThreeMinute)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("lookback")
+        );
+        assert!(
+            reader
+                .fetch_window_for(0, date, 7, Interval::FiveMinute)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("token")
+        );
+        assert!(reader.client.is_none());
     }
     #[test]
     fn three_minute_validation_is_interval_specific() {

@@ -28,7 +28,9 @@ pub fn completed_for(candles: Vec<Candle>, now: u64, interval: Interval) -> Resu
     kite_adapter::http::historical::validate_for(&candles, interval)?;
     let mut out = Vec::new();
     for c in candles {
-        if close_for(&c, interval)? <= now.saturating_sub(2_000_000_000) {
+        if close_for(&c, interval)?
+            <= now.saturating_sub(super::supertrend_bar_timing::COMPLETION_GRACE_NS)
+        {
             out.push(c);
         }
     }
@@ -136,7 +138,8 @@ pub fn validate_warmup_for(
     for day in calendar.range(first, date)? {
         let (start, end) = calendar.bounds(day)?;
         let cutoff = if day == date {
-            now.saturating_sub(2_000_000_000).min(end)
+            now.saturating_sub(super::supertrend_bar_timing::COMPLETION_GRACE_NS)
+                .min(end)
         } else {
             end
         };

@@ -39,6 +39,7 @@ mod supertrend_stop_policy;
 
 mod production;
 
+mod supertrend_bar_timing;
 mod supertrend_live_bars;
 mod supertrend_live_control;
 mod supertrend_live_data;

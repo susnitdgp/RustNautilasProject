@@ -64,6 +64,19 @@ impl ReadClient {
             authorization,
         })
     }
+    /// Rotate authentication without discarding the HTTP connection pool.
+    pub(crate) fn refresh_credentials(&mut self, credentials: &KiteCredentials) -> Result<()> {
+        let value = Zeroizing::new(format!(
+            "token {}:{}",
+            credentials.api_key(),
+            credentials.access_token()
+        ));
+        let mut authorization = HeaderValue::from_str(&value)
+            .map_err(|_| anyhow!("Invalid Kite authentication header"))?;
+        authorization.set_sensitive(true);
+        self.authorization = authorization;
+        Ok(())
+    }
     pub(crate) fn sandbox(credentials: &KiteCredentials) -> Result<Self> {
         let mut client = Self::new(credentials)?;
         client.root = "https://sandbox.kite.trade/oms";
@@ -227,6 +240,49 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+    #[tokio::test]
+    async fn historical_reader_can_reuse_connection_and_rotate_credentials() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/history", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            // Both requests must use this one accepted TCP connection.
+            let (mut socket, _) = listener.accept().await.unwrap();
+            for token in ["test-token-one", "test-token-two"] {
+                let mut bytes = Vec::new();
+                while !bytes.ends_with(b"\r\n\r\n") {
+                    bytes.push(socket.read_u8().await.unwrap());
+                    assert!(bytes.len() < 8192);
+                }
+                let request = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+                assert!(request.starts_with("get /history "));
+                assert!(request.contains(&format!("authorization: token test-key:{token}")));
+                let body = r#"{"status":"success","data":[]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let first =
+            KiteCredentials::new(Some("test-key".into()), Some("test-token-one".into())).unwrap();
+        let second =
+            KiteCredentials::new(Some("test-key".into()), Some("test-token-two".into())).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut client = ReadClient::new(&first).unwrap();
+            assert!(client.get_at::<Vec<String>>(&url).await.unwrap().is_empty());
+            client.refresh_credentials(&second).unwrap();
+            assert!(client.authorization.is_sensitive());
+            assert!(client.get_at::<Vec<String>>(&url).await.unwrap().is_empty());
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
     }
     #[tokio::test]
     async fn get_only_headers_and_auth_error_redaction() {

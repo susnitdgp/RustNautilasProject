@@ -5,7 +5,7 @@ This module ports the supplied TradingView Pine v6 Trend Ribbon signal logic int
 
 ## JSON-selected candle interval
 
-`config/production-trend-ribbon.json` is the interval source of truth. Supported Trend Ribbon values are `3minute` and `5minute`; the active production selection currently uses `5minute`. The selection drives the Kite historical endpoint, candle alignment, close timestamps, Nautilus external bar type, freshness checks, recovery replay, report metadata and terminal countdown. Pivot Point and the original Supertrend/MACD/VWAP selection remain restricted to five-minute candles.
+`config/production-trend-ribbon.json` is the interval source of truth. Supported Trend Ribbon values are `3minute` and `5minute`; the active production selection currently uses `3minute`. The selection drives the Kite historical endpoint, candle alignment, close timestamps, Nautilus external bar type, freshness checks, recovery replay, report metadata and terminal countdown. Pivot Point and the original Supertrend/MACD/VWAP selection remain restricted to five-minute candles.
 
 Changing the timeframe changes the economic meaning of bar-count parameters. On three-minute candles, ALMA(34) spans 102 minutes and the three-bar slope comparison spans nine minutes; on five-minute candles they span 170 and fifteen minutes respectively. Parameters are not automatically rescaled.
 
@@ -31,7 +31,7 @@ Feed recovery rebuilds the indicator from validated completed bars. Rebuilds nev
 
 The archived paper/simulation selection remains five-minute: `config/backup/trend-ribbon-boswaves.json`.
 
-Live-capable selection: `config/production-trend-ribbon.json`; its `interval` field currently selects `5minute`.
+Live-capable selection: `config/production-trend-ribbon.json`; its `interval` field currently selects `3minute`.
 
 Offline simulation:
 `./target/debug/kite-node native-trend-ribbon-sim config/backup/trend-ribbon-boswaves.json`
@@ -49,3 +49,7 @@ The launcher can place real orders. It must never be started merely as a build o
 Unit tests verify deterministic rebuilds, session gating, parameter validation, and bidirectional flips. The synthetic Nautilus LiveNode simulation has also been exercised.
 
 Exact TradingView parity still requires replaying the same CRUDEOIL OHLC candles at the selected interval through Pine and Rust and comparing ALMA, deviation, ATR, slope score, direction, and flip timestamps bar by bar. One supervised real long entry and graceful reducing exit have been observed; broader broker-fill, outage and full-session behavior remain unverified.
+
+## Completed-candle latency
+
+See [CompletedCandleLatency.md](CompletedCandleLatency.md) for boundary-aligned polling, retained completion guards, price-versus-volume correction handling and timing diagnostics. These changes require explicit activation of the candidate; they do not change a running process.

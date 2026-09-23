@@ -1,5 +1,8 @@
 //! Native external-bar client for paper Supertrend; broker reads only.
-use super::{data::now, supertrend_live_bars as bars, supertrend_live_control::Control};
+use super::{
+    data::now, supertrend_bar_timing as timing, supertrend_live_bars as bars,
+    supertrend_live_control::Control,
+};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
 use kite_adapter::http::historical::{self, Candle, Interval};
@@ -22,6 +25,23 @@ use nautilus_model::{
 };
 use std::{any::Any, cell::RefCell, rc::Rc, sync::atomic::Ordering};
 use tokio::task::JoinHandle;
+/// Select against a single request-start cutoff, not a later response time.
+/// No history mutation occurs until every expected completed candle validates.
+fn prepare_update(
+    history: &mut super::supertrend_revision::History,
+    candles: Vec<Candle>,
+    requested_at: u64,
+    date: chrono::NaiveDate,
+    interval: Interval,
+) -> Result<Option<super::supertrend_revision::Update>> {
+    let completed = bars::completed_for(candles, requested_at, interval)?;
+    let latest = bars::close_for(completed.last().expect("completed bars"), interval)?;
+    if timing::publication_pending(latest, requested_at, interval.nanoseconds()) {
+        return Ok(None);
+    }
+    history.update(completed, date, requested_at).map(Some)
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub instrument: FuturesContract,
@@ -30,6 +50,7 @@ pub struct Config {
     pub date: chrono::NaiveDate,
     pub calendar: super::session_calendar::Calendar,
     pub interval: Interval,
+    pub volume_sensitive: bool,
     pub warmup: Vec<Candle>,
     pub simulated: Vec<Candle>,
     pub control: Control,
@@ -152,52 +173,114 @@ impl Client {
                     &c.warmup,
                     c.calendar.clone(),
                     c.interval,
-                )?;
+                )?
+                .with_volume_sensitive(c.volume_sensitive);
+                let step = c.interval.nanoseconds();
+                let mut reader = historical::Reader::default();
+                let mut next_fetch = timing::next_poll(now(), history.latest_close(), step);
+                {
+                    let mut stats = c.control.bar_feed.lock().expect("bar feed stats");
+                    stats.last_candle_close_ns = history.latest_close();
+                    stats.last_candle_open_ns = history.latest_close().saturating_sub(step);
+                }
                 let mut failures = 0;
                 while !c.control.stopping.load(Ordering::Acquire) {
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let remaining = next_fetch.saturating_sub(now());
+                    if remaining > 0 {
+                        // Short sleeps keep shutdown responsive without polling the API.
+                        tokio::time::sleep(std::time::Duration::from_nanos(
+                            remaining.min(250_000_000),
+                        ))
+                        .await;
+                        continue;
+                    }
+                    let epoch = c.control.epoch.load(Ordering::Acquire);
+                    let requested_at = now();
+                    let started = std::time::Instant::now();
+                    c.control.bar_feed.lock().expect("bar feed stats").fetches += 1;
+                    let fetched = reader
+                        .fetch_window_for(c.token, c.date, 7, c.interval)
+                        .await;
+                    let received_at = now();
+                    c.control
+                        .bar_feed
+                        .lock()
+                        .expect("bar feed stats")
+                        .last_fetch_ms =
+                        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
                     if c.control.stopping.load(Ordering::Acquire) {
                         break;
                     }
-                    let epoch = c.control.epoch.load(Ordering::Acquire);
-                    let update = async {
-                        let candles =
-                            historical::fetch_window_for(c.token, c.date, 7, c.interval).await?;
-                        history.update(
-                            bars::completed_for(candles, now(), c.interval)?,
-                            c.date,
-                            now(),
-                        )
-                    }
-                    .await;
+                    let update = fetched.and_then(|candles| {
+                        prepare_update(&mut history, candles, requested_at, c.date, c.interval)
+                    });
                     let update = match update {
-                        Ok(v) => {
+                        Ok(Some(v)) => {
                             failures = 0;
                             v
                         }
+                        Ok(None) => {
+                            c.control
+                                .bar_feed
+                                .lock()
+                                .expect("bar feed stats")
+                                .publication_waits += 1;
+                            next_fetch = received_at.saturating_add(timing::PUBLICATION_RETRY_NS);
+                            continue;
+                        }
                         Err(e) => {
                             failures += 1;
+                            c.control.bar_feed.lock().expect("bar feed stats").failures += 1;
                             c.control.pause();
-                            if failures >= 6 {
+                            // Never fast-retry failed HTTP requests, authentication,
+                            // rate limits or invalid/gapped historical data.
+                            if historical::terminal_read_error(&e) || failures >= 6 {
                                 return Err(e);
                             }
+                            next_fetch = received_at.saturating_add(timing::AUDIT_INTERVAL_NS);
                             continue;
                         }
                     };
+                    next_fetch = timing::next_poll(now(), history.latest_close(), step);
+                    {
+                        let mut stats = c.control.bar_feed.lock().expect("bar feed stats");
+                        stats.price_revisions += update.price_revised as u64;
+                        stats.volume_only_revisions += update.volume_only_revised as u64;
+                        if !c.volume_sensitive {
+                            stats.ignored_volume_revisions += update.volume_only_revised as u64;
+                        }
+                        if !update.revision_samples.is_empty() {
+                            stats.last_revision_samples = update.revision_samples.clone();
+                        }
+                        stats.received(history.latest_close(), step, received_at);
+                    }
                     if c.control.epoch.load(Ordering::Acquire) != epoch {
+                        next_fetch = now().saturating_add(timing::PUBLICATION_RETRY_NS);
                         continue;
                     }
                     if update.revised > 0 || c.control.paused.load(Ordering::Acquire) {
+                        {
+                            let mut stats = c.control.bar_feed.lock().expect("bar feed stats");
+                            stats.rebuild_requests += 1;
+                            stats.last_rebuild_reason = if update.revised > 0 {
+                                format!(
+                                    "history correction: {} price / {} volume-only",
+                                    update.price_revised, update.volume_only_revised
+                                )
+                            } else {
+                                "feed recovery after pause".into()
+                            };
+                        }
                         let epoch = c.control.pause();
                         let rebuilt = update
                             .all
                             .iter()
-                            .map(|b| bars::bar_for(b, bt, now(), c.interval))
+                            .map(|b| bars::bar_for(b, bt, received_at, c.interval))
                             .collect::<Result<Vec<_>>>()?;
                         *c.control.rebuild.lock().expect("rebuild lock") = Some((epoch, rebuilt));
                     } else {
                         for bar in update.new {
-                            emit(Data::Bar(bars::bar_for(&bar, bt, now(), c.interval)?))?;
+                            emit(Data::Bar(bars::bar_for(&bar, bt, received_at, c.interval)?))?;
                         }
                     }
                 }
@@ -291,3 +374,7 @@ impl DataClient for Client {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "supertrend_live_data_tests.rs"]
+mod polling_tests;

@@ -13,6 +13,7 @@ pub struct Control {
     pub rebuild: Rebuild,
     pub order_deadline: Arc<AtomicU64>,
     pub bar_ns: u64,
+    pub bar_feed: Arc<Mutex<super::supertrend_bar_timing::Stats>>,
     pub sim: bool,
     pub real: bool,
     pub recovery_fixture: bool,
@@ -31,6 +32,7 @@ impl Control {
             rebuild: Arc::new(Mutex::new(None)),
             order_deadline: Arc::new(AtomicU64::new(0)),
             bar_ns: 300_000_000_000,
+            bar_feed: Arc::new(Mutex::new(super::supertrend_bar_timing::Stats::default())),
             sim,
             real: false,
             recovery_fixture: false,
@@ -62,7 +64,7 @@ impl Control {
         self.sim
             || (bar > 0
                 && bar <= now
-                && bar == now.saturating_sub(2_000_000_000) / self.bar_ns * self.bar_ns)
+                && bar == super::supertrend_bar_timing::eligible_close(now, self.bar_ns))
     }
     pub fn fresh_quote(&self, event: u64, received: u64, now: u64) -> bool {
         self.sim
