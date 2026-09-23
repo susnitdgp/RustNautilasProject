@@ -23,6 +23,7 @@ pub struct Display {
     id: String,
     symbol: String,
     pivot: Option<super::pivot_point::Settings>,
+    ribbon: Option<super::trend_ribbon::Settings>,
     production_cutoff: Option<String>,
     dashboard: bool,
 }
@@ -49,7 +50,10 @@ impl Display {
             id: id.into(),
             symbol: selection.symbol.clone(),
             pivot: selection.pivot_point.clone(),
-            production_cutoff: if real && selection.pivot_point.is_some() {
+            ribbon: selection.trend_ribbon.clone(),
+            production_cutoff: if real
+                && (selection.pivot_point.is_some() || selection.trend_ribbon.is_some())
+            {
                 selection
                     .execution_bounds(super::pivot_session::date(data::now()), true)
                     .ok()
@@ -130,6 +134,12 @@ struct Snapshot {
     macd_signal: Option<f64>,
     confirmation: Option<i64>,
     confirmation_ready: bool,
+    alma: Option<f64>,
+    deviation: Option<f64>,
+    slope_score: Option<f64>,
+    upper_confirm: Option<f64>,
+    lower_confirm: Option<f64>,
+    initialized: bool,
     deadline: u64,
     bars: usize,
     quotes: u64,
@@ -230,6 +240,12 @@ impl Snapshot {
             macd_signal: nested_f64(latest, "confirmation", "macd_signal"),
             confirmation: nested_i64(latest, "confirmation", "confirmation_direction"),
             confirmation_ready: nested_bool(latest, "confirmation", "ready").unwrap_or(false),
+            alma: f64_metric(latest, "alma"),
+            deviation: f64_metric(latest, "deviation"),
+            slope_score: f64_metric(latest, "slope_score"),
+            upper_confirm: f64_metric(latest, "upper_confirm"),
+            lower_confirm: f64_metric(latest, "lower_confirm"),
+            initialized: bool_metric(latest, "initialized").unwrap_or(false),
             deadline: c.order_deadline.load(Ordering::Acquire),
             bars: s.indicators.len(),
             quotes: s.live_quotes,
@@ -323,6 +339,40 @@ impl Snapshot {
                 "Confirmed Pivot Point Supertrend flip; no MACD/VWAP filter",
             ));
             output.push_str(&row("Exit", "Opposite flip or timed session square-off"));
+        } else if let Some(r) = &display.ribbon {
+            output.push_str(&row(
+                "Strategy",
+                &format!(
+                    "Trend Ribbon [BOSWaves] | ALMA({},{:.2},{:.1})",
+                    r.alma_length, r.alma_offset, r.alma_sigma
+                ),
+            ));
+            output.push_str(&row(
+                "Filters",
+                &format!(
+                    "StDev({}) x {:.2} | slope {} min {:.2} | ATR({})",
+                    r.deviation_length,
+                    r.deviation_multiplier,
+                    r.slope_length,
+                    r.minimum_slope,
+                    r.atr_length
+                ),
+            ));
+            output.push_str(&row(
+                "Session",
+                &format!(
+                    "{}-{} IST | days {} | reset {}",
+                    r.session.start, r.session.end, r.session.days, r.session.reset_daily
+                ),
+            ));
+            output.push_str(&row(
+                "Entry",
+                "Fresh ALMA/deviation/slope flip; no MACD/VWAP filter",
+            ));
+            output.push_str(&row(
+                "Exit",
+                "Opposite flip or configured session square-off",
+            ));
         } else {
             output.push_str(&row("Strategy", PARAMETERS));
             output.push_str(&row("Confirmation", "MACD EMA(12,26,9) + session VWAP"));
@@ -339,39 +389,69 @@ impl Snapshot {
                 candle_countdown(self.now)
             ),
         ));
-        output.push_str(&row(
-            "Price / ST",
-            &format!(
-                "close {} | line {} | ATR {}",
-                show(self.close),
-                show(self.supertrend),
-                show(self.atr)
-            ),
-        ));
-        if display.pivot.is_some() {
+        if display.ribbon.is_some() {
+            output.push_str(&row(
+                "Price / ALMA",
+                &format!(
+                    "close {} | ALMA {} | ATR {}",
+                    show(self.close),
+                    show(self.alma),
+                    show(self.atr)
+                ),
+            ));
+            output.push_str(&row(
+                "Ribbon",
+                &format!(
+                    "dev {} | slope {} | upper {} | lower {}",
+                    show(self.deviation),
+                    show4(self.slope_score),
+                    show(self.upper_confirm),
+                    show(self.lower_confirm)
+                ),
+            ));
             output.push_str(&row(
                 "Direction",
-                &format!("Pivot Point Supertrend {}", direction(self.direction)),
+                &format!(
+                    "Trend Ribbon {} | initialized {}",
+                    direction(self.direction),
+                    self.initialized
+                ),
             ));
         } else {
             output.push_str(&row(
-                "Direction",
+                "Price / ST",
                 &format!(
-                    "Supertrend {} | confirmation {} | ready {}",
-                    direction(self.direction),
-                    direction(self.confirmation),
-                    self.confirmation_ready
+                    "close {} | line {} | ATR {}",
+                    show(self.close),
+                    show(self.supertrend),
+                    show(self.atr)
                 ),
             ));
-            output.push_str(&row(
-                "Confirmation",
-                &format!(
-                    "VWAP {} | MACD {} | signal {}",
-                    show(self.vwap),
-                    show(self.macd),
-                    show(self.macd_signal)
-                ),
-            ));
+            if display.pivot.is_some() {
+                output.push_str(&row(
+                    "Direction",
+                    &format!("Pivot Point Supertrend {}", direction(self.direction)),
+                ));
+            } else {
+                output.push_str(&row(
+                    "Direction",
+                    &format!(
+                        "Supertrend {} | confirmation {} | ready {}",
+                        direction(self.direction),
+                        direction(self.confirmation),
+                        self.confirmation_ready
+                    ),
+                ));
+                output.push_str(&row(
+                    "Confirmation",
+                    &format!(
+                        "VWAP {} | MACD {} | signal {}",
+                        show(self.vwap),
+                        show(self.macd),
+                        show(self.macd_signal)
+                    ),
+                ));
+            }
         }
         output.push_str(&section("Position and safety"));
         output.push_str(&row(
@@ -508,9 +588,15 @@ fn nested_i64(v: Option<&Value>, parent: &str, key: &str) -> Option<i64> {
 fn nested_bool(v: Option<&Value>, parent: &str, key: &str) -> Option<bool> {
     v.and_then(|v| v[parent][key].as_bool())
 }
+fn bool_metric(v: Option<&Value>, key: &str) -> Option<bool> {
+    v.and_then(|v| v[key].as_bool())
+}
 
 fn show(v: Option<f64>) -> String {
     v.map(|v| format!("{v:.2}")).unwrap_or_else(|| "--".into())
+}
+fn show4(v: Option<f64>) -> String {
+    v.map(|v| format!("{v:.4}")).unwrap_or_else(|| "--".into())
 }
 fn direction(v: Option<i64>) -> &'static str {
     match v {
@@ -612,5 +698,40 @@ mod tests {
         assert_eq!(candle_countdown(60_000_000_000), "04:00");
         assert_eq!(candle_countdown(299_200_000_000), "00:01");
         assert_eq!(ist_title(0), "01-01-1970 05:30:00");
+    }
+
+    #[test]
+    fn trend_ribbon_dashboard_uses_ribbon_labels_and_metrics() {
+        let config = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/production-trend-ribbon.json");
+        let selection =
+            super::super::production::Selection::load(config.to_str().unwrap()).unwrap();
+        let display = Display::new(300, 1, true, "test-run", false, false, &selection);
+        assert!(display.ribbon.is_some());
+        assert!(display.pivot.is_none());
+        let mut state = State {
+            started: true,
+            ..Default::default()
+        };
+        state.indicators.push(serde_json::json!({
+            "bar_close_ns": 1_790_184_600_000_000_000u64,
+            "close": 8585.0,
+            "atr": 28.63,
+            "alma": 8706.25,
+            "deviation": 45.98,
+            "slope_score": -0.8411,
+            "upper_confirm": 8736.14,
+            "lower_confirm": 8676.36,
+            "direction": -1,
+            "initialized": true
+        }));
+        let control = Control::new(true);
+        let dashboard = Snapshot::new(&display, &state, &control).dashboard(&display);
+        assert!(dashboard.contains("Trend Ribbon [BOSWaves]"));
+        assert!(dashboard.contains("ALMA(34,0.85,6.0)"));
+        assert!(dashboard.contains("slope -0.8411"));
+        assert!(dashboard.contains("Trend Ribbon SHORT | initialized true"));
+        assert!(!dashboard.contains("Supertrend ATR(7) Wilder x 2"));
+        assert!(!dashboard.contains("MACD EMA(12,26,9) + session VWAP"));
     }
 }
