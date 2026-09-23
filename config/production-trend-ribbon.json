@@ -3,7 +3,7 @@
   "instrument": "CRUDEOIL26OCTFUT.MCX",
   "symbol": "CRUDEOIL26OCTFUT",
   "instrument_token": 145894407,
-  "interval": "5minute",
+  "interval": "3minute",
   "contracts": 1,
   "atr_stop_enabled": false,
   "live_orders_enabled": true,
