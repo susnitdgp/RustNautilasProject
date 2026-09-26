@@ -1,27 +1,21 @@
 use anyhow::{Result, bail};
-/// Parse the native entry points without silently ignoring extra arguments.
+
+/// Native Trend Ribbon and operational entry points.
 pub fn dispatch(args: &[String]) -> Option<Result<()>> {
     let command = args.first()?.as_str();
     if !command.starts_with("native-") {
         return None;
     }
+
     Some(match (command, &args[1..]) {
-        ("native-kite-margins-check", [config]) => tokio::runtime::Runtime::new()
-            .map_err(anyhow::Error::from)
-            .and_then(|r| {
-                r.block_on(kite_adapter::execution::native_client::margins::check(
-                    config,
-                ))
-            })
-            .map(|v| println!("{v}")),
         ("native-trend-ribbon-sim", [config]) => trend_ribbon_selection(config)
-            .and_then(|_| super::supertrend_live_runner::run(config, 30, true)),
+            .and_then(|_| super::trend_ribbon_live_runner::run(config, 30, true)),
         ("native-trend-ribbon-paper", [config, seconds]) => trend_ribbon_selection(config)
             .and_then(|_| seconds.parse::<u64>().map_err(anyhow::Error::from))
-            .and_then(|n| super::supertrend_live_runner::run(config, n, false)),
+            .and_then(|seconds| super::trend_ribbon_live_runner::run(config, seconds, false)),
         ("native-trend-ribbon-kite-mock", [config]) => {
             trend_ribbon_selection(config).and_then(|_| {
-                super::supertrend_live_runner::run_with_execution(config, 30, true, true)
+                super::trend_ribbon_live_runner::run_with_execution(config, 30, true, true)
             })
         }
         ("native-trend-ribbon-replay", [config, catalog]) => trend_ribbon_selection(config)
@@ -34,205 +28,69 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                 .and_then(|_| super::trend_ribbon_backtest::run(config, fixture))
         }
         ("native-trend-ribbon-kite-production", [config, broker]) => trend_ribbon_selection(config)
-            .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
+            .and_then(|_| super::trend_ribbon_live_runner::run_broker(config, broker)),
         ("native-trend-ribbon-production-check", [config, broker]) => {
             trend_ribbon_selection(config)
-                .and_then(|_| super::pivot_production::check(config, broker))
+                .and_then(|_| super::production::production_check(config, broker))
         }
-        ("native-pivot-sim", [config]) => pivot_selection(config)
-            .and_then(|_| super::supertrend_live_runner::run(config, 30, true)),
-        ("native-pivot-kite-mock", [config]) => pivot_selection(config).and_then(|_| {
-            super::supertrend_live_runner::run_with_execution(config, 30, true, true)
-        }),
-        ("native-pivot-session-paper", [config]) => {
-            pivot_selection(config).and_then(|_| super::supertrend_session::run(config))
-        }
-        ("native-pivot-kite-production", [config, broker]) => pivot_selection(config)
-            .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
-        ("native-pivot-production-check", [config, broker]) => {
-            super::pivot_production::check(config, broker)
-        }
-        ("native-supertrend-recovery-sim", [config]) => {
-            super::supertrend_live_runner::run_recovery_fixture(config)
-        }
-        ("native-supertrend-kite-production", [config, broker]) => supertrend_selection(config)
-            .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
-        ("native-supertrend-session-paper", [config]) => super::supertrend_session::run(config),
-        ("native-supertrend-kite-mock", [config]) => {
-            super::supertrend_live_runner::run_with_execution(config, 30, true, true)
-        }
-        ("native-supertrend-sim", []) => {
-            super::supertrend_live_runner::run("config/backup/production-supertrend.json", 30, true)
-        }
-        ("native-supertrend-sim", [config]) => super::supertrend_live_runner::run(config, 30, true),
-        ("native-supertrend-paper", [config, seconds]) => seconds
-            .parse::<u64>()
-            .map_err(anyhow::Error::from)
-            .and_then(|n| super::supertrend_live_runner::run(config, n, false)),
         ("native-contract-check", [config]) => super::production::contract_check(config),
         ("native-production-preflight", [config]) => super::production::preflight(config),
-        ("native-production-verify", [config, date, input, folder]) => {
-            super::production::verify(config, date, input, folder)
-        }
-        ("native-kite-custom-preflight", []) => custom_probe("config/kite-custom-sandbox.toml"),
-        ("native-kite-custom-preflight", [config]) => custom_probe(config),
-        ("native-kite-sandbox-preflight", []) => tokio::runtime::Runtime::new()
+        ("native-kite-margins-check", [config]) => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
-            .and_then(|r| r.block_on(kite_adapter::execution::native_client::sandbox::preflight()))
-            .map(|v| println!("{}", v)),
-        ("native-kite-sandbox", []) => super::runner::run_kite_sandbox(
-            "config/kite-sandbox.toml",
-            "config/strategy-crossover.toml",
-        ),
-        ("native-kite-sandbox", [settings, strategy]) => {
-            super::runner::run_kite_sandbox(settings, strategy)
-        }
-        ("native-kite-sandbox", [settings, strategy, webhooks]) => {
-            super::runner::run_kite_sandbox_with_webhooks(settings, strategy, webhooks)
-        }
+            .and_then(|runtime| {
+                runtime.block_on(kite_adapter::execution::native_client::margins::check(
+                    config,
+                ))
+            })
+            .map(|value| println!("{value}")),
         ("native-kite-review", [namespace]) => {
             kite_adapter::execution::native_client::recovery::review(namespace)
-                .map(|v| println!("{}", v))
+                .map(|value| println!("{value}"))
         }
-        ("native-kite-mock-release-reviewed", [namespace]) => (|| -> Result<()> {
-            let review = kite_adapter::execution::native_client::recovery::review(namespace)?;
-            anyhow::ensure!(
-                review["requires_review"] == false
-                    && review["unresolved"] == 0
-                    && review["journal_exposure"] == "0",
-                "MOCK namespace recovery review is not clean enough to release"
-            );
-            kite_adapter::execution::native_client::coordination::release_reviewed_mock(namespace)?;
-            let status = kite_adapter::execution::native_client::coordination::status("MOCK")?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event":"native_kite_mock_reviewed_release",
-                    "namespace":namespace,
-                    "account_status":status,
-                    "live_orders_enabled":false
-                })
-            );
-            Ok(())
-        })(),
-        ("native-full-audit", [catalog]) => super::catalog::audit(std::path::Path::new(catalog)),
         ("native-kite-status", [account]) => {
             kite_adapter::execution::native_client::coordination::status(account)
-                .map(|v| println!("{}", v))
+                .map(|value| println!("{value}"))
         }
-        ("native-kite-mock-short", []) => {
-            super::runner::run_kite_mock_short("config/strategy-crossover.toml")
-        }
-        ("native-kite-mock-short", [strategy]) => super::runner::run_kite_mock_short(strategy),
-        ("native-kite-mock", []) => super::runner::run_kite_mock("config/strategy-crossover.toml"),
-        ("native-kite-mock", [strategy]) => super::runner::run_kite_mock(strategy),
-        ("native-node-sim", []) => super::runner::run(None, "config/strategy-crossover.toml", 30),
-        ("native-node-sim", [strategy]) => super::runner::run(None, strategy, 30),
-        ("native-node-paper", []) => super::runner::run(
-            Some("config/crudeoil-september.toml"),
-            "config/strategy-crossover.toml",
-            30,
-        ),
-        ("native-node-paper", [instrument, strategy]) => {
-            super::runner::run(Some(instrument), strategy, 30)
-        }
-        ("native-node-paper", [instrument, strategy, flag, seconds]) if flag == "--seconds" => {
-            seconds
-                .parse::<u64>()
-                .map_err(anyhow::Error::from)
-                .and_then(|seconds| {
-                    anyhow::ensure!((1..=300).contains(&seconds), "Seconds must be 1..300");
-                    super::runner::run(Some(instrument), strategy, seconds)
-                })
-        }
-        ("native-vwap-compare-range", [start, end, path]) => {
-            super::vwap_compare::run_range(start, end, path)
-        }
-        ("native-vwap-compare", [date, path]) => super::vwap_compare::run(date, path),
-        ("native-vwap-session", [date, path, folder, variant]) => {
-            super::vwap_filters::Variant::parse(variant)
-                .and_then(|v| super::vwap_backtest::run_variant(date, path, folder, v))
-        }
-        ("native-vwap-backtest", [date]) => super::vwap_batch::run(date, None),
-        ("native-vwap-backtest", [date, path]) => super::vwap_batch::run(date, Some(path)),
-        ("native-vwap-session", [date, path, folder]) => {
-            super::vwap_backtest::run(date, path, folder)
-        }
-        ("native-supertrend-stop-compare", [start, end, path]) => {
-            super::supertrend_stop_batch::run(start, end, path)
-        }
-        ("native-supertrend-stop-session", [date, path, folder, key]) => {
-            super::supertrend_stop_backtest::run(date, path, folder, key)
-        }
-        ("native-supertrend-interval-compare", [start, end, path]) => {
-            super::supertrend_interval_batch::run(start, end, path)
-        }
-        ("native-supertrend-confirm-compare", [start, end, path]) => {
-            super::supertrend_batch::run(start, end, path)
-        }
-        ("native-supertrend-session", [date, path, folder, variant]) => {
-            super::supertrend_batch::session(date, path, folder, variant)
-        }
-        ("native-supertrend-backtest", [date]) => super::supertrend_backtest::run(date, None),
-        ("native-supertrend-backtest", [date, path]) => {
-            super::supertrend_backtest::run(date, Some(path))
-        }
-        ("native-backtest", []) => super::backtest::run("config/strategy-crossover.toml", None),
-        ("native-backtest", [strategy]) => super::backtest::run(strategy, None),
-        ("native-backtest", [strategy, catalog]) => super::backtest::run(strategy, Some(catalog)),
-        ("native-emulator-sim", []) => super::components::run(false),
-        ("native-twap-sim", []) => super::components::run(true),
+        ("native-kite-mock-release-reviewed", [namespace]) => release_reviewed_mock(namespace),
+        ("native-full-audit", [catalog]) => super::catalog::audit(std::path::Path::new(catalog)),
         ("native-recover", [namespace]) => super::recovery::run(namespace),
-        ("native-node-live", _) => Err(anyhow::anyhow!(
-            "Real Kite broker orders remain disabled; paper execution remains enforced. Use native-kite-mock for adapter integration tests"
-        )),
         _ => usage(),
     })
 }
+
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-trend-ribbon-record config.json SECONDS | native-trend-ribbon-replay config.json CATALOG | native-trend-ribbon-backtest-fixture config.json FIXTURE | native-pivot-kite-production config.json broker.json | native-pivot-production-check config.json broker.json | native-pivot-sim config.json | native-pivot-kite-mock config.json | native-pivot-session-paper config.json | native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-trend-ribbon-sim CONFIG | native-trend-ribbon-paper CONFIG SECONDS | native-trend-ribbon-kite-mock CONFIG | native-trend-ribbon-replay CONFIG CATALOG | native-trend-ribbon-record CONFIG SECONDS | native-trend-ribbon-backtest-fixture CONFIG FIXTURE | native-trend-ribbon-production-check CONFIG BROKER | native-trend-ribbon-kite-production CONFIG BROKER | native-contract-check CONFIG | native-production-preflight CONFIG | native-kite-margins-check CONFIG | native-full-audit CATALOG | native-kite-review NAMESPACE | native-kite-status ACCOUNT | native-kite-mock-release-reviewed NAMESPACE | native-recover NAMESPACE"
     )
 }
 
-fn custom_probe(path: &str) -> Result<()> {
-    let text = std::fs::read_to_string(path)?;
-    let result = tokio::runtime::Runtime::new()?
-        .block_on(kite_adapter::execution::native_client::custom_sandbox::probe(&text))?;
-    println!("{}", result);
-    anyhow::ensure!(
-        result["read_shapes_compatible"] == true,
-        "Custom sandbox is incompatible with native execution; see checks above"
-    );
-    Ok(())
-}
-
-fn pivot_selection(path: &str) -> Result<()> {
-    anyhow::ensure!(
-        super::production::Selection::load(path)?
-            .pivot_point
-            .is_some(),
-        "This command requires a pivot_point_supertrend JSON selection"
-    );
-    Ok(())
-}
-
-fn supertrend_selection(path: &str) -> Result<()> {
-    anyhow::ensure!(
-        super::production::Selection::load(path)?
-            .pivot_point
-            .is_none(),
-        "Pivot Point production requires native-pivot-kite-production; the Supertrend launcher keeps its original strategy"
-    );
-    Ok(())
-}
-
 fn trend_ribbon_selection(path: &str) -> Result<()> {
+    let selection = super::production::Selection::load(path)?;
     anyhow::ensure!(
-        super::production::Selection::load(path)?
-            .trend_ribbon
-            .is_some(),
-        "This command requires a trend_ribbon_boswaves JSON selection"
+        selection.strategy == "trend_ribbon_boswaves",
+        "This command requires the Trend Ribbon v2.10 selection"
+    );
+    Ok(())
+}
+
+fn release_reviewed_mock(namespace: &str) -> Result<()> {
+    let review = kite_adapter::execution::native_client::recovery::review(namespace)?;
+    anyhow::ensure!(
+        review["requires_review"] == false
+            && review["unresolved"] == 0
+            && review["journal_exposure"] == "0",
+        "MOCK namespace recovery review is not clean enough to release"
+    );
+    kite_adapter::execution::native_client::coordination::release_reviewed_mock(namespace)?;
+    let status = kite_adapter::execution::native_client::coordination::status("MOCK")?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event":"native_kite_mock_reviewed_release",
+            "namespace":namespace,
+            "account_status":status,
+            "live_orders_enabled":false
+        })
     );
     Ok(())
 }

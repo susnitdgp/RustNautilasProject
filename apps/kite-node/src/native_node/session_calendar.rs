@@ -15,7 +15,7 @@ impl Hours {
         ensure!(
             self.open < self.close
                 && (self.close - self.open).num_seconds()
-                    > super::supertrend_session::EXIT_BUFFER_SECONDS as i64
+                    > super::execution_session::EXIT_BUFFER_SECONDS as i64
                 && [self.open, self.close]
                     .iter()
                     .all(|t| t.second() == 0 && t.nanosecond() == 0 && t.minute() % 5 == 0),

@@ -6,14 +6,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-kite-strategy = { path = "../../crates/kite-strategy" }
-kite-execution = { path = "../../crates/kite-execution" }
 anyhow.workspace = true
 nautilus-common.workspace = true
 nautilus-core.workspace = true
 nautilus-data.workspace = true
 nautilus-model.workspace = true
-kite-recorder = { path = "../../crates/kite-recorder" }
 chrono.workspace = true
 kite-adapter = { path = "../../crates/kite-adapter" }
 serde_json.workspace = true
@@ -21,22 +18,13 @@ reqwest.workspace = true
 zeroize.workspace = true
 tokio.workspace = true
 
-kite-paper = { path = "../../crates/kite-paper" }
 kite-journal = { path = "../../crates/kite-journal" }
-nautilus-execution.workspace = true
 
 nautilus-trading.workspace = true
-nautilus-risk.workspace = true
-nautilus-portfolio.workspace = true
-rust_decimal.workspace = true
 
 nautilus-live.workspace = true
 async-trait.workspace = true
 
-nautilus-backtest.workspace = true
-nautilus-system.workspace = true
-nautilus-indicators.workspace = true
-nautilus-analysis.workspace = true
 nautilus-persistence.workspace = true
 nautilus-infrastructure.workspace = true
 
@@ -46,10 +34,7 @@ serde.workspace = true
 redis.workspace = true
 indexmap = "2"
 log = "0.4"
-ustr = "1"
 
-ahash = "0.8"
-bytes = "1"
 
 arrow = { version = "59", default-features = false }
 

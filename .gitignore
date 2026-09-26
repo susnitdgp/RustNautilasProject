@@ -31,3 +31,7 @@ target
 
 # Backtest reports are retained locally, not committed
 /backtest_results/
+
+# Local Kite operational settings
+/config/kite-production.json
+/config/kite-sandbox.toml

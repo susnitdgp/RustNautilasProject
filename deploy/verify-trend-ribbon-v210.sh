@@ -73,7 +73,7 @@ for line in lines:
         value=json.loads(line)
     except json.JSONDecodeError:
         continue
-    if value.get("event")=="supertrend_live_complete":
+    if value.get("event")=="trend_ribbon_live_complete":
         complete=value
 assert complete is not None, "sandbox LiveNode completion record missing"
 assert complete["status"]=="Clean"

@@ -329,10 +329,7 @@ fn boundary_recovery(
 
 pub fn run(config: &str, catalog: &str) -> Result<()> {
     let selection = super::production::Selection::load(config)?;
-    let settings = selection
-        .trend_ribbon
-        .as_ref()
-        .context("replay requires a trend_ribbon_boswaves selection")?;
+    let settings = &selection.trend_ribbon;
     let ticks = super::catalog::read_full(Path::new(catalog))?;
     let (token, min, max, fresh) = validate_ticks(&ticks)?;
     let bar_ns = selection.bar_ns();

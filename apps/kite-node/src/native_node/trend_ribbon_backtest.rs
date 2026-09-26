@@ -438,10 +438,7 @@ pub fn run(config: &str, fixture: &str) -> Result<()> {
         candles: Vec<Candle>,
     }
     let selection = super::production::Selection::load(config)?;
-    let settings = selection
-        .trend_ribbon
-        .clone()
-        .context("historical replay requires Trend Ribbon selection")?;
+    let settings = selection.trend_ribbon.clone();
     let fixture: Fixture = serde_json::from_str(&std::fs::read_to_string(fixture)?)?;
     let report = simulate(
         settings,

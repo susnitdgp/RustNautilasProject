@@ -38,11 +38,6 @@ pub fn run(config: &str, seconds: u64) -> Result<()> {
         "Recorder duration must be 60..86400 seconds"
     );
     let selection = super::production::Selection::load(config)?;
-    ensure!(
-        selection.trend_ribbon.is_some(),
-        "Recorder requires a Trend Ribbon selection"
-    );
-
     let now = chrono::Utc::now();
     let date = now
         .with_timezone(&chrono::FixedOffset::east_opt(19_800).expect("IST"))
@@ -173,9 +168,9 @@ mod tests {
 
     #[test]
     fn complete_fresh_snapshot_becomes_full_tick_without_execution() {
-        let (instrument, ts) = crate::paper_flow::simulation::fixture().unwrap();
+        let (instrument, ts) = super::super::synthetic::fixture().unwrap();
         let snapshot =
-            crate::paper_flow::simulation::full_snapshot_for(144_870_151, 6123, ts.as_u64(), 1);
+            super::super::synthetic::full_snapshot_for(144_870_151, 6123, ts.as_u64(), 1);
         let tick = collect_snapshot(snapshot.clone(), &instrument)
             .unwrap()
             .expect("complete tick");
@@ -186,9 +181,9 @@ mod tests {
 
     #[test]
     fn stale_snapshot_is_not_recorded() {
-        let (instrument, ts) = crate::paper_flow::simulation::fixture().unwrap();
+        let (instrument, ts) = super::super::synthetic::fixture().unwrap();
         let mut snapshot =
-            crate::paper_flow::simulation::full_snapshot_for(144_870_151, 6123, ts.as_u64(), 1);
+            super::super::synthetic::full_snapshot_for(144_870_151, 6123, ts.as_u64(), 1);
         snapshot.source_fresh = false;
         assert!(collect_snapshot(snapshot, &instrument).unwrap().is_none());
     }

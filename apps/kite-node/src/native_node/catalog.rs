@@ -15,25 +15,6 @@ pub fn write(path: &Path, instrument: InstrumentAny, quotes: &[QuoteTick]) -> Re
     catalog.write_to_parquet(quotes, None, None, None)?;
     Ok(())
 }
-pub fn fixture_quotes() -> Result<Vec<QuoteTick>> {
-    let (instrument, ts) = crate::paper_flow::simulation::fixture()?;
-    [
-        6008, 6006, 6004, 6002, 6000, 6002, 6004, 6006, 6005, 6005, 6003, 6003, 6001, 5999, 6000,
-    ]
-    .iter()
-    .enumerate()
-    .map(|(i, p)| {
-        let snapshot = crate::paper_flow::simulation::full_snapshot(
-            *p,
-            ts.as_u64() + (i as u64 + 1) * 1_000_000_000,
-            1,
-        );
-        kite_adapter::mapping::quotes::map(&snapshot, &instrument)?
-            .ok_or_else(|| anyhow::anyhow!("Fixture quote unavailable"))
-    })
-    .collect()
-}
-
 pub fn write_full(
     path: &Path,
     instrument: InstrumentAny,
@@ -121,12 +102,12 @@ mod tests {
     fn native_catalog_preserves_complete_packets_and_quote_history() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("catalog");
-        let (instrument, ts) = crate::paper_flow::simulation::fixture()?;
+        let (instrument, ts) = super::super::synthetic::fixture()?;
         let ticks = [6000, 6002, 6004]
             .into_iter()
             .enumerate()
             .map(|(i, p)| {
-                let mut snapshot = crate::paper_flow::simulation::full_snapshot(
+                let mut snapshot = super::super::synthetic::full_snapshot(
                     p,
                     ts.as_u64() + (i as u64 + 1) * 1_000_000_000,
                     1,

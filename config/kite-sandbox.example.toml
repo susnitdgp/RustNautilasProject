@@ -1,0 +1,5 @@
+# Official Kite sandbox settings template.
+expected_user_id = "REPLACE_WITH_SANDBOX_USER_ID"
+product = "NRML"
+instrument_token = 145894407
+seconds = 60

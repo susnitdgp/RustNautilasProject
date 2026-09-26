@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use kite_adapter::{config::Config, preflight};
 
-const CONFIG: &str = include_str!("../../../config/crudeoil-september.toml");
+const CONFIG: &str = include_str!("fixtures/crudeoil-september.toml");
 const HEADER: &str = "instrument_token,tradingsymbol,name,expiry,tick_size,lot_size,instrument_type,segment,exchange\n";
 const ROW: &str = "144870151,CRUDEOIL26SEPFUT,CRUDEOIL,2026-09-21,1,1,FUT,MCX-FUT,MCX\n";
 

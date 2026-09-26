@@ -181,7 +181,7 @@ impl Client {
                     tokio::time::sleep(Duration::from_millis(config.synthetic_tick_ms)).await;
                     emit(
                         &tx,
-                        crate::paper_flow::simulation::full_snapshot(
+                        super::synthetic::full_snapshot(
                             if config.short_fixture { 12000 - p } else { p },
                             now(),
                             1,

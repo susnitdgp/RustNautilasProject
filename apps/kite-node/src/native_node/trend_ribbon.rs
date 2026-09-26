@@ -1,5 +1,5 @@
 // Pine-compatible Trend Ribbon signal engine: ALMA + deviation bands + ATR-normalized slope.
-use super::{pivot_session::BAR_NS, session_calendar::Calendar};
+use super::{session_calendar::Calendar, strategy_session::BAR_NS};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -15,7 +15,7 @@ pub struct Settings {
     pub slope_length: usize,
     pub minimum_slope: f64,
     pub atr_length: usize,
-    pub session: super::pivot_session::Session,
+    pub session: super::strategy_session::Session,
     #[serde(default)]
     pub realtime: super::trend_ribbon_realtime::Settings,
 }
@@ -192,7 +192,7 @@ impl TrendRibbon {
         );
         let open_ns = bar_close_ns - self.bar_ns;
         let inside = self.in_session(open_ns)?;
-        let day = super::pivot_session::date(open_ns);
+        let day = super::strategy_session::date(open_ns);
         let new_session = inside && self.session_date != Some(day);
         if self.settings.session.reset_daily && new_session && self.session_date.is_some() {
             self.trend = 0;

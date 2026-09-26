@@ -8,7 +8,7 @@ use kite_adapter::{
 use nautilus_model::instruments::FuturesContract;
 
 fn instrument() -> FuturesContract {
-    let config = Config::parse(include_str!("../../../config/crudeoil-september.toml")).unwrap();
+    let config = Config::parse(include_str!("fixtures/crudeoil-september.toml")).unwrap();
     let csv = "instrument_token,tradingsymbol,name,expiry,tick_size,lot_size,instrument_type,segment,exchange\n144870151,CRUDEOIL26SEPFUT,CRUDEOIL,2026-09-21,1,1,FUT,MCX-FUT,MCX\n";
     let report = preflight::run(
         &config,

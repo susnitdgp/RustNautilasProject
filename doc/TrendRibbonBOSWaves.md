@@ -5,7 +5,7 @@ This module ports the supplied TradingView Pine v6 Trend Ribbon signal logic int
 
 ## JSON-selected candle interval
 
-`config/production-trend-ribbon.json` is the interval source of truth. Supported Trend Ribbon values are `3minute` and `5minute`; the current v2.10 candidate selects `5minute`. The selection drives the Kite historical endpoint, candle alignment, close timestamps, Nautilus external bar type, freshness checks, recovery replay, report metadata and terminal countdown. Pivot Point and the original Supertrend/MACD/VWAP selection remain restricted to five-minute candles.
+`config/production-trend-ribbon.json` is the interval source of truth. The current v2.10 candidate selects `5minute`. The selection drives the Kite historical endpoint, candle alignment, close timestamps, Nautilus external bar type, freshness checks, recovery replay, report metadata and terminal countdown.
 
 Changing the timeframe changes the economic meaning of bar-count parameters. On three-minute candles, ALMA(34) spans 102 minutes and the three-bar slope comparison spans nine minutes; on five-minute candles they span 170 and fifteen minutes respectively. Parameters are not automatically rescaled.
 
@@ -39,17 +39,12 @@ Feed recovery rebuilds the indicator from validated completed bars. Rebuilds nev
 
 ## Files and commands
 
-The archived paper/simulation selection remains five-minute: `config/backup/trend-ribbon-boswaves.json`.
-
-Candidate selection: `config/production-trend-ribbon.json`; its `interval` field currently selects `5minute` and `live_orders_enabled` is intentionally `false` while v2.10 is qualified.
+Candidate selection: `config/production-trend-ribbon.json`; its `interval` field selects `5minute` and `live_orders_enabled` is intentionally `false` while v2.10 is qualified.
 
 Read-only full-tick capture for realtime parity work uses no strategy or execution client. On an open market session, record for an explicit duration with:
 `./deploy/record-trend-ribbon-ticks.sh 3600`
 The command writes a new `data/native-catalog/<UUID>/` with complete `KiteFullTick` packets and verifies the Parquet round-trip. It requires market-data credentials but cannot submit orders. Replay a saved capture with:
 `./target/debug/kite-node native-trend-ribbon-replay config/production-trend-ribbon.json data/native-catalog/<UUID>`
-
-Offline simulation:
-`./target/debug/kite-node native-trend-ribbon-sim config/backup/trend-ribbon-boswaves.json`
 
 Recorded full-tick codec/forming-candle replay (never accesses the broker):
 `./target/debug/kite-node native-trend-ribbon-replay config/production-trend-ribbon.json data/native-catalog/<RUN_UUID>`
@@ -76,6 +71,4 @@ The historical v2.10 simulator now mirrors confirmed-bar Trend Ribbon entries/re
 
 Exact TradingView realtime parity still requires an actual full-session CRUDEOIL tick recording for the current contract and side-by-side Pine/Rust event timestamps. The short native catalogs in this repository validate decoding and forming-candle mechanics but use the older token and are not treated as October parity evidence. Real broker fill latency/slippage and failure-mode qualification also remain outstanding.
 
-## Completed-candle latency
-
-See [CompletedCandleLatency.md](CompletedCandleLatency.md) for boundary-aligned polling, retained completion guards, price-versus-volume correction handling and timing diagnostics. These changes require explicit activation of the candidate; they do not change a running process.
+Completed-bar publication remains boundary-aligned and guarded against incomplete, revised or gapped history before strategy state is rebuilt.

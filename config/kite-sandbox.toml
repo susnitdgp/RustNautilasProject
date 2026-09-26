@@ -1,6 +1,0 @@
-# Official Kite sandbox. Never loads susanta:* credentials or uses production order URLs.
-# Obtain user_id with native-kite-sandbox-preflight after refreshing sandbox credentials.
-expected_user_id = "REPLACE_WITH_SANDBOX_USER_ID"
-product = "NRML"
-instrument_token = 144870151
-seconds = 60
