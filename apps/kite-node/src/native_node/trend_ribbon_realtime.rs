@@ -16,10 +16,9 @@ pub struct Settings {
     pub fast_hold_seconds: u64,
     pub fast_body_atr_min: f64,
     pub fast_range_atr_min: f64,
-    pub trend_weakness_exit_enabled: bool,
-    pub trend_weakness_hold_seconds: u64,
-    pub trend_weakness_atr_offset: f64,
-    pub trend_weakness_slope_factor: f64,
+    pub chandelier_exit_enabled: bool,
+    pub chandelier_atr_multiplier: f64,
+    pub chandelier_activation_atr: f64,
     pub wt_exit_enabled: bool,
     pub wt_channel_length: usize,
     pub wt_average_length: usize,
@@ -42,10 +41,9 @@ impl Default for Settings {
             fast_hold_seconds: 2,
             fast_body_atr_min: 0.50,
             fast_range_atr_min: 0.75,
-            trend_weakness_exit_enabled: false,
-            trend_weakness_hold_seconds: 2,
-            trend_weakness_atr_offset: 0.10,
-            trend_weakness_slope_factor: 1.00,
+            chandelier_exit_enabled: false,
+            chandelier_atr_multiplier: 3.0,
+            chandelier_activation_atr: 1.50,
             wt_exit_enabled: true,
             wt_channel_length: 10,
             wt_average_length: 21,
@@ -80,18 +78,14 @@ impl Settings {
             "FAST range/ATR must be positive"
         );
         ensure!(
-            (1..=10).contains(&self.trend_weakness_hold_seconds),
-            "trend weakness hold seconds must be 1..10"
+            self.chandelier_atr_multiplier.is_finite()
+                && (0.5..=10.0).contains(&self.chandelier_atr_multiplier),
+            "Chandelier ATR multiplier must be 0.5..10"
         );
         ensure!(
-            self.trend_weakness_atr_offset.is_finite()
-                && (0.0..=1.0).contains(&self.trend_weakness_atr_offset),
-            "trend weakness ATR offset must be 0..1"
-        );
-        ensure!(
-            self.trend_weakness_slope_factor.is_finite()
-                && (0.0..=1.0).contains(&self.trend_weakness_slope_factor),
-            "trend weakness slope factor must be 0..1"
+            self.chandelier_activation_atr.is_finite()
+                && (0.0..=10.0).contains(&self.chandelier_activation_atr),
+            "Chandelier activation ATR must be 0..10"
         );
         ensure!(
             self.wt_channel_length > 0 && self.wt_average_length > 0,
@@ -128,8 +122,8 @@ impl Settings {
 pub enum EventKind {
     WtLongExit,
     WtShortExit,
-    TrendWeaknessLongExit,
-    TrendWeaknessShortExit,
+    ChandelierLongExit,
+    ChandelierShortExit,
     FastBuy,
     FastShort,
     PreCloseBuy,
@@ -148,8 +142,8 @@ impl Event {
         match self.kind {
             EventKind::WtLongExit => "wt_long_exit",
             EventKind::WtShortExit => "wt_short_exit",
-            EventKind::TrendWeaknessLongExit => "trend_weakness_long_exit",
-            EventKind::TrendWeaknessShortExit => "trend_weakness_short_exit",
+            EventKind::ChandelierLongExit => "chandelier_long_exit",
+            EventKind::ChandelierShortExit => "chandelier_short_exit",
             EventKind::FastBuy => "fast_buy",
             EventKind::FastShort => "fast_short",
             EventKind::PreCloseBuy => "preclose_buy",
@@ -372,13 +366,16 @@ pub struct RealtimeRibbon {
     event_bar_open: Option<u64>,
     bull_setup_start_ns: Option<u64>,
     bear_setup_start_ns: Option<u64>,
-    long_weakness_start_ns: Option<u64>,
-    short_weakness_start_ns: Option<u64>,
     wt_long_armed: bool,
     wt_short_armed: bool,
     wt_long_peak: Option<f64>,
     wt_short_trough: Option<f64>,
     prev_wt1: Option<f64>,
+    chandelier_position: i8,
+    chandelier_entry: Option<f64>,
+    chandelier_peak: Option<f64>,
+    chandelier_trough: Option<f64>,
+    chandelier_active: bool,
     exit_flat_lock: bool,
     exited_trend: i8,
 }
@@ -413,13 +410,16 @@ impl RealtimeRibbon {
             event_bar_open: None,
             bull_setup_start_ns: None,
             bear_setup_start_ns: None,
-            long_weakness_start_ns: None,
-            short_weakness_start_ns: None,
             wt_long_armed: false,
             wt_short_armed: false,
             wt_long_peak: None,
             wt_short_trough: None,
             prev_wt1: None,
+            chandelier_position: 0,
+            chandelier_entry: None,
+            chandelier_peak: None,
+            chandelier_trough: None,
+            chandelier_active: false,
             exit_flat_lock: false,
             exited_trend: 0,
         })
@@ -604,16 +604,37 @@ impl RealtimeRibbon {
         Ok(true)
     }
 
+    pub fn on_position_state(&mut self, position: i8, entry_price: Option<f64>) {
+        if position != self.chandelier_position {
+            self.chandelier_position = position;
+            self.chandelier_entry = (position != 0).then_some(entry_price).flatten();
+            self.chandelier_peak = (position == 1).then_some(entry_price).flatten();
+            self.chandelier_trough = (position == -1).then_some(entry_price).flatten();
+            self.chandelier_active = false;
+        } else if position != 0 && self.chandelier_entry.is_none() {
+            self.chandelier_entry = entry_price;
+            if position == 1 && self.chandelier_peak.is_none() {
+                self.chandelier_peak = entry_price;
+            }
+            if position == -1 && self.chandelier_trough.is_none() {
+                self.chandelier_trough = entry_price;
+            }
+        }
+    }
+
     pub fn on_session_end(&mut self) {
         self.bull_setup_start_ns = None;
         self.bear_setup_start_ns = None;
-        self.long_weakness_start_ns = None;
-        self.short_weakness_start_ns = None;
         self.wt_long_armed = false;
         self.wt_short_armed = false;
         self.wt_long_peak = None;
         self.wt_short_trough = None;
         self.prev_wt1 = None;
+        self.chandelier_position = 0;
+        self.chandelier_entry = None;
+        self.chandelier_peak = None;
+        self.chandelier_trough = None;
+        self.chandelier_active = false;
         self.exit_flat_lock = false;
         self.exited_trend = 0;
         self.event_bar_open = None;
@@ -642,6 +663,29 @@ impl RealtimeRibbon {
             self.prev_wt1 = None;
             return Ok((Some(snapshot), None));
         }
+        if position != self.chandelier_position {
+            self.chandelier_position = position;
+            self.chandelier_entry = (position != 0).then_some(snapshot.close);
+            self.chandelier_peak = (position == 1).then_some(snapshot.close);
+            self.chandelier_trough = (position == -1).then_some(snapshot.close);
+            self.chandelier_active = false;
+        } else if position == 1 {
+            self.chandelier_peak = Some(
+                self.chandelier_peak
+                    .map_or(snapshot.close, |peak| peak.max(snapshot.close)),
+            );
+        } else if position == -1 {
+            self.chandelier_trough = Some(
+                self.chandelier_trough
+                    .map_or(snapshot.close, |trough| trough.min(snapshot.close)),
+            );
+        } else {
+            self.chandelier_entry = None;
+            self.chandelier_peak = None;
+            self.chandelier_trough = None;
+            self.chandelier_active = false;
+        }
+
         if self.event_bar_open == Some(snapshot.bar_open_ns) || !allow_event {
             self.prev_wt1 = Some(snapshot.wt1);
             return Ok((Some(snapshot), None));
@@ -687,35 +731,42 @@ impl RealtimeRibbon {
         let short_pullback = self
             .wt_short_trough
             .map_or(0.0, |trough| (snapshot.wt1 - trough).max(0.0));
-
-        let weakness_offset = snapshot.atr * self.settings.trend_weakness_atr_offset;
-        let weakness_slope = self.trend.minimum_slope * self.settings.trend_weakness_slope_factor;
-        let long_weakness = self.settings.trend_weakness_exit_enabled
+        if self.settings.chandelier_exit_enabled
+            && !self.chandelier_active
+            && !self.wt_long_armed
+            && !self.wt_short_armed
+        {
+            let activation = snapshot.atr * self.settings.chandelier_activation_atr;
+            self.chandelier_active = match position {
+                1 => self
+                    .chandelier_entry
+                    .zip(self.chandelier_peak)
+                    .is_some_and(|(entry, peak)| peak - entry >= activation),
+                -1 => self
+                    .chandelier_entry
+                    .zip(self.chandelier_trough)
+                    .is_some_and(|(entry, trough)| entry - trough >= activation),
+                _ => false,
+            };
+        }
+        let chandelier_long_stop = self.chandelier_peak.map(|peak| {
+            let raw = peak - snapshot.atr * self.settings.chandelier_atr_multiplier;
+            self.chandelier_entry.map_or(raw, |entry| raw.max(entry))
+        });
+        let chandelier_short_stop = self.chandelier_trough.map(|trough| {
+            let raw = trough + snapshot.atr * self.settings.chandelier_atr_multiplier;
+            self.chandelier_entry.map_or(raw, |entry| raw.min(entry))
+        });
+        let chandelier_long_exit = self.settings.chandelier_exit_enabled
+            && self.chandelier_active
             && position == 1
-            && snapshot.close < snapshot.alma - weakness_offset
-            && snapshot.slope_score <= -weakness_slope;
-        let short_weakness = self.settings.trend_weakness_exit_enabled
+            && !self.wt_long_armed
+            && chandelier_long_stop.is_some_and(|stop| snapshot.close <= stop);
+        let chandelier_short_exit = self.settings.chandelier_exit_enabled
+            && self.chandelier_active
             && position == -1
-            && snapshot.close > snapshot.alma + weakness_offset
-            && snapshot.slope_score >= weakness_slope;
-
-        if long_weakness {
-            self.long_weakness_start_ns.get_or_insert(now_ns);
-        } else {
-            self.long_weakness_start_ns = None;
-        }
-        if short_weakness {
-            self.short_weakness_start_ns.get_or_insert(now_ns);
-        } else {
-            self.short_weakness_start_ns = None;
-        }
-        let weakness_held_ns = self.settings.trend_weakness_hold_seconds * 1_000_000_000;
-        let long_weakness_held = self
-            .long_weakness_start_ns
-            .is_some_and(|start| now_ns.saturating_sub(start) >= weakness_held_ns);
-        let short_weakness_held = self
-            .short_weakness_start_ns
-            .is_some_and(|start| now_ns.saturating_sub(start) >= weakness_held_ns);
+            && !self.wt_short_armed
+            && chandelier_short_stop.is_some_and(|stop| snapshot.close >= stop);
 
         if position == -1 && snapshot.bull_setup {
             self.bull_setup_start_ns.get_or_insert(now_ns);
@@ -761,10 +812,10 @@ impl RealtimeRibbon {
             && slope_up
         {
             Some(EventKind::WtShortExit)
-        } else if long_weakness_held {
-            Some(EventKind::TrendWeaknessLongExit)
-        } else if short_weakness_held {
-            Some(EventKind::TrendWeaknessShortExit)
+        } else if chandelier_long_exit {
+            Some(EventKind::ChandelierLongExit)
+        } else if chandelier_short_exit {
+            Some(EventKind::ChandelierShortExit)
         } else if self.settings.fast_reversal_enabled && position == -1 && bull_held && strong_bull
         {
             Some(EventKind::FastBuy)
@@ -786,8 +837,8 @@ impl RealtimeRibbon {
             let target = match kind {
                 EventKind::WtLongExit
                 | EventKind::WtShortExit
-                | EventKind::TrendWeaknessLongExit
-                | EventKind::TrendWeaknessShortExit => 0,
+                | EventKind::ChandelierLongExit
+                | EventKind::ChandelierShortExit => 0,
                 EventKind::FastBuy | EventKind::PreCloseBuy => 1,
                 EventKind::FastShort | EventKind::PreCloseShort => -1,
             };
@@ -795,8 +846,8 @@ impl RealtimeRibbon {
                 kind,
                 EventKind::WtLongExit
                     | EventKind::WtShortExit
-                    | EventKind::TrendWeaknessLongExit
-                    | EventKind::TrendWeaknessShortExit
+                    | EventKind::ChandelierLongExit
+                    | EventKind::ChandelierShortExit
             ) {
                 self.exit_flat_lock = true;
                 self.exited_trend = position;
@@ -970,13 +1021,13 @@ mod tests {
     }
 
     #[test]
-    fn trend_weakness_exit_requires_hold_and_goes_flat() {
+    fn chandelier_exits_unarmed_wt_trade_and_goes_flat() {
         let mut settings = trend_settings();
-        settings.realtime.wt_exit_enabled = false;
         settings.realtime.fast_reversal_enabled = false;
-        settings.realtime.trend_weakness_exit_enabled = true;
-        settings.realtime.trend_weakness_hold_seconds = 2;
-        settings.realtime.trend_weakness_atr_offset = 0.0;
+        settings.realtime.wt_exit_enabled = false;
+        settings.realtime.chandelier_exit_enabled = true;
+        settings.realtime.chandelier_atr_multiplier = 1.0;
+        settings.realtime.chandelier_activation_atr = 0.0;
         let (mut live, step) = warmed_live(settings);
         let open = 60 * step;
         live.on_tick(
@@ -989,9 +1040,10 @@ mod tests {
         )
         .unwrap();
         live.current_trusted = true;
+        live.on_position_state(1, Some(160.0));
         let (_, first) = live
             .on_tick(
-                130.0,
+                170.0,
                 open + 1_100_000_000,
                 open + 1_100_000_000,
                 1,
@@ -1002,19 +1054,55 @@ mod tests {
         assert!(first.is_none());
         let (_, event) = live
             .on_tick(
-                129.0,
-                open + 3_200_000_000,
-                open + 3_200_000_000,
+                160.0,
+                open + 2_100_000_000,
+                open + 2_100_000_000,
                 1,
                 true,
                 true,
             )
             .unwrap();
-        let event = event.expect("TREND WEAKNESS LONG EXIT");
-        assert_eq!(event.kind, EventKind::TrendWeaknessLongExit);
+        let event = event.expect("CHANDELIER LONG EXIT");
+        assert_eq!(event.kind, EventKind::ChandelierLongExit);
         assert_eq!(event.target, 0);
         assert!(live.exit_flat_lock);
         assert_eq!(live.exited_trend, 1);
+    }
+
+    #[test]
+    fn wt_arm_takes_ownership_from_chandelier() {
+        let mut settings = trend_settings();
+        settings.realtime.fast_reversal_enabled = false;
+        settings.realtime.chandelier_exit_enabled = true;
+        settings.realtime.chandelier_atr_multiplier = 0.5;
+        settings.realtime.chandelier_activation_atr = 0.0;
+        settings.realtime.dynamic_wt_arm = false;
+        settings.realtime.wt_long_arm = 1.0;
+        let (mut live, step) = warmed_live(settings);
+        let open = 60 * step;
+        live.on_tick(
+            200.0,
+            open + 1_000_000_000,
+            open + 1_000_000_000,
+            1,
+            true,
+            false,
+        )
+        .unwrap();
+        live.current_trusted = true;
+        let (_, event) = live
+            .on_tick(
+                200.0,
+                open + 1_100_000_000,
+                open + 1_100_000_000,
+                1,
+                true,
+                true,
+            )
+            .unwrap();
+        assert!(event.is_none());
+        assert!(live.wt_long_armed);
+        assert_eq!(live.chandelier_peak, Some(200.0));
     }
 
     #[test]
@@ -1123,7 +1211,7 @@ mod tests {
     }
 
     #[test]
-    fn leaving_session_clears_wt_same_trend_lock() {
+    fn leaving_session_clears_exit_same_trend_lock() {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();

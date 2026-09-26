@@ -185,6 +185,108 @@ impl HistoricalWt {
             false
         }
     }
+
+    fn armed(&self, position: i8) -> bool {
+        if position > 0 {
+            self.long_armed
+        } else if position < 0 {
+            self.short_armed
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct HistoricalChandelier {
+    side: i8,
+    entry: Option<f64>,
+    peak: Option<f64>,
+    trough: Option<f64>,
+    active: bool,
+}
+
+impl HistoricalChandelier {
+    fn update(
+        &mut self,
+        side: i8,
+        entry: Option<f64>,
+        candle: &Candle,
+        atr: Option<f64>,
+        activation_atr: f64,
+        wt_armed: bool,
+    ) {
+        let high = candle.high;
+        let low = candle.low;
+        if side != self.side {
+            self.side = side;
+            self.entry = (side != 0).then_some(entry.unwrap_or((high + low) / 2.0));
+            self.peak = (side > 0).then_some(self.entry.unwrap_or(high));
+            self.trough = (side < 0).then_some(self.entry.unwrap_or(low));
+            self.active = false;
+        }
+        if side > 0 {
+            self.peak = Some(self.peak.map_or(high, |peak| peak.max(high)));
+            self.trough = None;
+        } else if side < 0 {
+            self.trough = Some(self.trough.map_or(low, |trough| trough.min(low)));
+            self.peak = None;
+        } else {
+            self.entry = None;
+            self.peak = None;
+            self.trough = None;
+            self.active = false;
+        }
+
+        if !self.active
+            && !wt_armed
+            && let Some(atr) = atr
+        {
+            let activation = atr * activation_atr;
+            self.active = match side {
+                1 => self
+                    .entry
+                    .zip(self.peak)
+                    .is_some_and(|(entry, peak)| peak - entry >= activation),
+                -1 => self
+                    .entry
+                    .zip(self.trough)
+                    .is_some_and(|(entry, trough)| entry - trough >= activation),
+                _ => false,
+            };
+        }
+    }
+
+    fn exit(
+        &self,
+        side: i8,
+        close: f64,
+        atr: Option<f64>,
+        multiplier: f64,
+        wt_armed: bool,
+    ) -> bool {
+        if wt_armed || !self.active {
+            return false;
+        }
+        let Some(atr) = atr else {
+            return false;
+        };
+        if side > 0 {
+            self.peak.is_some_and(|peak| {
+                let raw = peak - atr * multiplier;
+                let stop = self.entry.map_or(raw, |entry| raw.max(entry));
+                close <= stop
+            })
+        } else if side < 0 {
+            self.trough.is_some_and(|trough| {
+                let raw = trough + atr * multiplier;
+                let stop = self.entry.map_or(raw, |entry| raw.min(entry));
+                close >= stop
+            })
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -215,7 +317,7 @@ pub struct Report {
     pub open_position: i8,
     pub open_entry_price: Option<f64>,
     pub historical_wt_exit_enabled: bool,
-    pub historical_weakness_exit_enabled: bool,
+    pub historical_chandelier_exit_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -320,6 +422,7 @@ pub fn simulate(
     let mut ribbon =
         super::trend_ribbon::TrendRibbon::new_for_interval(settings.clone(), calendar, bar_ns)?;
     let mut wt = HistoricalWt::new(&settings.realtime);
+    let mut chandelier = HistoricalChandelier::default();
     let mut position = Position::new();
     let mut events = Vec::new();
     let mut previous_inside = false;
@@ -347,6 +450,15 @@ pub fn simulate(
 
         let position_at_start = position.side;
         wt.update_position_state(position_at_start, values);
+        let wt_armed = wt.armed(position_at_start);
+        chandelier.update(
+            position_at_start,
+            position.entry,
+            candle,
+            observation.atr,
+            settings.realtime.chandelier_activation_atr,
+            wt_armed,
+        );
         let wt_exit = settings.realtime.wt_exit_enabled
             && observation.signal == 0
             && wt.exit(
@@ -354,28 +466,15 @@ pub fn simulate(
                 values,
                 settings.realtime.wt_pullback_points,
             );
-        let weakness_exit = settings.realtime.trend_weakness_exit_enabled
+        let chandelier_exit = settings.realtime.chandelier_exit_enabled
             && observation.signal == 0
-            && match (
+            && chandelier.exit(
                 position_at_start,
-                observation.alma,
+                candle.close,
                 observation.atr,
-                observation.slope_score,
-            ) {
-                (1, Some(alma), Some(atr), Some(slope)) => {
-                    candle.close < alma - settings.realtime.trend_weakness_atr_offset * atr
-                        && slope
-                            <= -settings.minimum_slope
-                                * settings.realtime.trend_weakness_slope_factor
-                }
-                (-1, Some(alma), Some(atr), Some(slope)) => {
-                    candle.close > alma + settings.realtime.trend_weakness_atr_offset * atr
-                        && slope
-                            >= settings.minimum_slope
-                                * settings.realtime.trend_weakness_slope_factor
-                }
-                _ => false,
-            };
+                settings.realtime.chandelier_atr_multiplier,
+                wt_armed,
+            );
         let session_closed_bar = settings.session.reset_daily && previous_inside && !inside;
 
         let timestamp = open.to_rfc3339();
@@ -416,11 +515,11 @@ pub fn simulate(
                 reason,
                 values,
             );
-        } else if weakness_exit {
+        } else if chandelier_exit {
             let reason = if position.side > 0 {
-                "trend_weakness_long_exit"
+                "chandelier_long_exit"
             } else {
-                "trend_weakness_short_exit"
+                "chandelier_short_exit"
             };
             booked = close_position(
                 &mut events,
@@ -465,7 +564,7 @@ pub fn simulate(
         open_position: position.side,
         open_entry_price: position.entry,
         historical_wt_exit_enabled: settings.realtime.wt_exit_enabled,
-        historical_weakness_exit_enabled: settings.realtime.trend_weakness_exit_enabled,
+        historical_chandelier_exit_enabled: settings.realtime.chandelier_exit_enabled,
     })
 }
 

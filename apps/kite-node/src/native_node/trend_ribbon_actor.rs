@@ -167,18 +167,34 @@ impl BarStrategy {
         self.bar_type.instrument_id()
     }
 
-    fn position(&self) -> f64 {
-        self.cache()
-            .positions_open(
-                None,
-                Some(&self.instrument()),
-                self.strategy_id().as_ref(),
-                None,
-                None,
-            )
+    fn position_with_entry(&self) -> (f64, Option<f64>) {
+        let positions = self.cache().positions_open(
+            None,
+            Some(&self.instrument()),
+            self.strategy_id().as_ref(),
+            None,
+            None,
+        );
+        let signed_qty = positions
             .iter()
             .map(|position| position.signed_qty)
-            .sum()
+            .sum::<f64>();
+        let abs_qty = positions
+            .iter()
+            .map(|position| position.signed_qty.abs())
+            .sum::<f64>();
+        let entry = (abs_qty > 0.0).then(|| {
+            positions
+                .iter()
+                .map(|position| position.avg_px_open * position.signed_qty.abs())
+                .sum::<f64>()
+                / abs_qty
+        });
+        (signed_qty, entry)
+    }
+
+    fn position(&self) -> f64 {
+        self.position_with_entry().0
     }
 }
 
@@ -295,7 +311,7 @@ impl DataActor for BarStrategy {
             }
             let price = f64::from(raw.ltp_paise) / 100.0;
             let in_session = self.ribbon.in_session(trade_ts)?;
-            let position_value = self.position();
+            let (position_value, entry_price) = self.position_with_entry();
             let position = if position_value > 0.0 {
                 1
             } else if position_value < 0.0 {
@@ -303,6 +319,7 @@ impl DataActor for BarStrategy {
             } else {
                 0
             };
+            self.ribbon_live.on_position_state(position, entry_price);
             let (snapshot, event) = self.ribbon_live.on_tick(
                 price,
                 trade_ts,
