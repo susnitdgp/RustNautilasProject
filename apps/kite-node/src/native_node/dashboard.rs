@@ -449,6 +449,8 @@ fn reason_label(reason: &str) -> String {
         "trend_reversal" => "REVERSAL",
         "wt_long_exit" => "WT LX",
         "wt_short_exit" => "WT SX",
+        "trend_weakness_long_exit" => "WEAK LX",
+        "trend_weakness_short_exit" => "WEAK SX",
         "session_end" => "SQ OFF",
         other => other,
     }

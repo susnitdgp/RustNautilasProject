@@ -16,6 +16,10 @@ pub struct Settings {
     pub fast_hold_seconds: u64,
     pub fast_body_atr_min: f64,
     pub fast_range_atr_min: f64,
+    pub trend_weakness_exit_enabled: bool,
+    pub trend_weakness_hold_seconds: u64,
+    pub trend_weakness_atr_offset: f64,
+    pub trend_weakness_slope_factor: f64,
     pub wt_exit_enabled: bool,
     pub wt_channel_length: usize,
     pub wt_average_length: usize,
@@ -38,6 +42,10 @@ impl Default for Settings {
             fast_hold_seconds: 2,
             fast_body_atr_min: 0.50,
             fast_range_atr_min: 0.75,
+            trend_weakness_exit_enabled: false,
+            trend_weakness_hold_seconds: 2,
+            trend_weakness_atr_offset: 0.10,
+            trend_weakness_slope_factor: 1.00,
             wt_exit_enabled: true,
             wt_channel_length: 10,
             wt_average_length: 21,
@@ -70,6 +78,20 @@ impl Settings {
         ensure!(
             self.fast_range_atr_min.is_finite() && self.fast_range_atr_min > 0.0,
             "FAST range/ATR must be positive"
+        );
+        ensure!(
+            (1..=10).contains(&self.trend_weakness_hold_seconds),
+            "trend weakness hold seconds must be 1..10"
+        );
+        ensure!(
+            self.trend_weakness_atr_offset.is_finite()
+                && (0.0..=1.0).contains(&self.trend_weakness_atr_offset),
+            "trend weakness ATR offset must be 0..1"
+        );
+        ensure!(
+            self.trend_weakness_slope_factor.is_finite()
+                && (0.0..=1.0).contains(&self.trend_weakness_slope_factor),
+            "trend weakness slope factor must be 0..1"
         );
         ensure!(
             self.wt_channel_length > 0 && self.wt_average_length > 0,
@@ -106,6 +128,8 @@ impl Settings {
 pub enum EventKind {
     WtLongExit,
     WtShortExit,
+    TrendWeaknessLongExit,
+    TrendWeaknessShortExit,
     FastBuy,
     FastShort,
     PreCloseBuy,
@@ -124,6 +148,8 @@ impl Event {
         match self.kind {
             EventKind::WtLongExit => "wt_long_exit",
             EventKind::WtShortExit => "wt_short_exit",
+            EventKind::TrendWeaknessLongExit => "trend_weakness_long_exit",
+            EventKind::TrendWeaknessShortExit => "trend_weakness_short_exit",
             EventKind::FastBuy => "fast_buy",
             EventKind::FastShort => "fast_short",
             EventKind::PreCloseBuy => "preclose_buy",
@@ -346,13 +372,15 @@ pub struct RealtimeRibbon {
     event_bar_open: Option<u64>,
     bull_setup_start_ns: Option<u64>,
     bear_setup_start_ns: Option<u64>,
+    long_weakness_start_ns: Option<u64>,
+    short_weakness_start_ns: Option<u64>,
     wt_long_armed: bool,
     wt_short_armed: bool,
     wt_long_peak: Option<f64>,
     wt_short_trough: Option<f64>,
     prev_wt1: Option<f64>,
-    wt_flat_lock: bool,
-    wt_exited_trend: i8,
+    exit_flat_lock: bool,
+    exited_trend: i8,
 }
 
 impl RealtimeRibbon {
@@ -385,13 +413,15 @@ impl RealtimeRibbon {
             event_bar_open: None,
             bull_setup_start_ns: None,
             bear_setup_start_ns: None,
+            long_weakness_start_ns: None,
+            short_weakness_start_ns: None,
             wt_long_armed: false,
             wt_short_armed: false,
             wt_long_peak: None,
             wt_short_trough: None,
             prev_wt1: None,
-            wt_flat_lock: false,
-            wt_exited_trend: 0,
+            exit_flat_lock: false,
+            exited_trend: 0,
         })
     }
 
@@ -577,13 +607,15 @@ impl RealtimeRibbon {
     pub fn on_session_end(&mut self) {
         self.bull_setup_start_ns = None;
         self.bear_setup_start_ns = None;
+        self.long_weakness_start_ns = None;
+        self.short_weakness_start_ns = None;
         self.wt_long_armed = false;
         self.wt_short_armed = false;
         self.wt_long_peak = None;
         self.wt_short_trough = None;
         self.prev_wt1 = None;
-        self.wt_flat_lock = false;
-        self.wt_exited_trend = 0;
+        self.exit_flat_lock = false;
+        self.exited_trend = 0;
         self.event_bar_open = None;
     }
 
@@ -656,6 +688,35 @@ impl RealtimeRibbon {
             .wt_short_trough
             .map_or(0.0, |trough| (snapshot.wt1 - trough).max(0.0));
 
+        let weakness_offset = snapshot.atr * self.settings.trend_weakness_atr_offset;
+        let weakness_slope = self.trend.minimum_slope * self.settings.trend_weakness_slope_factor;
+        let long_weakness = self.settings.trend_weakness_exit_enabled
+            && position == 1
+            && snapshot.close < snapshot.alma - weakness_offset
+            && snapshot.slope_score <= -weakness_slope;
+        let short_weakness = self.settings.trend_weakness_exit_enabled
+            && position == -1
+            && snapshot.close > snapshot.alma + weakness_offset
+            && snapshot.slope_score >= weakness_slope;
+
+        if long_weakness {
+            self.long_weakness_start_ns.get_or_insert(now_ns);
+        } else {
+            self.long_weakness_start_ns = None;
+        }
+        if short_weakness {
+            self.short_weakness_start_ns.get_or_insert(now_ns);
+        } else {
+            self.short_weakness_start_ns = None;
+        }
+        let weakness_held_ns = self.settings.trend_weakness_hold_seconds * 1_000_000_000;
+        let long_weakness_held = self
+            .long_weakness_start_ns
+            .is_some_and(|start| now_ns.saturating_sub(start) >= weakness_held_ns);
+        let short_weakness_held = self
+            .short_weakness_start_ns
+            .is_some_and(|start| now_ns.saturating_sub(start) >= weakness_held_ns);
+
         if position == -1 && snapshot.bull_setup {
             self.bull_setup_start_ns.get_or_insert(now_ns);
         } else {
@@ -700,6 +761,10 @@ impl RealtimeRibbon {
             && slope_up
         {
             Some(EventKind::WtShortExit)
+        } else if long_weakness_held {
+            Some(EventKind::TrendWeaknessLongExit)
+        } else if short_weakness_held {
+            Some(EventKind::TrendWeaknessShortExit)
         } else if self.settings.fast_reversal_enabled && position == -1 && bull_held && strong_bull
         {
             Some(EventKind::FastBuy)
@@ -719,16 +784,25 @@ impl RealtimeRibbon {
             self.bull_setup_start_ns = None;
             self.bear_setup_start_ns = None;
             let target = match kind {
-                EventKind::WtLongExit | EventKind::WtShortExit => 0,
+                EventKind::WtLongExit
+                | EventKind::WtShortExit
+                | EventKind::TrendWeaknessLongExit
+                | EventKind::TrendWeaknessShortExit => 0,
                 EventKind::FastBuy | EventKind::PreCloseBuy => 1,
                 EventKind::FastShort | EventKind::PreCloseShort => -1,
             };
-            if matches!(kind, EventKind::WtLongExit | EventKind::WtShortExit) {
-                self.wt_flat_lock = true;
-                self.wt_exited_trend = position;
+            if matches!(
+                kind,
+                EventKind::WtLongExit
+                    | EventKind::WtShortExit
+                    | EventKind::TrendWeaknessLongExit
+                    | EventKind::TrendWeaknessShortExit
+            ) {
+                self.exit_flat_lock = true;
+                self.exited_trend = position;
             } else {
-                self.wt_flat_lock = false;
-                self.wt_exited_trend = 0;
+                self.exit_flat_lock = false;
+                self.exited_trend = 0;
             }
             Event {
                 kind,
@@ -744,13 +818,13 @@ impl RealtimeRibbon {
     }
 
     pub fn blocks_confirmed_sync(&self, direction: i8) -> bool {
-        self.wt_flat_lock && self.wt_exited_trend == direction
+        self.exit_flat_lock && self.exited_trend == direction
     }
 
     pub fn on_confirmed_direction(&mut self, direction: i8) {
-        if self.wt_flat_lock && direction != 0 && direction != self.wt_exited_trend {
-            self.wt_flat_lock = false;
-            self.wt_exited_trend = 0;
+        if self.exit_flat_lock && direction != 0 && direction != self.exited_trend {
+            self.exit_flat_lock = false;
+            self.exited_trend = 0;
         }
     }
 }
@@ -896,6 +970,54 @@ mod tests {
     }
 
     #[test]
+    fn trend_weakness_exit_requires_hold_and_goes_flat() {
+        let mut settings = trend_settings();
+        settings.realtime.wt_exit_enabled = false;
+        settings.realtime.fast_reversal_enabled = false;
+        settings.realtime.trend_weakness_exit_enabled = true;
+        settings.realtime.trend_weakness_hold_seconds = 2;
+        settings.realtime.trend_weakness_atr_offset = 0.0;
+        let (mut live, step) = warmed_live(settings);
+        let open = 60 * step;
+        live.on_tick(
+            160.0,
+            open + 1_000_000_000,
+            open + 1_000_000_000,
+            1,
+            true,
+            false,
+        )
+        .unwrap();
+        live.current_trusted = true;
+        let (_, first) = live
+            .on_tick(
+                130.0,
+                open + 1_100_000_000,
+                open + 1_100_000_000,
+                1,
+                true,
+                true,
+            )
+            .unwrap();
+        assert!(first.is_none());
+        let (_, event) = live
+            .on_tick(
+                129.0,
+                open + 3_200_000_000,
+                open + 3_200_000_000,
+                1,
+                true,
+                true,
+            )
+            .unwrap();
+        let event = event.expect("TREND WEAKNESS LONG EXIT");
+        assert_eq!(event.kind, EventKind::TrendWeaknessLongExit);
+        assert_eq!(event.target, 0);
+        assert!(live.exit_flat_lock);
+        assert_eq!(live.exited_trend, 1);
+    }
+
+    #[test]
     fn wavetrend_exit_has_priority_after_arm_pullback_and_slope_reversal() {
         let mut settings = trend_settings();
         settings.realtime.fast_reversal_enabled = false;
@@ -938,34 +1060,34 @@ mod tests {
         let event = event.expect("WT LONG EXIT");
         assert_eq!(event.kind, EventKind::WtLongExit);
         assert_eq!(event.target, 0);
-        assert!(live.wt_flat_lock);
+        assert!(live.exit_flat_lock);
     }
 
     #[test]
-    fn wt_flat_lock_blocks_only_same_trend_confirmed_sync() {
+    fn exit_flat_lock_blocks_only_same_trend_confirmed_sync() {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        live.wt_flat_lock = true;
-        live.wt_exited_trend = -1;
+        live.exit_flat_lock = true;
+        live.exited_trend = -1;
         assert!(live.blocks_confirmed_sync(-1));
         assert!(!live.blocks_confirmed_sync(1));
         assert!(!live.blocks_confirmed_sync(0));
     }
 
     #[test]
-    fn wt_flat_lock_survives_same_direction_and_clears_on_opposite_direction() {
+    fn exit_flat_lock_survives_same_direction_and_clears_on_opposite_direction() {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        live.wt_flat_lock = true;
-        live.wt_exited_trend = 1;
+        live.exit_flat_lock = true;
+        live.exited_trend = 1;
         live.on_confirmed_direction(1);
-        assert!(live.wt_flat_lock);
-        assert_eq!(live.wt_exited_trend, 1);
+        assert!(live.exit_flat_lock);
+        assert_eq!(live.exited_trend, 1);
         live.on_confirmed_direction(-1);
-        assert!(!live.wt_flat_lock);
-        assert_eq!(live.wt_exited_trend, 0);
+        assert!(!live.exit_flat_lock);
+        assert_eq!(live.exited_trend, 0);
     }
 
     #[test]
@@ -1005,13 +1127,13 @@ mod tests {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        live.wt_flat_lock = true;
-        live.wt_exited_trend = 1;
+        live.exit_flat_lock = true;
+        live.exited_trend = 1;
         live.wt_long_armed = true;
         live.event_bar_open = Some(step);
         live.on_session_end();
-        assert!(!live.wt_flat_lock);
-        assert_eq!(live.wt_exited_trend, 0);
+        assert!(!live.exit_flat_lock);
+        assert_eq!(live.exited_trend, 0);
         assert!(!live.wt_long_armed);
         assert!(live.event_bar_open.is_none());
     }

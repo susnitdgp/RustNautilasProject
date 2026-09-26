@@ -215,6 +215,7 @@ pub struct Report {
     pub open_position: i8,
     pub open_entry_price: Option<f64>,
     pub historical_wt_exit_enabled: bool,
+    pub historical_weakness_exit_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -353,6 +354,28 @@ pub fn simulate(
                 values,
                 settings.realtime.wt_pullback_points,
             );
+        let weakness_exit = settings.realtime.trend_weakness_exit_enabled
+            && observation.signal == 0
+            && match (
+                position_at_start,
+                observation.alma,
+                observation.atr,
+                observation.slope_score,
+            ) {
+                (1, Some(alma), Some(atr), Some(slope)) => {
+                    candle.close < alma - settings.realtime.trend_weakness_atr_offset * atr
+                        && slope
+                            <= -settings.minimum_slope
+                                * settings.realtime.trend_weakness_slope_factor
+                }
+                (-1, Some(alma), Some(atr), Some(slope)) => {
+                    candle.close > alma + settings.realtime.trend_weakness_atr_offset * atr
+                        && slope
+                            >= settings.minimum_slope
+                                * settings.realtime.trend_weakness_slope_factor
+                }
+                _ => false,
+            };
         let session_closed_bar = settings.session.reset_daily && previous_inside && !inside;
 
         let timestamp = open.to_rfc3339();
@@ -384,6 +407,20 @@ pub fn simulate(
                 "wt_long_exit"
             } else {
                 "wt_short_exit"
+            };
+            booked = close_position(
+                &mut events,
+                &mut position,
+                &timestamp,
+                candle.close,
+                reason,
+                values,
+            );
+        } else if weakness_exit {
+            let reason = if position.side > 0 {
+                "trend_weakness_long_exit"
+            } else {
+                "trend_weakness_short_exit"
             };
             booked = close_position(
                 &mut events,
@@ -428,6 +465,7 @@ pub fn simulate(
         open_position: position.side,
         open_entry_price: position.entry,
         historical_wt_exit_enabled: settings.realtime.wt_exit_enabled,
+        historical_weakness_exit_enabled: settings.realtime.trend_weakness_exit_enabled,
     })
 }
 
