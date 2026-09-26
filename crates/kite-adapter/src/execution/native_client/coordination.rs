@@ -165,6 +165,51 @@ impl Account {
         connection::sync(&mut self.connection)
     }
 }
+/// Release only the synthetic MOCK account after an explicit completed recovery review.
+/// This cannot be used for a broker account scope.
+pub fn release_reviewed_mock(owner: &str) -> Result<()> {
+    ensure!(
+        !owner.is_empty()
+            && owner.len() <= 64
+            && owner
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+        "Invalid reviewed mock owner"
+    );
+    let key = key("MOCK")?;
+    let mut con = connection::connect(&connection::url_from_env()?)?;
+    let (values, ttl): (BTreeMap<String, String>, i64) = redis::pipe()
+        .atomic()
+        .cmd("HGETALL")
+        .arg(&key)
+        .cmd("PTTL")
+        .arg(&key)
+        .query(&mut con)
+        .map_err(|_| anyhow!("Cannot verify reviewed MOCK coordination state"))?;
+    ensure!(
+        values.get("scope").map(String::as_str) == Some("NATIVE_DISABLED_V1") && ttl == -1,
+        "MOCK coordination metadata invalid"
+    );
+    ensure!(
+        values.get("owner").map(String::as_str) == Some(owner)
+            && values.get("state").map(String::as_str) == Some("ReviewRequired")
+            && values.get("unresolved").map(String::as_str) == Some("0")
+            && values.get("position").map(String::as_str) == Some("0"),
+        "MOCK release requires the exact retained owner, ReviewRequired state, zero unresolved orders and flat position"
+    );
+    let script = "if redis.call('HGET',KEYS[1],'scope')~='NATIVE_DISABLED_V1' or redis.call('HGET',KEYS[1],'owner')~=ARGV[1] or redis.call('HGET',KEYS[1],'state')~='ReviewRequired' or redis.call('HGET',KEYS[1],'unresolved')~='0' or redis.call('HGET',KEYS[1],'position')~='0' or redis.call('PTTL',KEYS[1])~=-1 then return 0 end; redis.call('HSET',KEYS[1],'owner','','state','Clean'); return 1";
+    let released: u32 = redis::cmd("EVAL")
+        .arg(script)
+        .arg(1)
+        .arg(&key)
+        .arg(owner)
+        .query(&mut con)
+        .map_err(|_| anyhow!("Reviewed MOCK release uncertain"))?;
+    ensure!(released == 1, "Reviewed MOCK release preconditions changed");
+    connection::sync(&mut con)?;
+    Ok(())
+}
+
 pub fn status(account: &str) -> Result<serde_json::Value> {
     status_at(&connection::url_from_env()?, account)
 }

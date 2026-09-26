@@ -33,12 +33,28 @@ pub struct State {
     pub started: bool,
     pub stopped: bool,
 }
+fn ribbon_close_sync_target(
+    current_target: i8,
+    confirmed_direction: i8,
+    sync_active: bool,
+    blocked_this_bar: bool,
+    same_trend_locked: bool,
+) -> Option<i8> {
+    (sync_active
+        && !blocked_this_bar
+        && confirmed_direction != 0
+        && current_target != confirmed_direction
+        && !same_trend_locked)
+        .then_some(confirmed_direction)
+}
+
 #[derive(Debug)]
 pub struct BarStrategy {
     core: StrategyCore,
     indicator: Supertrend,
     pivot: Option<super::pivot_point::PivotPoint>,
     ribbon: Option<super::trend_ribbon::TrendRibbon>,
+    ribbon_live: Option<super::trend_ribbon_realtime::RealtimeRibbon>,
     bar_type: BarType,
     start: u64,
     end: u64,
@@ -49,6 +65,8 @@ pub struct BarStrategy {
     allowed: i8,
     last_bar: u64,
     pending: bool,
+    ribbon_sync_active: bool,
+    target_reason: Option<&'static str>,
     state: Rc<RefCell<State>>,
 }
 impl BarStrategy {
@@ -63,6 +81,7 @@ impl BarStrategy {
             indicator: Supertrend::new(),
             pivot: None,
             ribbon: None,
+            ribbon_live: None,
             bar_type,
             start,
             end,
@@ -73,6 +92,8 @@ impl BarStrategy {
             allowed: 0,
             last_bar: 0,
             pending: false,
+            ribbon_sync_active: false,
+            target_reason: None,
             state,
         }
     }
@@ -91,9 +112,11 @@ impl BarStrategy {
         calendar: super::session_calendar::Calendar,
         bar_ns: u64,
     ) -> Result<Self> {
+        let realtime = super::trend_ribbon_realtime::RealtimeRibbon::new(&settings, bar_ns)?;
         self.ribbon = Some(super::trend_ribbon::TrendRibbon::new_for_interval(
             settings, calendar, bar_ns,
         )?);
+        self.ribbon_live = Some(realtime);
         self.filtered = false;
         Ok(self)
     }
@@ -114,6 +137,9 @@ impl BarStrategy {
             control.flat.store(position == 0., Ordering::Release);
         }
         if position == f64::from(target) {
+            if self.ribbon.is_some() {
+                self.target_reason = None;
+            }
             return Ok(());
         }
         let exit = position != 0.;
@@ -194,9 +220,21 @@ impl DataActor for BarStrategy {
                 None,
             );
         }
-        if self.pivot.is_some() && self.live.is_some() {
+        if self.ribbon_live.is_some() && self.live.is_some() {
+            let client = if self.live.as_ref().is_some_and(|c| c.sim) {
+                "STBARS".into()
+            } else {
+                "KITE".into()
+            };
+            self.subscribe_data(
+                DataType::new("KiteFullTick", None, None),
+                Some(client),
+                None,
+            );
+        }
+        if (self.pivot.is_some() || self.ribbon.is_some()) && self.live.is_some() {
             self.clock().set_timer_ns(
-                "pivot_square_off",
+                "strategy_square_off",
                 250_000_000,
                 None,
                 None,
@@ -209,8 +247,8 @@ impl DataActor for BarStrategy {
         Ok(())
     }
     fn on_stop(&mut self) -> Result<()> {
-        if self.pivot.is_some() {
-            self.clock().cancel_timer("pivot_square_off");
+        if self.pivot.is_some() || self.ribbon.is_some() {
+            self.clock().cancel_timer("strategy_square_off");
         }
         if self.live.is_some() {
             self.cancel_all_orders(self.instrument(), None, None, true, None)?;
@@ -219,7 +257,7 @@ impl DataActor for BarStrategy {
         Ok(())
     }
     fn on_time_event(&mut self, event: &TimeEvent) -> Result<()> {
-        if event.name.as_str() != "pivot_square_off" {
+        if event.name.as_str() != "strategy_square_off" {
             return Ok(());
         }
         let now = self.clock().timestamp_ns().as_u64();
@@ -229,6 +267,9 @@ impl DataActor for BarStrategy {
             .is_some_and(|c| c.stopping.load(Ordering::Acquire));
         if now >= self.end || stopping {
             self.target = 0;
+            if let Some(live) = &mut self.ribbon_live {
+                live.on_session_end();
+            }
             self.trade_target(
                 0,
                 now,
@@ -242,6 +283,71 @@ impl DataActor for BarStrategy {
         Ok(())
     }
     fn on_data(&mut self, data: &CustomData) -> Result<()> {
+        if let Some(full) = data
+            .data
+            .as_any()
+            .downcast_ref::<kite_adapter::data::full_tick::KiteFullTick>()
+        {
+            let Some(control) = self.live.clone() else {
+                return Ok(());
+            };
+            if self.ribbon_live.is_none()
+                || control.paused.load(Ordering::Acquire)
+                || control.stopping.load(Ordering::Acquire)
+            {
+                return Ok(());
+            }
+            let packet_ts = full.quote.ts_event.as_u64();
+            let now = if control.sim {
+                packet_ts
+            } else {
+                self.clock().timestamp_ns().as_u64()
+            };
+            if !control.fresh_quote(packet_ts, full.quote.ts_init.as_u64(), now) {
+                return Ok(());
+            }
+            let Some(raw) = full.snapshot.raw.as_ref() else {
+                return Ok(());
+            };
+            let Some(trade_seconds) = raw.full.as_ref().and_then(|f| f.last_trade_timestamp) else {
+                return Ok(());
+            };
+            let trade_ts = u64::from(trade_seconds) * 1_000_000_000;
+            if trade_ts < self.start || trade_ts > now {
+                return Ok(());
+            }
+            let price = f64::from(raw.ltp_paise) / 100.0;
+            let in_session = if let Some(ribbon) = &self.ribbon {
+                ribbon.in_session(trade_ts)?
+            } else {
+                false
+            };
+            let position_value = self.position();
+            let position = if position_value > 0.0 {
+                1
+            } else if position_value < 0.0 {
+                -1
+            } else {
+                0
+            };
+            let (snapshot, event) = self
+                .ribbon_live
+                .as_mut()
+                .expect("checked realtime Ribbon")
+                .on_tick(price, trade_ts, now, position, in_session, !self.pending)?;
+            if let Some(event) = event {
+                self.target = event.target;
+                self.ribbon_sync_active = true;
+                self.target_reason = Some(event.reason());
+                self.state.borrow_mut().indicators.push(serde_json::json!({
+                    "realtime_event": event.kind,
+                    "snapshot": snapshot,
+                    "received_ns": now
+                }));
+                self.trade_target(event.target, now, event.reason())?;
+            }
+            return Ok(());
+        }
         if let (Some(control), Some(status)) = (
             &self.live,
             data.data
@@ -279,19 +385,47 @@ impl DataActor for BarStrategy {
             return Ok(());
         }
         if let Some(ribbon) = &mut self.ribbon {
-            let observation = ribbon.update(
-                b.high.as_f64(),
-                b.low.as_f64(),
-                b.close.as_f64(),
-                b.ts_event.as_u64(),
-            )?;
+            let high = b.high.as_f64();
+            let low = b.low.as_f64();
+            let close = b.close.as_f64();
+            let bar_close_ns = b.ts_event.as_u64();
+            if let Some(live) = &mut self.ribbon_live {
+                live.on_confirmed_bar(high, low, close, bar_close_ns)?;
+            }
+            let observation = ribbon.update(high, low, close, bar_close_ns)?;
             if !observation.in_session {
                 self.target = 0;
+                self.target_reason = Some("session_end");
+                if let Some(live) = &mut self.ribbon_live {
+                    live.on_session_end();
+                }
             }
-            if b.ts_event.as_u64() > self.start && observation.signal != 0 {
-                self.target = observation.signal;
+            let blocked_this_bar = self
+                .ribbon_live
+                .as_ref()
+                .is_some_and(|live| live.confirmed_event_blocked(bar_close_ns));
+            if bar_close_ns > self.start {
+                if observation.signal != 0 && !blocked_this_bar {
+                    self.target = observation.signal;
+                    self.ribbon_sync_active = true;
+                    self.target_reason = Some("trend_ribbon");
+                } else if let Some(sync_target) = ribbon_close_sync_target(
+                    self.target,
+                    observation.direction,
+                    self.ribbon_sync_active,
+                    blocked_this_bar,
+                    self.ribbon_live
+                        .as_ref()
+                        .is_some_and(|live| live.blocks_confirmed_sync(observation.direction)),
+                ) {
+                    self.target = sync_target;
+                    self.target_reason = Some("close_sync");
+                }
             }
-            self.last_bar = b.ts_event.as_u64();
+            if let Some(live) = &mut self.ribbon_live {
+                live.on_confirmed_direction(observation.direction);
+            }
+            self.last_bar = bar_close_ns;
             self.state
                 .borrow_mut()
                 .indicators
@@ -371,6 +505,12 @@ impl DataActor for BarStrategy {
                 if let Some(ribbon) = &self.ribbon {
                     self.ribbon = Some(ribbon.rebuild_empty()?);
                 }
+                if let Some(ribbon) = &self.ribbon {
+                    self.ribbon_live = Some(super::trend_ribbon_realtime::RealtimeRibbon::new(
+                        &ribbon.settings,
+                        control.bar_ns,
+                    )?);
+                }
                 self.confirmation = super::supertrend_confirmation::Confirmation::new();
                 self.last_bar = 0;
                 self.target = 0;
@@ -393,6 +533,7 @@ impl DataActor for BarStrategy {
                     // Neither signed zero is an open position to preserve.
                     self.target =
                         if inside && position != 0. && position.signum() == direction as f64 {
+                            self.ribbon_sync_active = true;
                             direction as i8
                         } else {
                             0
@@ -452,7 +593,7 @@ impl DataActor for BarStrategy {
         } else if self.pivot.is_some() {
             "pivot_supertrend"
         } else if self.ribbon.is_some() {
-            "trend_ribbon"
+            self.target_reason.unwrap_or("trend_ribbon")
         } else {
             "supertrend"
         };
@@ -460,6 +601,24 @@ impl DataActor for BarStrategy {
         Ok(())
     }
 }
+#[cfg(test)]
+mod ribbon_sync_tests {
+    use super::ribbon_close_sync_target;
+
+    #[test]
+    fn close_sync_requires_live_state_and_respects_bar_and_wt_locks() {
+        assert_eq!(ribbon_close_sync_target(1, -1, false, false, false), None);
+        assert_eq!(ribbon_close_sync_target(1, -1, true, true, false), None);
+        assert_eq!(ribbon_close_sync_target(0, -1, true, false, true), None);
+        assert_eq!(ribbon_close_sync_target(-1, -1, true, false, false), None);
+        assert_eq!(
+            ribbon_close_sync_target(1, -1, true, false, false),
+            Some(-1)
+        );
+        assert_eq!(ribbon_close_sync_target(-1, 1, true, false, false), Some(1));
+    }
+}
+
 nautilus_strategy!(BarStrategy, {
     fn on_order_filled(&mut self, event: &OrderFilled) {
         self.pending = false;

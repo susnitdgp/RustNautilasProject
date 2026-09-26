@@ -8,18 +8,20 @@ The Trend Ribbon live launcher reads `config/production-trend-ribbon.json` and t
 
 ## Current setup
 
+**v2.10 realtime candidate (working tree):** Trend Ribbon now has a native Kite LTP forming-candle engine for FAST reversal, three-second pre-close reversal and dynamic WaveTrend exits. Confirmed/restored bars remain authoritative for history and recovery, and Ribbon now has a quote-independent square-off clock. The candidate selection is five-minute and has `live_orders_enabled=false` while parity, replay and paper qualification continue. `deploy/verify-trend-ribbon-v210.sh` runs the complete offline qualification bundle; `deploy/record-trend-ribbon-ticks.sh SECONDS` is a market-data-only full-tick recorder for next-session TradingView parity capture.
+
 **Release v2.0.0** packages the current Trend Ribbon and Pivot implementations, WebSocket-triggered order reconciliation, engineering documentation, and the reorganized configuration layout. The `kite-node` application package is version `2.0.0`; internal library crate and pinned Nautilus versions are unchanged. Local broker configuration and release artifacts are managed separately from Git. See [v2.0.0 release notes](doc/releases/v2.0.0.md).
 
 - Instrument: CRUDEOIL26OCTFUT (expiry October 19, 2026); JSON-selected completed candles; one lot. The active Trend Ribbon selection currently uses five-minute candles; three-minute remains supported through JSON.
 - Active selection: Trend Ribbon [BOSWaves], ALMA(34, 0.85, 6), deviation(34) x 0.65, ATR(14), 3-bar slope threshold 0.08. The original Supertrend/MACD/VWAP and Pivot presets remain available under `config/backup/`.
-- Exits: opposite selected trend, session shutdown or graceful stop. Additional ATR stop disabled. Trend Ribbon has the documented quote-outage square-off limitation below.
+- Trend Ribbon events: confirmed reversal, FAST/shock reversal, three-second pre-close reversal, dynamic WaveTrend exit, session shutdown or graceful stop. Additional ATR stop remains disabled. One strategy event is admitted per candle; reversal execution still uses the existing reducing-then-entering order path.
 - Production orders: MARKET / MIS / DAY with `market_protection=-1`.
 - Quotes: Kite WebSocket. Production order updates: a dedicated Kite order WebSocket triggers REST reconciliation; slower fallback and pending checks remain, with fills confirmed from broker trades.
 - Orders, application state and ownership: Redis. Failed runs require review before restart.
 
 Contract selection and live session coverage use `config/production-trend-ribbon.json` for Trend Ribbon, `config/backup/production-supertrend.json` for the original strategy and `config/backup/production-pivot-supertrend.json` for Pivot Point SuperTrend. The October symbol, token `145894407`, expiry `2026-10-19`, tick size and broker lot size were checked against the [Kite MCX instrument master](https://api.kite.trade/instruments/MCX) on September 22, 2026. Rollover remains manual.
 
-**Release qualification:** this is a versioned engineering snapshot, not approval for unattended live trading. Trend Ribbon still differs from the uploaded Pine at mandatory square-off (`trend := 0` is not implemented), and its dedicated quote-independent square-off timer is missing. The pinned 17-flip regression is not exact TradingView parity proof. Real broker fills and outage-at-cutoff behavior remain unqualified. These issues are documented, not fixed, in v2.0.0. See [engineering findings](doc/EngineeringDesignAndStrategies.md).
+**Release qualification:** v2.0.0 remains a versioned engineering snapshot, not approval for unattended live trading. The released baseline lacks Pine session reset and a dedicated quote-independent Ribbon square-off timer. The current v2.10 working-tree candidate addresses those two implementation gaps and adds the realtime FAST/WaveTrend/pre-close engine, but it is not yet an exact TradingView realtime parity proof. End-to-end tick replay, paper qualification, real broker fills and slippage behavior remain unqualified. See [engineering findings](doc/EngineeringDesignAndStrategies.md) for the v2.0.0 baseline.
 
 ## Build and manual operation
 

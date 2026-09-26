@@ -14,11 +14,14 @@ use nautilus_common::{
     live::get_data_event_sender,
     messages::{
         DataEvent,
-        data::{SubscribeBars, SubscribeQuotes, UnsubscribeBars, UnsubscribeQuotes},
+        data::{
+            SubscribeBars, SubscribeCustomData, SubscribeQuotes, UnsubscribeBars,
+            UnsubscribeCustomData, UnsubscribeQuotes,
+        },
     },
 };
 use nautilus_model::{
-    data::{BarType, Data, QuoteTick},
+    data::{BarType, CustomData, Data, QuoteTick},
     identifiers::{ClientId, Venue},
     instruments::{FuturesContract, InstrumentAny},
     types::Price,
@@ -27,6 +30,19 @@ use std::{any::Any, cell::RefCell, rc::Rc, sync::atomic::Ordering};
 use tokio::task::JoinHandle;
 /// Select against a single request-start cutoff, not a later response time.
 /// No history mutation occurs until every expected completed candle validates.
+async fn wait_for_simulated_order(control: &Control) {
+    loop {
+        if control.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let deadline = control.order_deadline.load(Ordering::Acquire);
+        if deadline == 0 || now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 fn prepare_update(
     history: &mut super::supertrend_revision::History,
     candles: Vec<Candle>,
@@ -54,6 +70,7 @@ pub struct Config {
     pub warmup: Vec<Candle>,
     pub simulated: Vec<Candle>,
     pub control: Control,
+    pub ribbon_realtime: bool,
 }
 impl ClientConfig for Config {
     fn as_any(&self) -> &dyn Any {
@@ -125,6 +142,26 @@ impl Client {
                         now().into(),
                     ))
                 };
+                let full_tick = |price: f64, ts: u64| -> Result<(Data, Data)> {
+                    let snapshot = crate::paper_flow::simulation::full_snapshot_for(
+                        c.token,
+                        price.round() as i32,
+                        ts,
+                        1,
+                    );
+                    let quote = kite_adapter::mapping::quotes::map(&snapshot, &c.instrument)?
+                        .ok_or_else(|| anyhow!("Synthetic full tick did not map to quote"))?;
+                    let full = kite_adapter::data::full_tick::KiteFullTick { snapshot, quote };
+                    Ok((
+                        Data::Quote(quote),
+                        Data::Custom(CustomData::from_arc(std::sync::Arc::new(full))),
+                    ))
+                };
+                let emit_full = |price: f64, ts: u64| -> Result<()> {
+                    let (quote, full) = full_tick(price, ts)?;
+                    emit(quote)?;
+                    emit(full)
+                };
                 for bar in &c.warmup {
                     emit(Data::Bar(bars::bar_for(bar, bt, now(), c.interval)?))?;
                 }
@@ -133,13 +170,48 @@ impl Client {
                         if c.control.stopping.load(Ordering::Acquire) {
                             break;
                         }
-                        let open = bars::close_for(bar, c.interval)? - c.interval.nanoseconds();
-                        emit(quote(bar.open, open + 2))?;
+                        let close = bars::close_for(bar, c.interval)?;
+                        let open = close - c.interval.nanoseconds();
+                        if c.ribbon_realtime {
+                            let previous = index
+                                .checked_sub(1)
+                                .and_then(|i| c.simulated.get(i))
+                                .map_or(bar.open, |b| b.close);
+                            let rising = bar.close >= previous;
+                            let shock = if rising {
+                                bar.high + 55.0
+                            } else {
+                                bar.low - 55.0
+                            };
+                            emit_full(bar.open, open + 1_000_000_000)?;
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                c.synthetic_delay_ms,
+                            ))
+                            .await;
+                            emit_full(shock, open + 2_000_000_000)?;
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                c.synthetic_delay_ms,
+                            ))
+                            .await;
+                            emit_full(shock, open + 4_000_000_000)?;
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                c.synthetic_delay_ms,
+                            ))
+                            .await;
+                            emit_full(bar.close, close - 2_000_000_000)?;
+                        } else {
+                            emit(quote(bar.open, open + 2))?;
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                c.synthetic_delay_ms,
+                            ))
+                            .await;
+                            emit(quote(bar.open, open + 3))?;
+                        }
                         tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
                             .await;
-                        emit(quote(bar.open, open + 3))?;
-                        tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
-                            .await;
+                        if c.ribbon_realtime {
+                            wait_for_simulated_order(&c.control).await;
+                        }
                         if c.control.recovery_fixture && index == 10 {
                             let mut corrected = c.warmup.clone();
                             corrected.extend_from_slice(&c.simulated[..=index]);
@@ -361,6 +433,18 @@ impl DataClient for Client {
         self.begin()
     }
     fn unsubscribe_bars(&mut self, _: &UnsubscribeBars) -> Result<()> {
+        Ok(())
+    }
+    fn subscribe(&mut self, cmd: SubscribeCustomData) -> Result<()> {
+        ensure!(
+            self.config.control.sim
+                && self.config.ribbon_realtime
+                && cmd.data_type.type_name() == "KiteFullTick",
+            "Only realtime Ribbon simulation may subscribe to synthetic KiteFullTick data"
+        );
+        self.begin()
+    }
+    fn unsubscribe(&mut self, _: &UnsubscribeCustomData) -> Result<()> {
         Ok(())
     }
     fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> Result<()> {

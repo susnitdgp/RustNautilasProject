@@ -64,3 +64,7 @@ mod pivot_session;
 
 mod pivot_production;
 mod trend_ribbon;
+mod trend_ribbon_backtest;
+mod trend_ribbon_realtime;
+mod trend_ribbon_recorder;
+mod trend_ribbon_replay;

@@ -5,7 +5,7 @@ This module ports the supplied TradingView Pine v6 Trend Ribbon signal logic int
 
 ## JSON-selected candle interval
 
-`config/production-trend-ribbon.json` is the interval source of truth. Supported Trend Ribbon values are `3minute` and `5minute`; the active production selection currently uses `3minute`. The selection drives the Kite historical endpoint, candle alignment, close timestamps, Nautilus external bar type, freshness checks, recovery replay, report metadata and terminal countdown. Pivot Point and the original Supertrend/MACD/VWAP selection remain restricted to five-minute candles.
+`config/production-trend-ribbon.json` is the interval source of truth. Supported Trend Ribbon values are `3minute` and `5minute`; the current v2.10 candidate selects `5minute`. The selection drives the Kite historical endpoint, candle alignment, close timestamps, Nautilus external bar type, freshness checks, recovery replay, report metadata and terminal countdown. Pivot Point and the original Supertrend/MACD/VWAP selection remain restricted to five-minute candles.
 
 Changing the timeframe changes the economic meaning of bar-count parameters. On three-minute candles, ALMA(34) spans 102 minutes and the three-bar slope comparison spans nine minutes; on five-minute candles they span 170 and fifteen minutes respectively. Parameters are not automatically rescaled.
 
@@ -21,9 +21,19 @@ The terminal `Transition` row separates persistent direction from a fresh flip. 
 
 The visual ribbon, candle coloring, labels, and alert text are chart presentation features and are intentionally not part of the execution engine.
 
+## v2.10 realtime engine
+
+The current candidate retains completed Kite historical bars as the authoritative confirmed-bar and recovery source, while subscribing to native `KiteFullTick` data for the forming candle. The realtime candle uses Kite LTP, not bid/ask midpoint. ALMA, deviation, ATR and WaveTrend are previewed from the last confirmed state plus the mutable current candle; every tick is not committed as a new EMA/ATR bar.
+
+Realtime event priority matches the Pine design: WaveTrend exit first, FAST reversal second, pre-close reversal third, then the confirmed completed-bar Trend Ribbon transition. WaveTrend uses the dynamic ATR-regime arm, best WT1 peak/trough tracking, five-point pullback/rebound and tick-to-tick WT1 slope. FAST requires a two-second opposite setup hold plus body/ATR or range/ATR strength. Pre-close uses the final three seconds of the selected candle.
+
+Only one strategy event is admitted per candle. Reversal targets use the existing Nautilus/Kite reducing-then-entering order path. The causal trigger is retained across both legs of a split reversal. A WaveTrend exit leaves the target flat and blocks same-trend confirmed-close synchronization until the confirmed direction changes. FAST/pre-close reversals are reconciled back to the persistent confirmed direction on a later confirmed bar if the intrabar reversal does not survive confirmation.
+
+The first partial candle after startup is deliberately not trusted because its true intrabar open/high/low cannot be reconstructed from a mid-candle WebSocket subscription. After a new boundary, realtime decisions remain gated until the canonical prior completed bar has arrived. Feed recovery rebuilds both confirmed and realtime indicator state before realtime signals resume.
+
 ## Session and execution
 
-The Pine trading session is 09:00–23:15 Asia/Kolkata. Paper configuration preserves that cutoff. Production retains the repository safety policy: the MCX calendar closes at 23:30 and the existing 30-minute production exit buffer makes the effective live cutoff 23:00 IST.
+The Pine trading session is 09:00–23:15 Asia/Kolkata. The v2.10 candidate enables daily Ribbon reset and evaluates the Pine session on the candle open, so the 23:10–23:15 five-minute candle remains an in-session bar. The existing production safety policy still caps the effective live cutoff using the MCX calendar. Ribbon also uses the quote-independent 250 ms strategy square-off clock callback rather than relying on another market tick to flatten at the application cutoff.
 
 Feed recovery rebuilds the indicator from validated completed bars. Rebuilds never replay historical entries. An existing position is retained only if the rebuilt current direction still agrees with it; otherwise the strategy flattens.
 
@@ -31,10 +41,24 @@ Feed recovery rebuilds the indicator from validated completed bars. Rebuilds nev
 
 The archived paper/simulation selection remains five-minute: `config/backup/trend-ribbon-boswaves.json`.
 
-Live-capable selection: `config/production-trend-ribbon.json`; its `interval` field currently selects `3minute`.
+Candidate selection: `config/production-trend-ribbon.json`; its `interval` field currently selects `5minute` and `live_orders_enabled` is intentionally `false` while v2.10 is qualified.
+
+Read-only full-tick capture for realtime parity work uses no strategy or execution client. On an open market session, record for an explicit duration with:
+`./deploy/record-trend-ribbon-ticks.sh 3600`
+The command writes a new `data/native-catalog/<UUID>/` with complete `KiteFullTick` packets and verifies the Parquet round-trip. It requires market-data credentials but cannot submit orders. Replay a saved capture with:
+`./target/debug/kite-node native-trend-ribbon-replay config/production-trend-ribbon.json data/native-catalog/<UUID>`
 
 Offline simulation:
 `./target/debug/kite-node native-trend-ribbon-sim config/backup/trend-ribbon-boswaves.json`
+
+Recorded full-tick codec/forming-candle replay (never accesses the broker):
+`./target/debug/kite-node native-trend-ribbon-replay config/production-trend-ribbon.json data/native-catalog/<RUN_UUID>`
+
+Historical v2.10 confirmed-bar backtest against a candle fixture:
+`./target/debug/kite-node native-trend-ribbon-backtest-fixture config/production-trend-ribbon.json apps/kite-node/tests/fixtures/trend_ribbon_sep18_21_22.json`
+
+Repeatable offline qualification:
+`bash deploy/verify-trend-ribbon-v210.sh`
 
 Production configuration check:
 `./target/release/kite-node native-trend-ribbon-production-check config/production-trend-ribbon.json config/kite-production.json`
@@ -46,9 +70,11 @@ The launcher can place real orders. It must never be started merely as a build o
 
 ## Remaining parity validation
 
-Unit tests verify deterministic rebuilds, session gating, parameter validation, and bidirectional flips. The synthetic Nautilus LiveNode simulation has also been exercised.
+The current strict suite covers deterministic rebuilds, session/reset semantics, confirmed-close synchronization, FAST, pre-close, WaveTrend exit priority/flat-lock behavior, dynamic WT math, packet replay and the existing reviewed Sep 18/21/22 confirmed-flip regression. Native Kite mock runs have separately exercised a clean FAST split reversal (SHORT exit fill before LONG entry), isolated WT short/long exits with same-trend flat lock, and isolated pre-close reversal; all validation runs kept real orders disabled.
 
-Exact TradingView parity still requires replaying the same CRUDEOIL OHLC candles at the selected interval through Pine and Rust and comparing ALMA, deviation, ATR, slope score, direction, and flip timestamps bar by bar. One supervised real long entry and graceful reducing exit have been observed; broader broker-fill, outage and full-session behavior remain unverified.
+The historical v2.10 simulator now mirrors confirmed-bar Trend Ribbon entries/reversals, dynamic WaveTrend arm/pullback exits and session square-off. On the bundled 602-bar October-contract fixture it currently reports 22 closed trades, 12 winners, 10 losers and +187 gross points before costs. That is a deterministic Rust result, not an independent TradingView WT-exit reference.
+
+Exact TradingView realtime parity still requires an actual full-session CRUDEOIL tick recording for the current contract and side-by-side Pine/Rust event timestamps. The short native catalogs in this repository validate decoding and forming-candle mechanics but use the older token and are not treated as October parity evidence. Real broker fill latency/slippage and failure-mode qualification also remain outstanding.
 
 ## Completed-candle latency
 

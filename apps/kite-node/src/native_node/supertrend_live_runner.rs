@@ -66,8 +66,13 @@ fn pivot_synthetic(selection: &super::production::Selection) -> Result<(Vec<Cand
         "Pivot simulation fixture needs a regular full session"
     );
     let mut candles = Vec::new();
+    let phase = if selection.trend_ribbon.is_some() {
+        10
+    } else {
+        0
+    };
     for i in 0..count {
-        let x = i % 40;
+        let x = (i + phase) % 40;
         let p = 6000.
             + if x < 20 {
                 x as f64 * 10.
@@ -272,10 +277,24 @@ fn run_backend_inner(
         calendar: selection.session_calendar.clone(),
         interval: selection.interval,
         volume_sensitive: selection.trend_ribbon.is_none(),
-        synthetic_delay_ms: if kite_mock { 180 } else { 60 },
+        synthetic_delay_ms: if selection
+            .trend_ribbon
+            .as_ref()
+            .is_some_and(|r| r.realtime.enabled)
+        {
+            60
+        } else if kite_mock {
+            180
+        } else {
+            60
+        },
         warmup: warmup.clone(),
         simulated,
         control: control.clone(),
+        ribbon_realtime: selection
+            .trend_ribbon
+            .as_ref()
+            .is_some_and(|r| r.realtime.enabled),
     };
     let outcome=tokio::runtime::Runtime::new()?.block_on(async {
         let mut cfg=LiveNodeConfig{environment:if real {Environment::Live}else{Environment::Sandbox},trader_id:"SUSANTA-001".into(),instance_id:Some(id),

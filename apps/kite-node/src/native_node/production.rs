@@ -444,6 +444,25 @@ mod tests {
         assert!(zero_token.validate().is_err());
     }
     #[test]
+    fn v210_candidate_is_five_minute_realtime_and_live_orders_are_disabled() {
+        let selection: Selection = serde_json::from_str(include_str!(
+            "../../../../config/production-trend-ribbon.json"
+        ))
+        .unwrap();
+        selection.validate().unwrap();
+        let ribbon = selection.trend_ribbon.as_ref().unwrap();
+        assert_eq!(selection.interval, Interval::FiveMinute);
+        assert!(!selection.live_orders_enabled);
+        assert!(ribbon.session.reset_daily);
+        assert!(ribbon.realtime.enabled);
+        assert!(ribbon.realtime.fast_reversal_enabled);
+        assert!(ribbon.realtime.wt_exit_enabled);
+        assert_eq!(ribbon.realtime.pre_close_seconds, 3);
+        assert_eq!(ribbon.realtime.fast_hold_seconds, 2);
+        assert_eq!(ribbon.realtime.wt_pullback_points, 5.0);
+    }
+
+    #[test]
     fn trend_ribbon_interval_is_selected_from_json() {
         let mut value: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../config/production-trend-ribbon.json"

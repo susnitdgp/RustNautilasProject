@@ -24,6 +24,15 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
                 super::supertrend_live_runner::run_with_execution(config, 30, true, true)
             })
         }
+        ("native-trend-ribbon-replay", [config, catalog]) => trend_ribbon_selection(config)
+            .and_then(|_| super::trend_ribbon_replay::run(config, catalog)),
+        ("native-trend-ribbon-record", [config, seconds]) => trend_ribbon_selection(config)
+            .and_then(|_| seconds.parse::<u64>().map_err(anyhow::Error::from))
+            .and_then(|seconds| super::trend_ribbon_recorder::run(config, seconds)),
+        ("native-trend-ribbon-backtest-fixture", [config, fixture]) => {
+            trend_ribbon_selection(config)
+                .and_then(|_| super::trend_ribbon_backtest::run(config, fixture))
+        }
         ("native-trend-ribbon-kite-production", [config, broker]) => trend_ribbon_selection(config)
             .and_then(|_| super::supertrend_live_runner::run_broker(config, broker)),
         ("native-trend-ribbon-production-check", [config, broker]) => {
@@ -85,6 +94,27 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
             kite_adapter::execution::native_client::recovery::review(namespace)
                 .map(|v| println!("{}", v))
         }
+        ("native-kite-mock-release-reviewed", [namespace]) => (|| -> Result<()> {
+            let review = kite_adapter::execution::native_client::recovery::review(namespace)?;
+            anyhow::ensure!(
+                review["requires_review"] == false
+                    && review["unresolved"] == 0
+                    && review["journal_exposure"] == "0",
+                "MOCK namespace recovery review is not clean enough to release"
+            );
+            kite_adapter::execution::native_client::coordination::release_reviewed_mock(namespace)?;
+            let status = kite_adapter::execution::native_client::coordination::status("MOCK")?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event":"native_kite_mock_reviewed_release",
+                    "namespace":namespace,
+                    "account_status":status,
+                    "live_orders_enabled":false
+                })
+            );
+            Ok(())
+        })(),
         ("native-full-audit", [catalog]) => super::catalog::audit(std::path::Path::new(catalog)),
         ("native-kite-status", [account]) => {
             kite_adapter::execution::native_client::coordination::status(account)
@@ -161,7 +191,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-pivot-kite-production config.json broker.json | native-pivot-production-check config.json broker.json | native-pivot-sim config.json | native-pivot-kite-mock config.json | native-pivot-session-paper config.json | native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
+        "Usage: native-trend-ribbon-record config.json SECONDS | native-trend-ribbon-replay config.json CATALOG | native-trend-ribbon-backtest-fixture config.json FIXTURE | native-pivot-kite-production config.json broker.json | native-pivot-production-check config.json broker.json | native-pivot-sim config.json | native-pivot-kite-mock config.json | native-pivot-session-paper config.json | native-contract-check config.json | native-supertrend-sim [config.json] | native-supertrend-paper config.json SECONDS(5..86360) | native-supertrend-interval-compare START END five_minute_input.json | native-supertrend-stop-compare START END historical_input.json | native-supertrend-confirm-compare START END historical_input.json | native-vwap-compare-range START END historical_input.json | native-vwap-compare END historical_input.json | native-vwap-backtest YYYY-MM-DD [historical_input.json] | native-supertrend-backtest YYYY-MM-DD [candles.json] | native-kite-mock [strategy.toml] | native-kite-sandbox [settings] [strategy] [webhook_config] | native-node-sim [strategy.toml] | native-node-paper [instrument.toml strategy.toml [--seconds N]] | native-backtest [strategy.toml [catalog]] | native-emulator-sim | native-twap-sim | native-recover NAMESPACE"
     )
 }
 

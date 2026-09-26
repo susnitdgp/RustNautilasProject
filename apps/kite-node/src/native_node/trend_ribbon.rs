@@ -16,6 +16,8 @@ pub struct Settings {
     pub minimum_slope: f64,
     pub atr_length: usize,
     pub session: super::pivot_session::Session,
+    #[serde(default)]
+    pub realtime: super::trend_ribbon_realtime::Settings,
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
@@ -45,6 +47,7 @@ impl Settings {
             "Minimum slope must be non-negative"
         );
         ensure!(self.atr_length >= 5, "ATR length must be at least 5");
+        self.realtime.validate()?;
         self.session.validate()
     }
 }
@@ -107,6 +110,7 @@ pub struct TrendRibbon {
     atr: Atr,
     trend: i8,
     session_date: Option<chrono::NaiveDate>,
+    was_in_session: bool,
     last_bar: u64,
     bar_ns: u64,
 }
@@ -130,6 +134,7 @@ impl TrendRibbon {
             almas: VecDeque::new(),
             trend: 0,
             session_date: None,
+            was_in_session: false,
             last_bar: 0,
             bar_ns,
         })
@@ -189,6 +194,10 @@ impl TrendRibbon {
         let inside = self.in_session(open_ns)?;
         let day = super::pivot_session::date(open_ns);
         let new_session = inside && self.session_date != Some(day);
+        if self.settings.session.reset_daily && new_session && self.session_date.is_some() {
+            self.trend = 0;
+            self.was_in_session = false;
+        }
         if new_session {
             self.session_date = Some(day)
         }
@@ -236,12 +245,20 @@ impl TrendRibbon {
         } else if self.trend != -1 && bear {
             self.trend = -1
         }
-        let entry_window = inside && self.in_session(bar_close_ns)?;
-        let signal = if entry_window && self.trend != previous {
+        // Pine's session test is evaluated for the current bar (its open time).
+        // Do not add an extra close-time gate: a 23:10-23:15 bar is still the
+        // final in-session five-minute bar for a 09:00-23:15 session.
+        let entry_window = inside;
+        let mut signal = if entry_window && self.trend != previous {
             self.trend
         } else {
             0
         };
+        if self.settings.session.reset_daily && self.was_in_session && !inside {
+            self.trend = 0;
+            signal = 0;
+        }
+        self.was_in_session = inside;
         Ok(Observation {
             bar_close_ns,
             close,
@@ -313,6 +330,48 @@ mod tests {
         let a = TrendRibbon::new(settings(), super::super::session_calendar::fixture()).unwrap();
         assert!(!a.in_session(ts("2026-09-22T23:15:00+05:30")).unwrap())
     }
+
+    #[test]
+    fn final_2310_bar_remains_in_session_until_its_2315_close() {
+        let mut engine =
+            TrendRibbon::new(settings(), super::super::session_calendar::fixture()).unwrap();
+        let final_close = ts("2026-09-22T23:15:00+05:30");
+        let observation = engine.update(6002.0, 5998.0, 6000.0, final_close).unwrap();
+        assert!(observation.in_session);
+        let outside = engine
+            .update(6002.0, 5998.0, 6000.0, final_close + BAR_NS)
+            .unwrap();
+        assert!(!outside.in_session);
+    }
+    #[test]
+    fn reset_daily_also_clears_direction_when_next_session_arrives_without_outside_bar() {
+        let mut s = settings();
+        s.session.reset_daily = true;
+        let mut engine = TrendRibbon::new(s, super::super::session_calendar::fixture()).unwrap();
+        engine.trend = 1;
+        engine.session_date = Some(chrono::NaiveDate::from_ymd_opt(2026, 9, 21).unwrap());
+        engine.was_in_session = true;
+        let close = ts("2026-09-22T09:05:00+05:30");
+        let observation = engine.update(6002.0, 5998.0, 6000.0, close).unwrap();
+        assert!(observation.new_session);
+        assert_eq!(observation.direction, 0);
+        assert_eq!(observation.signal, 0);
+    }
+
+    #[test]
+    fn reset_daily_clears_direction_on_first_outside_session_bar() {
+        let mut s = settings();
+        s.session.reset_daily = true;
+        let mut engine = TrendRibbon::new(s, super::super::session_calendar::fixture()).unwrap();
+        engine.trend = 1;
+        engine.was_in_session = true;
+        let close = ts("2026-09-22T23:20:00+05:30");
+        let observation = engine.update(6002.0, 5998.0, 6000.0, close).unwrap();
+        assert_eq!(observation.direction, 0);
+        assert_eq!(observation.signal, 0);
+        assert!(!observation.in_session);
+    }
+
     #[test]
     fn three_minute_engine_uses_configured_bar_step() {
         let mut engine = TrendRibbon::new_for_interval(

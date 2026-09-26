@@ -3,10 +3,10 @@
   "instrument": "CRUDEOIL26OCTFUT.MCX",
   "symbol": "CRUDEOIL26OCTFUT",
   "instrument_token": 145894407,
-  "interval": "3minute",
+  "interval": "5minute",
   "contracts": 1,
   "atr_stop_enabled": false,
-  "live_orders_enabled": true,
+  "live_orders_enabled": false,
   "expected_expiry": "2026-10-19",
   "session_calendar": {
     "timezone": "Asia/Kolkata",
@@ -37,7 +37,26 @@
       "start": "09:00:00",
       "end": "23:15:00",
       "days": "23456",
-      "reset_daily": false
+      "reset_daily": true
+    },
+    "realtime": {
+      "enabled": true,
+      "pre_close_seconds": 3,
+      "fast_reversal_enabled": true,
+      "fast_hold_seconds": 2,
+      "fast_body_atr_min": 0.5,
+      "fast_range_atr_min": 0.75,
+      "wt_exit_enabled": true,
+      "wt_channel_length": 10,
+      "wt_average_length": 21,
+      "wt_long_arm": 53.0,
+      "wt_short_arm": -53.0,
+      "wt_pullback_points": 5.0,
+      "dynamic_wt_arm": true,
+      "wt_vol_lookback": 50,
+      "wt_arm_min": 45.0,
+      "wt_arm_max": 60.0,
+      "wt_arm_sensitivity": 20.0
     }
   }
 }

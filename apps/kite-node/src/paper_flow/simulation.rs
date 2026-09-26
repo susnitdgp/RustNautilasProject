@@ -92,9 +92,18 @@ pub(crate) fn full_snapshot(
     ts: u64,
     generation: u32,
 ) -> kite_adapter::mapping::market_data::Snapshot {
+    full_snapshot_for(144870151, p, ts, generation)
+}
+
+pub(crate) fn full_snapshot_for(
+    instrument_token: u32,
+    p: i32,
+    ts: u64,
+    generation: u32,
+) -> kite_adapter::mapping::market_data::Snapshot {
     use kite_adapter::websocket::models::{DepthLevel, FullFields, QuoteFields, Tick};
     let tick = Tick {
-        instrument_token: 144870151,
+        instrument_token,
         ltp_paise: p * 100,
         last_quantity: Some(1),
         cumulative_volume: Some(1000),
