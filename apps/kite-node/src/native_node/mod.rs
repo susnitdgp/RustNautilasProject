@@ -1,6 +1,7 @@
 pub mod backtest_report;
 pub mod catalog;
 pub mod cli;
+mod dashboard;
 pub mod data;
 pub mod full_codec;
 pub mod lifecycle;

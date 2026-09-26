@@ -64,6 +64,40 @@ The command prints the Kite login URL, waits for the returned `request_token`
 or full redirect URL, exchanges it with Kite, and durably replaces only
 `susanta:kite_access_token`. The API secret and access token are never printed.
 
+## Terminal dashboard
+
+The Rust-only Ratatui trade ledger can replay a historical Kite session directly in the SSH terminal. It shows one row per trade with entry/exit time, entry/exit price, exit reason, points and INR P&L; there are no chart panels:
+
+```bash
+./target/debug/kite-node native-trend-ribbon-dashboard-history \
+  config/production-trend-ribbon.json 2026-09-22
+```
+
+Controls: `q`/Esc quits the dashboard, Space pauses/resumes, Left/Right steps one 5-minute bar, Home/End jumps to the first/last bar, and `+`/`-` changes replay speed. The dashboard is read-only and creates no execution client.
+
+For deterministic terminal/screenshot verification without interactive raw mode:
+
+```bash
+./target/debug/kite-node native-trend-ribbon-dashboard-snapshot \
+  config/production-trend-ribbon.json 2026-09-22
+```
+
+For a daily performance summary across a week or month:
+
+```bash
+./target/debug/kite-node native-trend-ribbon-dashboard-summary \
+  config/production-trend-ribbon.json 2026-09-22 2026-09-25
+```
+
+Use Up/Down to select a trading day and Enter to open that day's detailed trade ledger. Home/End jumps to the first/last day and `q` exits. The range loader fetches Kite history in 30-day chunks with a 7-day indicator warmup, then replays the strategy once across the complete period so indicator state remains continuous.
+
+A non-interactive summary snapshot is also available:
+
+```bash
+./target/debug/kite-node native-trend-ribbon-dashboard-summary-snapshot \
+  config/production-trend-ribbon.json 2026-09-22 2026-09-25
+```
+
 ## Record a real tick session
 
 During an open market session:

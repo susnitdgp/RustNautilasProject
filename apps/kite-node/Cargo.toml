@@ -12,6 +12,7 @@ nautilus-core.workspace = true
 nautilus-data.workspace = true
 nautilus-model.workspace = true
 chrono.workspace = true
+crossterm.workspace = true
 kite-adapter = { path = "../../crates/kite-adapter" }
 serde_json.workspace = true
 reqwest.workspace = true
@@ -32,6 +33,7 @@ nautilus-sandbox.workspace = true
 
 serde.workspace = true
 redis.workspace = true
+ratatui.workspace = true
 indexmap = "2"
 log = "0.4"
 
