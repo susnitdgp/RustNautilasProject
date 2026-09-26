@@ -35,6 +35,20 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         }
         ("native-contract-check", [config]) => super::production::contract_check(config),
         ("native-production-preflight", [config]) => super::production::preflight(config),
+        ("native-kite-auth", []) => kite_adapter::auth::login::interactive().map(|result| {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event":"kite_access_token_updated",
+                    "user_id":result.user_id,
+                    "redis_key":"susanta:kite_access_token",
+                    "access_token_printed":false
+                })
+            );
+        }),
+        ("native-kite-auth-login-url", []) => {
+            kite_adapter::auth::login::login_url().map(|url| println!("{url}"))
+        }
         ("native-kite-margins-check", [config]) => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|runtime| {
@@ -60,7 +74,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-trend-ribbon-sim CONFIG | native-trend-ribbon-paper CONFIG SECONDS | native-trend-ribbon-kite-mock CONFIG | native-trend-ribbon-replay CONFIG CATALOG | native-trend-ribbon-record CONFIG SECONDS | native-trend-ribbon-backtest-fixture CONFIG FIXTURE | native-trend-ribbon-production-check CONFIG BROKER | native-trend-ribbon-kite-production CONFIG BROKER | native-contract-check CONFIG | native-production-preflight CONFIG | native-kite-margins-check CONFIG | native-full-audit CATALOG | native-kite-review NAMESPACE | native-kite-status ACCOUNT | native-kite-mock-release-reviewed NAMESPACE | native-recover NAMESPACE"
+        "Usage: native-trend-ribbon-sim CONFIG | native-trend-ribbon-paper CONFIG SECONDS | native-trend-ribbon-kite-mock CONFIG | native-trend-ribbon-replay CONFIG CATALOG | native-trend-ribbon-record CONFIG SECONDS | native-trend-ribbon-backtest-fixture CONFIG FIXTURE | native-trend-ribbon-production-check CONFIG BROKER | native-trend-ribbon-kite-production CONFIG BROKER | native-contract-check CONFIG | native-production-preflight CONFIG | native-kite-auth | native-kite-auth-login-url | native-kite-margins-check CONFIG | native-full-audit CATALOG | native-kite-review NAMESPACE | native-kite-status ACCOUNT | native-kite-mock-release-reviewed NAMESPACE | native-recover NAMESPACE"
     )
 }
 

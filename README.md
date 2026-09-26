@@ -42,6 +42,28 @@ The verifier checks formatting, strict Clippy, the full test suite, historical
 Trend Ribbon/WaveTrend replay, saved full-tick replay, and Nautilus sandbox
 FAST-reversal execution.
 
+## Kite authentication (Rust only)
+
+The project includes a Rust-only Kite login/token utility.
+
+Print the login URL without changing Redis:
+
+```bash
+./target/debug/kite-node native-kite-auth-login-url
+```
+
+For the full login flow, provide the permanent API secret through
+`KITE_API_SECRET` (preferred for one-off use) or Redis key
+`susanta:kite_api_secret`, then run:
+
+```bash
+./target/debug/kite-node native-kite-auth
+```
+
+The command prints the Kite login URL, waits for the returned `request_token`
+or full redirect URL, exchanges it with Kite, and durably replaces only
+`susanta:kite_access_token`. The API secret and access token are never printed.
+
 ## Record a real tick session
 
 During an open market session:
@@ -94,7 +116,7 @@ crates/               Kite adapters, execution, persistence helpers
 config/               active operational configuration only
 deploy/               current Trend Ribbon operational scripts
 doc/                  current Trend Ribbon documentation
-tests/fixtures/       regression-only legacy fixtures
+apps/kite-node/tests/fixtures/ current Trend Ribbon regression fixture
 vendor/               pinned NautilusTrader 0.63.0 patches
 ```
 
