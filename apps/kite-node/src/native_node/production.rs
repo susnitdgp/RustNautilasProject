@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn v222_candidate_is_valid_and_live_orders_are_disabled() {
+    fn v223_candidate_is_valid_and_live_orders_are_disabled() {
         let selection = selection();
         selection.validate().unwrap();
         let realtime = &selection.trend_ribbon.realtime;

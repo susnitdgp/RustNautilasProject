@@ -2,7 +2,7 @@
 
 This directory contains only current operational configuration.
 
-- `production-trend-ribbon.json` — authoritative Trend Ribbon v2.22 CLEAN strategy,
+- `production-trend-ribbon.json` — authoritative Trend Ribbon v2.23 Exit-First strategy,
   instrument, session calendar and realtime parameters.
 - `kite-production.json` — local/private Kite production settings.
 - `kite-sandbox.toml` — local sandbox settings.
@@ -13,7 +13,7 @@ Do not change that gate merely to run tests or market-data recording.
 Validate the current candidate with:
 
 ```bash
-./deploy/verify-trend-ribbon-v222.sh
+./deploy/verify-trend-ribbon-v223.sh
 ```
 
 Record read-only Kite full ticks with:

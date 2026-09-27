@@ -1,10 +1,10 @@
 # Rust Nautilus + Zerodha Kite
 
-Native Rust/NautilusTrader project for the **MCX Crude Oil Trend Ribbon v2.22 CLEAN** strategy using Zerodha Kite market data and execution.
+Native Rust/NautilusTrader project for the **MCX Crude Oil Trend Ribbon v2.23 Exit-First** strategy using Zerodha Kite market data and execution.
 
 ## Current production candidate
 
-- Strategy: Trend Ribbon [BOSWaves] - FAST + Squeeze Momentum Transition Gate 4-Action v2.22 CLEAN
+- Strategy: Trend Ribbon [BOSWaves] - FAST + SQZ Exit + Reentry Exit-First v2.23
 - Instrument: `CRUDEOIL26OCTFUT.MCX`
 - Timeframe: 5 minutes
 - Intrabar engine: Kite full ticks / LTP
@@ -23,11 +23,11 @@ Private/local broker settings live in `config/kite-production.json`.
 
 - `apps/kite-node/src/native_node/trend_ribbon.rs` — confirmed-bar Trend Ribbon
 - `apps/kite-node/src/native_node/trend_ribbon_realtime.rs` — FAST, pre-close and live Squeeze Momentum logic
-- `apps/kite-node/src/native_node/trend_ribbon_backtest.rs` — historical confirmed-bar v2.22 replay
+- `apps/kite-node/src/native_node/trend_ribbon_backtest.rs` — historical confirmed-bar v2.23 replay
 - `apps/kite-node/src/native_node/trend_ribbon_replay.rs` — recorded Kite full-tick replay
 - `apps/kite-node/src/native_node/trend_ribbon_recorder.rs` — read-only full-tick recorder
 - `doc/TrendRibbonBOSWaves.md` — strategy/runtime details
-- `deploy/verify-trend-ribbon-v222.sh` — complete offline verification
+- `deploy/verify-trend-ribbon-v223.sh` — complete offline verification
 - `deploy/record-trend-ribbon-ticks.sh` — read-only market-data capture
 - `deploy/run-trend-ribbon-live.sh` — live launcher
 
@@ -35,7 +35,7 @@ Private/local broker settings live in `config/kite-production.json`.
 
 ```bash
 cargo build --locked -p kite-node
-./deploy/verify-trend-ribbon-v222.sh
+./deploy/verify-trend-ribbon-v223.sh
 ```
 
 The verifier checks formatting, strict Clippy, the full test suite, historical

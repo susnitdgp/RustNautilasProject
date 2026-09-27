@@ -1,4 +1,4 @@
-//! Offline replay of recorded KiteFullTick catalogs through the v2.22 CLEAN Ribbon engine.
+//! Offline replay of recorded KiteFullTick catalogs through the v2.23 Exit-First Ribbon engine.
 //!
 //! This command never constructs an execution client and never submits orders.
 use anyhow::{Context, Result, ensure};
@@ -362,7 +362,7 @@ pub fn run(config: &str, catalog: &str) -> Result<()> {
     println!(
         "{}",
         serde_json::json!({
-            "event":"trend_ribbon_v222_catalog_replay",
+            "event":"trend_ribbon_v223_catalog_replay",
             "catalog":catalog,
             "interval":selection.interval_name(),
             "recorded":recorded,

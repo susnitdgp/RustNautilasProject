@@ -497,7 +497,11 @@ fn trade_rows(events: &[EventView], current_price: f64) -> Vec<TradeRow> {
         match event.action.as_str() {
             "BUY" if event.position_after > 0 => {
                 open = Some(OpenTrade {
-                    side: "LONG",
+                    side: if event.reason == "squeeze_re_buy" {
+                        "LONG-RB"
+                    } else {
+                        "LONG"
+                    },
                     entry_time: short_time(&event.timestamp),
                     entry_price: event.price,
                     direction: 1,
@@ -505,7 +509,11 @@ fn trade_rows(events: &[EventView], current_price: f64) -> Vec<TradeRow> {
             }
             "SHORT" if event.position_after < 0 => {
                 open = Some(OpenTrade {
-                    side: "SHORT",
+                    side: if event.reason == "squeeze_re_short" {
+                        "SHRT-RS"
+                    } else {
+                        "SHORT"
+                    },
                     entry_time: short_time(&event.timestamp),
                     entry_price: event.price,
                     direction: -1,
@@ -570,8 +578,10 @@ fn reason_label(reason: &str) -> String {
         "session_end" => "SQ OFF",
         "shutdown" => "SHUTDOWN",
         "trend_ribbon" => "REVERSAL",
-        "fast_buy" | "fast_short" => "FAST",
-        "preclose_buy" | "preclose_short" => "PRE-CLOSE",
+        "fast_cover_to_buy" | "fast_sell_to_short" => "FAST EXIT",
+        "preclose_cover_to_buy" | "preclose_sell_to_short" => "PRE-CLOSE EXIT",
+        "reversal_buy" => "REV BUY",
+        "reversal_short" => "REV SHORT",
         "close_sync" => "CLOSE SYNC",
         other => other,
     }
@@ -724,7 +734,7 @@ fn render_header(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
     let title = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.22 - STRATEGY MONITOR ",
+                " TREND RIBBON v2.23 EXIT-FIRST - STRATEGY MONITOR ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   READ-ONLY"),
@@ -1301,7 +1311,7 @@ fn render_live_header(
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.22 - LIVE MONITOR ",
+                " TREND RIBBON v2.23 EXIT-FIRST - LIVE MONITOR ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   PAPER / NO BROKER ORDERS"),
@@ -1743,30 +1753,38 @@ fn live_trade_rows(state: &super::trend_ribbon_actor::State, current_price: f64)
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let time = short_time_ns(ts);
-        let reason = signal
+        let raw_reason = signal
             .get("reason")
             .and_then(serde_json::Value::as_str)
-            .map(reason_label)
-            .unwrap_or_else(|| "--".into());
+            .unwrap_or("--");
+        let reason = reason_label(raw_reason);
 
         match intent {
             "BUY" => {
                 open = Some(OpenTrade {
-                    side: "LONG",
+                    side: if raw_reason == "squeeze_re_buy" {
+                        "LONG-RB"
+                    } else {
+                        "LONG"
+                    },
                     entry_time: time,
                     entry_price: price,
                     direction: 1,
                 });
             }
-            "SELL" => {
+            "SHORT" => {
                 open = Some(OpenTrade {
-                    side: "SHORT",
+                    side: if raw_reason == "squeeze_re_short" {
+                        "SHRT-RS"
+                    } else {
+                        "SHORT"
+                    },
                     entry_time: time,
                     entry_price: price,
                     direction: -1,
                 });
             }
-            "BUY_EXIT" | "SELL_EXIT" => {
+            "SELL" | "COVER" => {
                 if let Some(entry) = open.take() {
                     let points = if entry.direction > 0 {
                         price - entry.entry_price
@@ -1963,7 +1981,7 @@ fn render_summary_header(frame: &mut ratatui::Frame<'_>, app: &SummaryApp, area:
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.22 - DAILY PERFORMANCE ",
+                " TREND RIBBON v2.23 EXIT-FIRST - DAILY PERFORMANCE ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   READ-ONLY"),
@@ -2119,7 +2137,7 @@ mod tests {
         let state = super::super::trend_ribbon_actor::State {
             signals: vec![
                 serde_json::json!({"intent":"BUY","reason":"trend_ribbon"}),
-                serde_json::json!({"intent":"BUY_EXIT","reason":"squeeze_long_exit"}),
+                serde_json::json!({"intent":"SELL","reason":"squeeze_long_exit"}),
             ],
             fills: vec![
                 serde_json::json!({"timestamp_ns":1_800_000_000_000_000_000u64,"price":"100.0"}),

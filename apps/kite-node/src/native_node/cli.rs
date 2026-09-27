@@ -99,7 +99,7 @@ fn trend_ribbon_selection(path: &str) -> Result<()> {
     let selection = super::production::Selection::load(path)?;
     anyhow::ensure!(
         selection.strategy == "trend_ribbon_boswaves",
-        "This command requires the Trend Ribbon v2.22 CLEAN selection"
+        "This command requires the Trend Ribbon v2.23 Exit-First selection"
     );
     Ok(())
 }

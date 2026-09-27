@@ -1,4 +1,4 @@
-//! Historical confirmed-bar Trend Ribbon v2.22 CLEAN simulator.
+//! Historical confirmed-bar Trend Ribbon v2.23 Exit-First simulator.
 //!
 //! Mirrors the TradingView Strategy Tester path: Trend Ribbon entries/reversals,
 //! Squeeze Momentum transition exits, same-trend Squeeze re-entry, session
@@ -648,7 +648,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixture_v222_is_deterministic() {
+    fn fixture_v223_is_deterministic() {
         #[derive(serde::Deserialize)]
         struct Fixture {
             candles: Vec<Candle>,

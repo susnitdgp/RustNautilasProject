@@ -128,7 +128,7 @@ impl Engine {
         let kc_ranges = window_with(&self.ranges, current_range, self.cfg.kc_length)?;
 
         let basis = mean(&bb_closes);
-        // Pine v2.22 intentionally matches the supplied source: BB deviation
+        // Pine v2.23 intentionally matches the supplied source: BB deviation
         // uses the KC multiplier. bb_mult is retained only as a configurable
         // parity input.
         let bb_dev = self.cfg.kc_mult * population_stdev(&bb_closes);

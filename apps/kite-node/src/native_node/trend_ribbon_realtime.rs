@@ -1,4 +1,4 @@
-//! Realtime companion for Trend Ribbon v2.22 CLEAN.
+//! Realtime companion for Trend Ribbon v2.23 Exit-First.
 //!
 //! Confirmed bars seed indicator state. Kite LTP updates only preview the current
 //! candle, matching Pine calc_on_every_tick semantics without committing a new
@@ -119,6 +119,8 @@ pub enum EventKind {
     FastShort,
     PreCloseBuy,
     PreCloseShort,
+    PendingBuy,
+    PendingShort,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -137,8 +139,10 @@ impl Event {
             EventKind::SqueezeReShort => "squeeze_re_short",
             EventKind::FastBuy => "fast_buy",
             EventKind::FastShort => "fast_short",
-            EventKind::PreCloseBuy => "preclose_buy",
-            EventKind::PreCloseShort => "preclose_short",
+            EventKind::PreCloseBuy => "preclose_cover_to_buy",
+            EventKind::PreCloseShort => "preclose_sell_to_short",
+            EventKind::PendingBuy => "reversal_buy",
+            EventKind::PendingShort => "reversal_short",
         }
     }
 }
@@ -312,6 +316,10 @@ pub struct RealtimeRibbon {
     squeeze_short_exit_used_in_trend: bool,
     exit_flat_lock: bool,
     exited_trend: i8,
+    // v2.23 exit-first reversal state: +1 BUY pending after COVER,
+    // -1 SHORT pending after SELL. The entry is emitted only on a later tick.
+    pending_reversal: i8,
+    pending_reversal_ns: Option<u64>,
 }
 
 impl RealtimeRibbon {
@@ -349,6 +357,8 @@ impl RealtimeRibbon {
             squeeze_short_exit_used_in_trend: false,
             exit_flat_lock: false,
             exited_trend: 0,
+            pending_reversal: 0,
+            pending_reversal_ns: None,
         })
     }
 
@@ -653,6 +663,8 @@ impl RealtimeRibbon {
         self.squeeze_short_exit_used_in_trend = false;
         self.exit_flat_lock = false;
         self.exited_trend = 0;
+        self.pending_reversal = 0;
+        self.pending_reversal_ns = None;
         self.event_bar_open = None;
         self.confirmed_direction = 0;
     }
@@ -728,6 +740,48 @@ impl RealtimeRibbon {
             self.bear_setup_start_ns = None;
         }
 
+        // Pine v2.23 EXIT-FIRST: after the exit order has filled and a later
+        // realtime calculation arrives, emit the queued opposite entry. This
+        // deliberately bypasses the one-event-per-bar lock because Pine uses
+        // alert.freq_all for the exit/entry pair and permits both in one bar.
+        if self.pending_reversal != 0 {
+            if !allow_event {
+                return Ok((Some(snapshot), None));
+            }
+            let pending_ready = position == 0
+                && self
+                    .pending_reversal_ns
+                    .is_some_and(|sent_ns| now_ns > sent_ns);
+            if pending_ready {
+                let side = self.pending_reversal;
+                self.pending_reversal = 0;
+                self.pending_reversal_ns = None;
+                self.exit_flat_lock = false;
+                self.exited_trend = 0;
+                self.squeeze_long_armed = false;
+                self.squeeze_short_armed = false;
+                self.squeeze_long_peak = None;
+                self.squeeze_short_trough = None;
+                self.bull_setup_start_ns = None;
+                self.bear_setup_start_ns = None;
+                return Ok((
+                    Some(snapshot),
+                    Some(Event {
+                        kind: if side > 0 {
+                            EventKind::PendingBuy
+                        } else {
+                            EventKind::PendingShort
+                        },
+                        target: side,
+                        bar_open_ns: snapshot.bar_open_ns,
+                    }),
+                ));
+            }
+            // While an opposite entry is queued, Pine blocks FAST, pre-close,
+            // and confirmed-close synchronization until that entry is sent.
+            return Ok((Some(snapshot), None));
+        }
+
         if self.event_bar_open == Some(snapshot.bar_open_ns) || !allow_event {
             return Ok((Some(snapshot), None));
         }
@@ -789,9 +843,14 @@ impl RealtimeRibbon {
             self.bull_setup_start_ns = None;
             self.bear_setup_start_ns = None;
             let target = match kind {
-                EventKind::SqueezeLongExit | EventKind::SqueezeShortExit => 0,
-                EventKind::SqueezeReBuy | EventKind::FastBuy | EventKind::PreCloseBuy => 1,
-                EventKind::SqueezeReShort | EventKind::FastShort | EventKind::PreCloseShort => -1,
+                EventKind::SqueezeLongExit
+                | EventKind::SqueezeShortExit
+                | EventKind::FastBuy
+                | EventKind::FastShort
+                | EventKind::PreCloseBuy
+                | EventKind::PreCloseShort => 0,
+                EventKind::SqueezeReBuy | EventKind::PendingBuy => 1,
+                EventKind::SqueezeReShort | EventKind::PendingShort => -1,
             };
             match kind {
                 EventKind::SqueezeLongExit => {
@@ -816,16 +875,30 @@ impl RealtimeRibbon {
                     self.squeeze_long_peak = None;
                     self.squeeze_short_trough = None;
                 }
-                EventKind::FastBuy
-                | EventKind::FastShort
-                | EventKind::PreCloseBuy
-                | EventKind::PreCloseShort => {
+                EventKind::FastBuy | EventKind::PreCloseBuy => {
+                    // Existing SHORT -> COVER now, BUY on a later tick.
+                    self.pending_reversal = 1;
+                    self.pending_reversal_ns = Some(now_ns);
                     self.exit_flat_lock = false;
                     self.exited_trend = 0;
                     self.squeeze_long_armed = false;
                     self.squeeze_short_armed = false;
                     self.squeeze_long_peak = None;
                     self.squeeze_short_trough = None;
+                }
+                EventKind::FastShort | EventKind::PreCloseShort => {
+                    // Existing LONG -> SELL now, SHORT on a later tick.
+                    self.pending_reversal = -1;
+                    self.pending_reversal_ns = Some(now_ns);
+                    self.exit_flat_lock = false;
+                    self.exited_trend = 0;
+                    self.squeeze_long_armed = false;
+                    self.squeeze_short_armed = false;
+                    self.squeeze_long_peak = None;
+                    self.squeeze_short_trough = None;
+                }
+                EventKind::PendingBuy | EventKind::PendingShort => {
+                    unreachable!("pending entries are emitted before normal event selection")
                 }
             }
             Event {
@@ -835,6 +908,10 @@ impl RealtimeRibbon {
             }
         });
         Ok((Some(snapshot), event))
+    }
+
+    pub fn has_pending_reversal(&self) -> bool {
+        self.pending_reversal != 0
     }
 
     pub fn confirmed_event_blocked(&self, bar_close_ns: u64) -> bool {
@@ -904,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn default_v222_inputs_match_pine_defaults() {
+    fn default_v223_inputs_match_pine_defaults() {
         let settings = Settings::default();
         assert!(settings.squeeze_exit_enabled);
         assert_eq!(settings.squeeze_bb_length, 20);
@@ -984,9 +1061,26 @@ mod tests {
                 true,
             )
             .unwrap();
-        let event = event.expect("FAST BUY");
+        let event = event.expect("FAST COVER");
         assert_eq!(event.kind, EventKind::FastBuy);
-        assert_eq!(event.target, 1);
+        assert_eq!(event.target, 0);
+        assert!(live.has_pending_reversal());
+
+        // A later calculation after the exit fill emits BUY, even in the same bar.
+        let (_, pending) = live
+            .on_tick(
+                220.0,
+                open + 3_300_000_000,
+                open + 3_300_000_000,
+                0,
+                true,
+                true,
+            )
+            .unwrap();
+        let pending = pending.expect("pending BUY");
+        assert_eq!(pending.kind, EventKind::PendingBuy);
+        assert_eq!(pending.target, 1);
+        assert!(!live.has_pending_reversal());
     }
 
     #[test]
@@ -1008,9 +1102,10 @@ mod tests {
         live.current_trusted = true;
         let now = open + step - 2_000_000_000;
         let (_, event) = live.on_tick(220.0, now, now, -1, true, true).unwrap();
-        let event = event.expect("PRE-CLOSE BUY");
+        let event = event.expect("PRE-CLOSE COVER");
         assert_eq!(event.kind, EventKind::PreCloseBuy);
-        assert_eq!(event.target, 1);
+        assert_eq!(event.target, 0);
+        assert!(live.has_pending_reversal());
     }
 
     #[test]

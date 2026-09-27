@@ -11,13 +11,13 @@ import json, sys
 p=sys.argv[1]
 v=json.load(open(p))
 assert v["strategy"]=="trend_ribbon_boswaves", "wrong strategy selection"
-assert v["interval"]=="5minute", "v2.22 candidate must remain five-minute"
+assert v["interval"]=="5minute", "v2.23 candidate must remain five-minute"
 assert v["live_orders_enabled"] is False, "SAFETY: live orders must stay disabled"
 r=v["trend_ribbon"]
 assert r["session"]["reset_daily"] is True, "daily reset must be enabled"
 assert r["backtest_square_off"] is True, "historical session square-off must be enabled"
 rt=r["realtime"]
-assert rt["enabled"] is True, "realtime v2.22 engine must be enabled"
+assert rt["enabled"] is True, "realtime v2.23 engine must be enabled"
 assert rt["pre_close_enabled"] is True
 assert rt["pre_close_seconds"]==3
 assert rt["fast_hold_seconds"]==2
@@ -31,7 +31,7 @@ assert rt["squeeze_kc_mult"]==1.5
 assert rt["squeeze_use_true_range"] is True
 assert rt["squeeze_weak_bars_required"]==2
 assert rt["squeeze_transition_pct"]==70.0
-print("config safety: PASS (v2.22 CLEAN, 5m, SQZ ON, live orders OFF)")
+print("config safety: PASS (v2.23 Exit-First, 5m, SQZ ON, live orders OFF)")
 PY
 
 cargo fmt --all -- --check
@@ -54,7 +54,7 @@ assert v["closed_trades"] > 10
 assert v["open_position"] == 0
 assert "squeeze_long_exit" in reasons and "squeeze_short_exit" in reasons
 assert "squeeze_re_buy" in reasons or "squeeze_re_short" in reasons
-print("historical v2.22 fixture: PASS", {
+print("historical v2.23 fixture: PASS", {
     "closed_trades":v["closed_trades"],
     "gross_points":v["gross_points"],
 })
@@ -98,18 +98,24 @@ report=pathlib.Path(complete["report_directory"])
 signals=json.load(open(report/"signals.json"))
 indicators=json.load(open(report/"indicators.json"))
 fast=[s for s in signals if s.get("reason")=="fast_buy"]
-assert any(s.get("intent")=="SELL_EXIT" and s.get("target")==1 for s in fast), fast
-assert any(s.get("intent")=="BUY" and s.get("target")==1 for s in fast), fast
+pending=[s for s in signals if s.get("reason")=="reversal_buy"]
+assert len(fast)==1, fast
+assert fast[0].get("intent")=="COVER" and fast[0].get("target")==0, fast
+assert len(pending)==1, pending
+assert pending[0].get("intent")=="BUY" and pending[0].get("target")==1, pending
+assert pending[0]["timestamp_ns"] > fast[0]["timestamp_ns"], (fast, pending)
 rt=[i for i in indicators if i.get("realtime_event")=="FAST_BUY"]
-assert len(rt)==1, rt
+rt_pending=[i for i in indicators if i.get("realtime_event")=="PENDING_BUY"]
+assert len(rt)==1 and len(rt_pending)==1, (rt, rt_pending)
 assert rt[0]["snapshot"]["trusted"] is True
-print("sandbox LiveNode realtime path: PASS", {
+assert rt_pending[0]["received_ns"] > rt[0]["received_ns"]
+print("sandbox LiveNode v2.23 exit-first path: PASS", {
     "signals":complete["signals"],
     "fills":complete["fills"],
-    "realtime_event":"FAST_BUY",
+    "sequence":["COVER", "BUY"],
     "report":str(report),
 })
 PY
 
 git diff --check
-echo "Trend Ribbon v2.22 CLEAN offline verification: PASS ($count full-tick catalogs replayed)"
+echo "Trend Ribbon v2.23 Exit-First offline verification: PASS ($count full-tick catalogs replayed)"

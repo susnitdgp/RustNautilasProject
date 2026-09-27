@@ -1,6 +1,6 @@
-# BOSWaves Trend Ribbon v2.22 CLEAN — Rust / Nautilus Port
+# BOSWaves Trend Ribbon v2.23 Exit-First — Rust / Nautilus Port
 
-The active strategy is **Trend Ribbon [BOSWaves] - FAST + Squeeze Momentum Transition Gate 4-Action v2.22 CLEAN**. `config/production-trend-ribbon.json` is the source of truth for the selected candle interval and all strategy inputs used by the Rust engine.
+The active strategy is **Trend Ribbon [BOSWaves] - FAST + SQZ Exit + Reentry Exit-First v2.23**. `config/production-trend-ribbon.json` is the source of truth for the selected candle interval and all strategy inputs used by the Rust engine.
 
 ## Core Trend Ribbon
 
@@ -8,9 +8,9 @@ The default trend inputs match Pine: ALMA(34, 0.85, 6.0), population standard de
 
 A bullish flip requires `slope_score > +0.08` and close above `ALMA + stdev * 0.65`. A bearish flip requires `slope_score < -0.08` and close below `ALMA - stdev * 0.65`. Confirmed trend direction resets at the session boundary while indicator history remains continuous.
 
-## Squeeze Momentum v2.22 exit
+## Squeeze Momentum v2.23 exit
 
-The active exit engine uses the LazyBear-style Squeeze Momentum calculation from the supplied Pine v2.22 source.
+The active exit engine uses the LazyBear-style Squeeze Momentum calculation from the supplied Pine v2.23 source.
 
 All Squeeze inputs are JSON-configurable under `trend_ribbon.realtime`:
 
@@ -81,6 +81,6 @@ The dashboard shows Ribbon values, FAST/pre-close state, Squeeze value and state
 
 Run:
 
-`bash deploy/verify-trend-ribbon-v222.sh`
+`bash deploy/verify-trend-ribbon-v223.sh`
 
 Exact TradingView realtime parity still requires a current-contract full-tick recording and side-by-side Pine/Rust event timestamps. Confirmed five-minute historical replay is deterministic but cannot reconstruct intrabar FAST/pre-close timing exactly.

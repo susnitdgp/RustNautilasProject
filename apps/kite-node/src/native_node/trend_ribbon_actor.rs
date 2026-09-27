@@ -197,11 +197,13 @@ impl BarStrategy {
         } else {
             OrderSide::Buy
         };
+        // v2.23 four-action vocabulary, identical to the TradingView JSON:
+        // BUY=open long, SELL=exit long, SHORT=open short, COVER=exit short.
         let intent = match (exit, side) {
             (false, OrderSide::Buy) => "BUY",
-            (false, _) => "SELL",
-            (true, OrderSide::Sell) => "BUY_EXIT",
-            (true, _) => "SELL_EXIT",
+            (false, _) => "SHORT",
+            (true, OrderSide::Sell) => "SELL",
+            (true, _) => "COVER",
         };
         let order = self.order().market(
             self.instrument(),
@@ -481,7 +483,8 @@ impl DataActor for BarStrategy {
         }
 
         let blocked_this_bar = self.ribbon_live.confirmed_event_blocked(bar_close_ns);
-        if bar_close_ns > self.start {
+        let pending_reversal = self.ribbon_live.has_pending_reversal();
+        if bar_close_ns > self.start && !pending_reversal {
             if observation.signal != 0 && !blocked_this_bar {
                 self.target = observation.signal;
                 self.ribbon_sync_active = true;
