@@ -24,6 +24,7 @@ assert rt["fast_hold_seconds"]==2
 assert rt["fast_body_atr_min"]==0.5
 assert rt["fast_range_atr_min"]==0.75
 assert rt["squeeze_exit_enabled"] is True
+assert rt["squeeze_reentry_enabled"] is False
 assert rt["squeeze_bb_length"]==20
 assert rt["squeeze_bb_mult"]==2.0
 assert rt["squeeze_kc_length"]==20
@@ -31,7 +32,7 @@ assert rt["squeeze_kc_mult"]==1.5
 assert rt["squeeze_use_true_range"] is True
 assert rt["squeeze_weak_bars_required"]==2
 assert rt["squeeze_transition_pct"]==70.0
-print("config safety: PASS (v2.23 Exit-First, 5m, SQZ ON, live orders OFF)")
+print("config safety: PASS (v2.23 Exit-First, SQZ reentry OFF, 5m, live orders OFF)")
 PY
 
 cargo fmt --all -- --check
@@ -53,7 +54,7 @@ assert v["historical_squeeze_exit_enabled"] is True
 assert v["closed_trades"] > 10
 assert v["open_position"] == 0
 assert "squeeze_long_exit" in reasons and "squeeze_short_exit" in reasons
-assert "squeeze_re_buy" in reasons or "squeeze_re_short" in reasons
+assert "squeeze_re_buy" not in reasons and "squeeze_re_short" not in reasons
 print("historical v2.23 fixture: PASS", {
     "closed_trades":v["closed_trades"],
     "gross_points":v["gross_points"],
@@ -97,22 +98,14 @@ assert complete["errors"] == []
 report=pathlib.Path(complete["report_directory"])
 signals=json.load(open(report/"signals.json"))
 indicators=json.load(open(report/"indicators.json"))
-fast=[s for s in signals if s.get("reason")=="fast_buy"]
-pending=[s for s in signals if s.get("reason")=="reversal_buy"]
-assert len(fast)==1, fast
-assert fast[0].get("intent")=="COVER" and fast[0].get("target")==0, fast
-assert len(pending)==1, pending
-assert pending[0].get("intent")=="BUY" and pending[0].get("target")==1, pending
-assert pending[0]["timestamp_ns"] > fast[0]["timestamp_ns"], (fast, pending)
-rt=[i for i in indicators if i.get("realtime_event")=="FAST_BUY"]
-rt_pending=[i for i in indicators if i.get("realtime_event")=="PENDING_BUY"]
-assert len(rt)==1 and len(rt_pending)==1, (rt, rt_pending)
-assert rt[0]["snapshot"]["trusted"] is True
-assert rt_pending[0]["received_ns"] > rt[0]["received_ns"]
-print("sandbox LiveNode v2.23 exit-first path: PASS", {
+assert all(s.get("intent") in {"BUY","SELL","SHORT","COVER"} for s in signals), signals
+assert not any(s.get("reason") in {"squeeze_re_buy","squeeze_re_short"} for s in signals), signals
+assert not any(i.get("realtime_event") in {"SQUEEZE_RE_BUY","SQUEEZE_RE_SHORT"} for i in indicators), indicators
+# FAST exit-first sequencing is exercised by the focused RealtimeRibbon unit test.
+print("sandbox LiveNode v2.23 no-reentry path: PASS", {
     "signals":complete["signals"],
     "fills":complete["fills"],
-    "sequence":["COVER", "BUY"],
+    "sqz_reentry":False,
     "report":str(report),
 })
 PY

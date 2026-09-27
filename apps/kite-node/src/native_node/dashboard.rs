@@ -74,6 +74,7 @@ struct MonitorParams {
     pre_close_enabled: bool,
     pre_close_seconds: u64,
     squeeze_exit_enabled: bool,
+    squeeze_reentry_enabled: bool,
     squeeze_bb_length: usize,
     squeeze_bb_mult: f64,
     squeeze_kc_length: usize,
@@ -95,6 +96,7 @@ impl MonitorParams {
             pre_close_enabled: realtime.pre_close_enabled,
             pre_close_seconds: realtime.pre_close_seconds,
             squeeze_exit_enabled: realtime.squeeze_exit_enabled,
+            squeeze_reentry_enabled: realtime.squeeze_reentry_enabled,
             squeeze_bb_length: realtime.squeeze_bb_length,
             squeeze_bb_mult: realtime.squeeze_bb_mult,
             squeeze_kc_length: realtime.squeeze_kc_length,
@@ -885,7 +887,9 @@ fn render_monitor_panel(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: R
     } else {
         None
     };
-    let squeeze_watch = if m.exited_trend == 1 {
+    let squeeze_watch = if !app.params.squeeze_reentry_enabled && m.exited_trend != 0 {
+        "FLAT / REENTRY OFF"
+    } else if m.exited_trend == 1 {
         if m.squeeze_reentry_ready {
             "RE-BUY READY"
         } else {
@@ -1396,7 +1400,9 @@ fn render_live_monitor_panel(
     } else {
         None
     };
-    let squeeze_watch = if m.exited_trend == 1 {
+    let squeeze_watch = if !params.squeeze_reentry_enabled && m.exited_trend != 0 {
+        "FLAT / REENTRY OFF"
+    } else if m.exited_trend == 1 {
         if m.squeeze_reentry_ready {
             "RE-BUY READY"
         } else {
@@ -2201,10 +2207,10 @@ mod tests {
         let summary = build_summary(&selection, &fixture.candles, date, date).unwrap();
 
         assert_eq!(summary.days.len(), 1);
-        assert_eq!(summary.days[0].trades, 7);
+        assert_eq!(summary.days[0].trades, 6);
         assert_eq!(summary.days[0].wins, 4);
-        assert_eq!(summary.days[0].losses, 3);
-        assert_eq!(summary.days[0].points, 262.0);
+        assert_eq!(summary.days[0].losses, 2);
+        assert_eq!(summary.days[0].points, 302.0);
     }
 
     #[test]
@@ -2224,8 +2230,8 @@ mod tests {
         let closed: Vec<_> = trades.iter().filter(|trade| trade.closed).collect();
         let total: f64 = closed.iter().map(|trade| trade.points).sum();
 
-        assert_eq!(closed.len(), 7);
-        assert_eq!(total, 262.0);
+        assert_eq!(closed.len(), 6);
+        assert_eq!(total, 302.0);
         assert_eq!(closed[0].side, "LONG");
         assert_eq!(closed[0].entry_price, 8925.0);
         assert_eq!(closed[0].exit_price, Some(8962.0));

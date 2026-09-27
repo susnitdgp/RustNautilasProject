@@ -400,6 +400,7 @@ fn simulate_internal(
             && squeeze_values.ready
             && squeeze_state.exit_ready(position_at_start, squeeze_values, &settings.realtime);
         let squeeze_reentry_ready = settings.realtime.squeeze_exit_enabled
+            && settings.realtime.squeeze_reentry_enabled
             && observation.signal == 0
             && position_at_start == 0
             && squeeze_values.ready

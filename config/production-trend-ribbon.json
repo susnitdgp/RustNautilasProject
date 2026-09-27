@@ -49,6 +49,7 @@
       "fast_body_atr_min": 0.5,
       "fast_range_atr_min": 0.75,
       "squeeze_exit_enabled": true,
+      "squeeze_reentry_enabled": false,
       "squeeze_bb_length": 20,
       "squeeze_bb_mult": 2.0,
       "squeeze_kc_length": 20,

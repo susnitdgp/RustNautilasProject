@@ -170,3 +170,5 @@ by Git and should not be committed.
 
 NautilusTrader is pinned to 0.63.0 with local compatibility patches documented
 in `vendor/README.md`.
+
+- `squeeze_reentry_enabled=false` disables same-trend SQZ RB/RS re-entry after QLX/QSX.

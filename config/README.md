@@ -21,3 +21,5 @@ Record read-only Kite full ticks with:
 ```bash
 ./deploy/record-trend-ribbon-ticks.sh 3600
 ```
+
+- `squeeze_reentry_enabled=false` disables same-trend SQZ RB/RS re-entry after QLX/QSX.

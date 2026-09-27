@@ -286,6 +286,7 @@ mod tests {
         assert!(realtime.pre_close_enabled);
         assert!(realtime.fast_reversal_enabled);
         assert!(realtime.squeeze_exit_enabled);
+        assert!(!realtime.squeeze_reentry_enabled);
         assert_eq!(realtime.pre_close_seconds, 3);
         assert_eq!(realtime.fast_hold_seconds, 2);
         assert_eq!(realtime.squeeze_bb_length, 20);

@@ -84,3 +84,5 @@ Run:
 `bash deploy/verify-trend-ribbon-v223.sh`
 
 Exact TradingView realtime parity still requires a current-contract full-tick recording and side-by-side Pine/Rust event timestamps. Confirmed five-minute historical replay is deterministic but cannot reconstruct intrabar FAST/pre-close timing exactly.
+
+- `squeeze_reentry_enabled=false` disables same-trend SQZ RB/RS re-entry after QLX/QSX.

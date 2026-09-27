@@ -20,6 +20,7 @@ pub struct Settings {
     pub fast_body_atr_min: f64,
     pub fast_range_atr_min: f64,
     pub squeeze_exit_enabled: bool,
+    pub squeeze_reentry_enabled: bool,
     pub squeeze_bb_length: usize,
     pub squeeze_bb_mult: f64,
     pub squeeze_kc_length: usize,
@@ -40,6 +41,7 @@ impl Default for Settings {
             fast_body_atr_min: 0.50,
             fast_range_atr_min: 0.75,
             squeeze_exit_enabled: true,
+            squeeze_reentry_enabled: false,
             squeeze_bb_length: 20,
             squeeze_bb_mult: 2.0,
             squeeze_kc_length: 20,
@@ -572,7 +574,8 @@ impl RealtimeRibbon {
         } else {
             false
         };
-        let reentry_ready = position == 0
+        let reentry_ready = self.settings.squeeze_reentry_enabled
+            && position == 0
             && self.exit_flat_lock
             && ((self.exited_trend == 1
                 && self.confirmed_direction == 1
@@ -814,12 +817,14 @@ impl RealtimeRibbon {
         } else if self.settings.squeeze_exit_enabled && position == -1 && squeeze_exit_ready {
             Some(EventKind::SqueezeShortExit)
         } else if self.settings.squeeze_exit_enabled
+            && self.settings.squeeze_reentry_enabled
             && position == 0
             && squeeze_reentry_ready
             && self.exited_trend == 1
         {
             Some(EventKind::SqueezeReBuy)
         } else if self.settings.squeeze_exit_enabled
+            && self.settings.squeeze_reentry_enabled
             && position == 0
             && squeeze_reentry_ready
             && self.exited_trend == -1
@@ -984,6 +989,7 @@ mod tests {
     fn default_v223_inputs_match_pine_defaults() {
         let settings = Settings::default();
         assert!(settings.squeeze_exit_enabled);
+        assert!(!settings.squeeze_reentry_enabled);
         assert_eq!(settings.squeeze_bb_length, 20);
         assert_eq!(settings.squeeze_bb_mult, 2.0);
         assert_eq!(settings.squeeze_kc_length, 20);
