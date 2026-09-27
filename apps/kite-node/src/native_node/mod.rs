@@ -40,6 +40,7 @@ mod trend_ribbon_backtest;
 mod trend_ribbon_realtime;
 mod trend_ribbon_recorder;
 mod trend_ribbon_replay;
+mod trend_ribbon_squeeze;
 
 #[cfg(test)]
 mod test_support;

@@ -15,10 +15,16 @@ pub struct Settings {
     pub slope_length: usize,
     pub minimum_slope: f64,
     pub atr_length: usize,
+    #[serde(default = "default_true")]
+    pub backtest_square_off: bool,
     pub session: super::strategy_session::Session,
     #[serde(default)]
     pub realtime: super::trend_ribbon_realtime::Settings,
 }
+fn default_true() -> bool {
+    true
+}
+
 impl Settings {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.alma_length >= 5, "ALMA length must be at least 5");

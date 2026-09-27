@@ -627,7 +627,7 @@ mod ribbon_sync_tests {
     use super::ribbon_close_sync_target;
 
     #[test]
-    fn close_sync_requires_live_state_and_respects_bar_and_wt_locks() {
+    fn close_sync_requires_live_state_and_respects_bar_and_exit_locks() {
         assert_eq!(ribbon_close_sync_target(1, -1, false, false, false), None);
         assert_eq!(ribbon_close_sync_target(1, -1, true, true, false), None);
         assert_eq!(ribbon_close_sync_target(0, -1, true, false, true), None);

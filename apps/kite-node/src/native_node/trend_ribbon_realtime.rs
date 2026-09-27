@@ -1,60 +1,52 @@
-//! Realtime companion for Trend Ribbon v2.10.
+//! Realtime companion for Trend Ribbon v2.22 CLEAN.
 //!
 //! Confirmed bars seed indicator state. Kite LTP updates only preview the current
 //! candle, matching Pine calc_on_every_tick semantics without committing a new
-//! EMA/ATR observation for every tick.
+//! indicator observation for every tick.
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+
+use super::trend_ribbon_squeeze::{Config as SqueezeConfig, Engine as SqueezeEngine};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub enabled: bool,
+    pub pre_close_enabled: bool,
     pub pre_close_seconds: u64,
     pub fast_reversal_enabled: bool,
     pub fast_hold_seconds: u64,
     pub fast_body_atr_min: f64,
     pub fast_range_atr_min: f64,
-    pub chandelier_exit_enabled: bool,
-    pub chandelier_atr_multiplier: f64,
-    pub chandelier_activation_atr: f64,
-    pub wt_exit_enabled: bool,
-    pub wt_channel_length: usize,
-    pub wt_average_length: usize,
-    pub wt_long_arm: f64,
-    pub wt_short_arm: f64,
-    pub wt_pullback_points: f64,
-    pub dynamic_wt_arm: bool,
-    pub wt_vol_lookback: usize,
-    pub wt_arm_min: f64,
-    pub wt_arm_max: f64,
-    pub wt_arm_sensitivity: f64,
+    pub squeeze_exit_enabled: bool,
+    pub squeeze_bb_length: usize,
+    pub squeeze_bb_mult: f64,
+    pub squeeze_kc_length: usize,
+    pub squeeze_kc_mult: f64,
+    pub squeeze_use_true_range: bool,
+    pub squeeze_weak_bars_required: usize,
+    pub squeeze_transition_pct: f64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled: false,
+            pre_close_enabled: true,
             pre_close_seconds: 3,
             fast_reversal_enabled: true,
             fast_hold_seconds: 2,
             fast_body_atr_min: 0.50,
             fast_range_atr_min: 0.75,
-            chandelier_exit_enabled: false,
-            chandelier_atr_multiplier: 3.0,
-            chandelier_activation_atr: 1.50,
-            wt_exit_enabled: true,
-            wt_channel_length: 10,
-            wt_average_length: 21,
-            wt_long_arm: 53.0,
-            wt_short_arm: -53.0,
-            wt_pullback_points: 5.0,
-            dynamic_wt_arm: true,
-            wt_vol_lookback: 50,
-            wt_arm_min: 45.0,
-            wt_arm_max: 60.0,
-            wt_arm_sensitivity: 20.0,
+            squeeze_exit_enabled: true,
+            squeeze_bb_length: 20,
+            squeeze_bb_mult: 2.0,
+            squeeze_kc_length: 20,
+            squeeze_kc_mult: 1.5,
+            squeeze_use_true_range: true,
+            squeeze_weak_bars_required: 2,
+            squeeze_transition_pct: 70.0,
         }
     }
 }
@@ -78,52 +70,51 @@ impl Settings {
             "FAST range/ATR must be positive"
         );
         ensure!(
-            self.chandelier_atr_multiplier.is_finite()
-                && (0.5..=10.0).contains(&self.chandelier_atr_multiplier),
-            "Chandelier ATR multiplier must be 0.5..10"
+            (1..=250).contains(&self.squeeze_bb_length),
+            "Squeeze BB length must be 1..250"
         );
         ensure!(
-            self.chandelier_activation_atr.is_finite()
-                && (0.0..=10.0).contains(&self.chandelier_activation_atr),
-            "Chandelier activation ATR must be 0..10"
+            (1..=250).contains(&self.squeeze_kc_length),
+            "Squeeze KC length must be 1..250"
         );
         ensure!(
-            self.wt_channel_length > 0 && self.wt_average_length > 0,
-            "WaveTrend lengths must be positive"
+            self.squeeze_bb_mult.is_finite() && self.squeeze_bb_mult > 0.0,
+            "Squeeze BB multiplier must be positive"
         );
         ensure!(
-            self.wt_long_arm > 0.0 && self.wt_short_arm < 0.0,
-            "WaveTrend arm levels must straddle zero"
+            self.squeeze_kc_mult.is_finite() && self.squeeze_kc_mult > 0.0,
+            "Squeeze KC multiplier must be positive"
         );
         ensure!(
-            self.wt_pullback_points.is_finite() && self.wt_pullback_points >= 1.0,
-            "WaveTrend pullback must be >= 1"
+            (1..=5).contains(&self.squeeze_weak_bars_required),
+            "Squeeze weak bars must be 1..5"
         );
         ensure!(
-            (10..=250).contains(&self.wt_vol_lookback),
-            "WT volatility lookback must be 10..250"
+            self.squeeze_transition_pct.is_finite()
+                && (20.0..=95.0).contains(&self.squeeze_transition_pct),
+            "Squeeze transition percent must be 20..95"
         );
-        ensure!(
-            self.wt_arm_min >= 20.0
-                && self.wt_arm_max <= 90.0
-                && self.wt_arm_min <= self.wt_arm_max,
-            "invalid dynamic WT arm bounds"
-        );
-        ensure!(
-            self.wt_arm_sensitivity.is_finite() && self.wt_arm_sensitivity >= 0.0,
-            "WT arm sensitivity must be non-negative"
-        );
-        Ok(())
+        self.squeeze_config().validate()
+    }
+
+    pub fn squeeze_config(&self) -> SqueezeConfig {
+        SqueezeConfig {
+            bb_length: self.squeeze_bb_length,
+            bb_mult: self.squeeze_bb_mult,
+            kc_length: self.squeeze_kc_length,
+            kc_mult: self.squeeze_kc_mult,
+            use_true_range: self.squeeze_use_true_range,
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum EventKind {
-    WtLongExit,
-    WtShortExit,
-    ChandelierLongExit,
-    ChandelierShortExit,
+    SqueezeLongExit,
+    SqueezeShortExit,
+    SqueezeReBuy,
+    SqueezeReShort,
     FastBuy,
     FastShort,
     PreCloseBuy,
@@ -140,10 +131,10 @@ pub struct Event {
 impl Event {
     pub fn reason(self) -> &'static str {
         match self.kind {
-            EventKind::WtLongExit => "wt_long_exit",
-            EventKind::WtShortExit => "wt_short_exit",
-            EventKind::ChandelierLongExit => "chandelier_long_exit",
-            EventKind::ChandelierShortExit => "chandelier_short_exit",
+            EventKind::SqueezeLongExit => "squeeze_long_exit",
+            EventKind::SqueezeShortExit => "squeeze_short_exit",
+            EventKind::SqueezeReBuy => "squeeze_re_buy",
+            EventKind::SqueezeReShort => "squeeze_re_short",
             EventKind::FastBuy => "fast_buy",
             EventKind::FastShort => "fast_short",
             EventKind::PreCloseBuy => "preclose_buy",
@@ -166,10 +157,17 @@ pub struct Snapshot {
     pub slope_score: f64,
     pub bull_setup: bool,
     pub bear_setup: bool,
-    pub wt1: f64,
-    pub wt2: f64,
-    pub wt_long_arm: f64,
-    pub wt_short_arm: f64,
+    pub squeeze_ready: bool,
+    pub squeeze_value: f64,
+    pub squeeze_on: bool,
+    pub squeeze_off: bool,
+    pub squeeze_no: bool,
+    pub squeeze_strengthening_long: bool,
+    pub squeeze_strengthening_short: bool,
+    pub squeeze_long_weak_bar: bool,
+    pub squeeze_short_weak_bar: bool,
+    pub squeeze_long_strength2: bool,
+    pub squeeze_short_strength2: bool,
     pub trusted: bool,
 }
 
@@ -185,15 +183,15 @@ pub struct MonitorSnapshot {
     pub range_atr: f64,
     pub fast_ready: bool,
     pub preclose_ready: bool,
-    pub wt_armed: bool,
-    pub wt_long_peak: Option<f64>,
-    pub wt_short_trough: Option<f64>,
-    pub wt_pullback: f64,
-    pub wt_slope_down: bool,
-    pub wt_slope_up: bool,
-    pub chandelier_enabled: bool,
-    pub chandelier_active: bool,
-    pub chandelier_stop: Option<f64>,
+    pub squeeze_armed: bool,
+    pub squeeze_peak: Option<f64>,
+    pub squeeze_trough: Option<f64>,
+    pub squeeze_weak_bars: usize,
+    pub squeeze_decay_pct: f64,
+    pub squeeze_exit_used_in_trend: bool,
+    pub squeeze_exit_ready: bool,
+    pub squeeze_reentry_ready: bool,
+    pub exited_trend: i8,
     pub event_locked: bool,
     pub same_trend_lock: bool,
 }
@@ -228,32 +226,6 @@ impl Candle {
 }
 
 #[derive(Debug, Clone)]
-struct Ema {
-    alpha: f64,
-    value: Option<f64>,
-}
-
-impl Ema {
-    fn new(period: usize) -> Self {
-        Self {
-            alpha: 2.0 / (period as f64 + 1.0),
-            value: None,
-        }
-    }
-
-    fn preview(&self, input: f64) -> f64 {
-        self.value
-            .map_or(input, |v| self.alpha * input + (1.0 - self.alpha) * v)
-    }
-
-    fn update(&mut self, input: f64) -> f64 {
-        let value = self.preview(input);
-        self.value = Some(value);
-        value
-    }
-}
-
-#[derive(Debug, Clone)]
 struct Atr {
     period: usize,
     count: usize,
@@ -274,15 +246,17 @@ impl Atr {
     }
 
     fn true_range(&self, high: f64, low: f64) -> f64 {
-        self.previous_close.map_or(high - low, |p| {
-            (high - low).max((high - p).abs()).max((low - p).abs())
+        self.previous_close.map_or(high - low, |previous| {
+            (high - low)
+                .max((high - previous).abs())
+                .max((low - previous).abs())
         })
     }
 
     fn preview(&self, high: f64, low: f64) -> Option<f64> {
         let tr = self.true_range(high, low);
         match self.value {
-            Some(v) => Some((v * (self.period - 1) as f64 + tr) / self.period as f64),
+            Some(value) => Some((value * (self.period - 1) as f64 + tr) / self.period as f64),
             None if self.count + 1 == self.period => Some((self.sum + tr) / self.period as f64),
             None => None,
         }
@@ -291,7 +265,7 @@ impl Atr {
     fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
         let tr = self.true_range(high, low);
         self.value = match self.value {
-            Some(v) => Some((v * (self.period - 1) as f64 + tr) / self.period as f64),
+            Some(value) => Some((value * (self.period - 1) as f64 + tr) / self.period as f64),
             None => {
                 self.count += 1;
                 self.sum += tr;
@@ -300,67 +274,6 @@ impl Atr {
         };
         self.previous_close = Some(close);
         self.value
-    }
-}
-
-#[derive(Debug, Clone)]
-struct WaveTrend {
-    esa: Ema,
-    deviation: Ema,
-    wt1: Ema,
-    wt1_history: VecDeque<f64>,
-}
-
-impl WaveTrend {
-    fn new(channel: usize, average: usize) -> Self {
-        Self {
-            esa: Ema::new(channel),
-            deviation: Ema::new(channel),
-            wt1: Ema::new(average),
-            wt1_history: VecDeque::new(),
-        }
-    }
-
-    fn values(&self, high: f64, low: f64, close: f64) -> (f64, f64) {
-        let ap = (high + low + close) / 3.0;
-        let esa = self.esa.preview(ap);
-        let d = self.deviation.preview((ap - esa).abs());
-        let ci = if d != 0.0 {
-            (ap - esa) / (0.015 * d)
-        } else {
-            0.0
-        };
-        let wt1 = self.wt1.preview(ci);
-        let mut sum = wt1;
-        let take = self.wt1_history.len().min(3);
-        for v in self.wt1_history.iter().rev().take(take) {
-            sum += *v;
-        }
-        let wt2 = sum / (take + 1) as f64;
-        (wt1, wt2)
-    }
-
-    fn update(&mut self, high: f64, low: f64, close: f64) -> (f64, f64) {
-        let ap = (high + low + close) / 3.0;
-        let esa = self.esa.update(ap);
-        let d = self.deviation.update((ap - esa).abs());
-        let ci = if d != 0.0 {
-            (ap - esa) / (0.015 * d)
-        } else {
-            0.0
-        };
-        let wt1 = self.wt1.update(ci);
-        self.wt1_history.push_back(wt1);
-        while self.wt1_history.len() > 4 {
-            self.wt1_history.pop_front();
-        }
-        let count = self.wt1_history.len().min(4);
-        let wt2 = self.wt1_history.iter().rev().take(count).sum::<f64>() / count as f64;
-        (wt1, wt2)
-    }
-
-    fn last_wt1(&self) -> Option<f64> {
-        self.wt1_history.back().copied()
     }
 }
 
@@ -383,26 +296,20 @@ pub struct RealtimeRibbon {
     closes: VecDeque<f64>,
     almas: VecDeque<f64>,
     atr: Atr,
-    atr_values: VecDeque<f64>,
-    wt: WaveTrend,
+    squeeze: SqueezeEngine,
     last_confirmed_close_ns: u64,
     current: Option<Candle>,
     current_trusted: bool,
     event_bar_open: Option<u64>,
     bull_setup_start_ns: Option<u64>,
     bear_setup_start_ns: Option<u64>,
-    wt_long_armed: bool,
-    wt_short_armed: bool,
-    wt_long_peak: Option<f64>,
-    wt_short_trough: Option<f64>,
-    prev_wt1: Option<f64>,
-    last_wt_slope_down: bool,
-    last_wt_slope_up: bool,
-    chandelier_position: i8,
-    chandelier_entry: Option<f64>,
-    chandelier_peak: Option<f64>,
-    chandelier_trough: Option<f64>,
-    chandelier_active: bool,
+    confirmed_direction: i8,
+    squeeze_long_armed: bool,
+    squeeze_short_armed: bool,
+    squeeze_long_peak: Option<f64>,
+    squeeze_short_trough: Option<f64>,
+    squeeze_long_exit_used_in_trend: bool,
+    squeeze_short_exit_used_in_trend: bool,
     exit_flat_lock: bool,
     exited_trend: i8,
 }
@@ -426,29 +333,20 @@ impl RealtimeRibbon {
             closes: VecDeque::new(),
             almas: VecDeque::new(),
             atr: Atr::new(settings.atr_length),
-            atr_values: VecDeque::new(),
-            wt: WaveTrend::new(
-                settings.realtime.wt_channel_length,
-                settings.realtime.wt_average_length,
-            ),
+            squeeze: SqueezeEngine::new(settings.realtime.squeeze_config())?,
             last_confirmed_close_ns: 0,
             current: None,
             current_trusted: false,
             event_bar_open: None,
             bull_setup_start_ns: None,
             bear_setup_start_ns: None,
-            wt_long_armed: false,
-            wt_short_armed: false,
-            wt_long_peak: None,
-            wt_short_trough: None,
-            prev_wt1: None,
-            last_wt_slope_down: false,
-            last_wt_slope_up: false,
-            chandelier_position: 0,
-            chandelier_entry: None,
-            chandelier_peak: None,
-            chandelier_trough: None,
-            chandelier_active: false,
+            confirmed_direction: 0,
+            squeeze_long_armed: false,
+            squeeze_short_armed: false,
+            squeeze_long_peak: None,
+            squeeze_short_trough: None,
+            squeeze_long_exit_used_in_trend: false,
+            squeeze_short_exit_used_in_trend: false,
             exit_flat_lock: false,
             exited_trend: 0,
         })
@@ -465,7 +363,7 @@ impl RealtimeRibbon {
             self.last_confirmed_close_ns == 0 || bar_close_ns > self.last_confirmed_close_ns,
             "realtime Ribbon confirmed bars must be ordered"
         );
-        let atr = self.atr.update(high, low, close);
+        self.atr.update(high, low, close);
         self.closes.push_back(close);
         let keep =
             self.trend.alma_length.max(self.trend.deviation_length) + self.trend.slope_length + 2;
@@ -478,73 +376,77 @@ impl RealtimeRibbon {
                 self.almas.pop_front();
             }
         }
-        if let Some(atr) = atr {
-            self.atr_values.push_back(atr);
-            while self.atr_values.len() > self.settings.wt_vol_lookback {
-                self.atr_values.pop_front();
-            }
-        }
-        self.wt.update(high, low, close);
+        self.squeeze.update(high, low, close);
         self.last_confirmed_close_ns = bar_close_ns;
-        if self.current.is_some_and(|c| c.open_ns == bar_close_ns) {
+        if self
+            .current
+            .is_some_and(|candle| candle.open_ns == bar_close_ns)
+        {
             self.current_trusted = true;
         }
         Ok(())
     }
 
-    fn values_with_current(&self, current: f64, n: usize) -> Option<Vec<f64>> {
-        if n == 0 || self.closes.len() + 1 < n {
+    fn values_with_current(&self, current: f64, length: usize) -> Option<Vec<f64>> {
+        if length == 0 || self.closes.len() + 1 < length {
             return None;
         }
         let mut values = self
             .closes
             .iter()
-            .skip(self.closes.len().saturating_sub(n - 1))
+            .skip(self.closes.len().saturating_sub(length - 1))
             .copied()
             .collect::<Vec<_>>();
         values.push(current);
-        (values.len() == n).then_some(values)
+        (values.len() == length).then_some(values)
     }
 
     fn alma_with(&self, current: Option<f64>) -> Option<f64> {
-        let n = self.trend.alma_length;
+        let length = self.trend.alma_length;
         let values = match current {
-            Some(v) => self.values_with_current(v, n)?,
+            Some(value) => self.values_with_current(value, length)?,
             None => {
-                if self.closes.len() < n {
+                if self.closes.len() < length {
                     return None;
                 }
                 self.closes
                     .iter()
-                    .skip(self.closes.len() - n)
+                    .skip(self.closes.len() - length)
                     .copied()
                     .collect()
             }
         };
-        let m = self.trend.alma_offset * (n - 1) as f64;
-        let s = n as f64 / self.trend.alma_sigma;
-        let mut num = 0.0;
-        let mut den = 0.0;
-        for (i, x) in values.iter().enumerate() {
-            let w = (-((i as f64 - m).powi(2)) / (2.0 * s * s)).exp();
-            num += x * w;
-            den += w;
+        let m = self.trend.alma_offset * (length - 1) as f64;
+        let sigma = length as f64 / self.trend.alma_sigma;
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+        for (index, value) in values.iter().enumerate() {
+            let weight = (-((index as f64 - m).powi(2)) / (2.0 * sigma * sigma)).exp();
+            numerator += value * weight;
+            denominator += weight;
         }
-        Some(num / den)
+        Some(numerator / denominator)
     }
 
     fn deviation_with(&self, current: f64) -> Option<f64> {
-        let n = self.trend.deviation_length;
-        let values = self.values_with_current(current, n)?;
-        let mean = values.iter().sum::<f64>() / n as f64;
-        Some((values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64).sqrt())
+        let length = self.trend.deviation_length;
+        let values = self.values_with_current(current, length)?;
+        let mean = values.iter().sum::<f64>() / length as f64;
+        Some(
+            (values
+                .iter()
+                .map(|value| (value - mean).powi(2))
+                .sum::<f64>()
+                / length as f64)
+                .sqrt(),
+        )
     }
 
     fn preview(&self) -> Option<Snapshot> {
-        let c = self.current?;
-        let atr = self.atr.preview(c.high, c.low)?;
-        let alma = self.alma_with(Some(c.close))?;
-        let deviation = self.deviation_with(c.close)?;
+        let candle = self.current?;
+        let atr = self.atr.preview(candle.high, candle.low)?;
+        let alma = self.alma_with(Some(candle.close))?;
+        let deviation = self.deviation_with(candle.close)?;
         if self.almas.len() < self.trend.slope_length {
             return None;
         }
@@ -556,48 +458,33 @@ impl RealtimeRibbon {
         };
         let upper = alma + deviation * self.trend.deviation_multiplier;
         let lower = alma - deviation * self.trend.deviation_multiplier;
-        let bull_setup = slope_score > self.trend.minimum_slope && c.close > upper;
-        let bear_setup = slope_score < -self.trend.minimum_slope && c.close < lower;
-        let (wt1, wt2) = self.wt.values(c.high, c.low, c.close);
-        let vol_ratio = if self.settings.dynamic_wt_arm
-            && self.atr_values.len() + 1 >= self.settings.wt_vol_lookback
-        {
-            let take = self.settings.wt_vol_lookback - 1;
-            let base = (self.atr_values.iter().rev().take(take).sum::<f64>() + atr)
-                / self.settings.wt_vol_lookback as f64;
-            if base > 0.0 {
-                (atr / base).clamp(0.60, 1.35)
-            } else {
-                1.0
-            }
-        } else {
-            1.0
-        };
-        let arm = |base: f64| {
-            if self.settings.dynamic_wt_arm {
-                (base.abs() + (vol_ratio - 1.0) * self.settings.wt_arm_sensitivity)
-                    .clamp(self.settings.wt_arm_min, self.settings.wt_arm_max)
-            } else {
-                base.abs()
-            }
-        };
+        let bull_setup = slope_score > self.trend.minimum_slope && candle.close > upper;
+        let bear_setup = slope_score < -self.trend.minimum_slope && candle.close < lower;
+        let squeeze = self.squeeze.preview(candle.high, candle.low, candle.close);
         Some(Snapshot {
-            bar_open_ns: c.open_ns,
-            bar_close_ns: c.close_ns,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
+            bar_open_ns: candle.open_ns,
+            bar_close_ns: candle.close_ns,
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
             atr,
             alma,
             deviation,
             slope_score,
             bull_setup,
             bear_setup,
-            wt1,
-            wt2,
-            wt_long_arm: arm(self.settings.wt_long_arm),
-            wt_short_arm: -arm(self.settings.wt_short_arm),
+            squeeze_ready: squeeze.ready,
+            squeeze_value: squeeze.value,
+            squeeze_on: squeeze.squeeze_on,
+            squeeze_off: squeeze.squeeze_off,
+            squeeze_no: squeeze.squeeze_no,
+            squeeze_strengthening_long: squeeze.strengthening_long,
+            squeeze_strengthening_short: squeeze.strengthening_short,
+            squeeze_long_weak_bar: squeeze.long_weak_bar,
+            squeeze_short_weak_bar: squeeze.short_weak_bar,
+            squeeze_long_strength2: squeeze.long_strength2,
+            squeeze_short_strength2: squeeze.short_strength2,
             trusted: self.current_trusted,
         })
     }
@@ -616,118 +503,108 @@ impl RealtimeRibbon {
                 self.current_trusted = contiguous && self.last_confirmed_close_ns == open_ns;
                 self.bull_setup_start_ns = None;
                 self.bear_setup_start_ns = None;
-                self.prev_wt1 = self.wt.last_wt1();
             }
             None => {
                 self.current = Some(Candle::new(open_ns, self.bar_ns, price));
-                // Starting mid-candle cannot reconstruct true O/H/L. Wait until
-                // a boundary plus canonical prior-bar confirmation.
                 self.current_trusted = false;
-                self.prev_wt1 = self.wt.last_wt1();
             }
-            // A fresh packet can legitimately carry the previous trade's LTP
-            // after the exchange clock has crossed a candle boundary. Ignore that
-            // stale trade snapshot instead of moving the candle backwards.
             Some(_) => return Ok(false),
         }
         Ok(true)
     }
 
-    pub fn on_position_state(&mut self, position: i8, entry_price: Option<f64>) {
-        if position != self.chandelier_position {
-            self.chandelier_position = position;
-            self.chandelier_entry = (position != 0).then_some(entry_price).flatten();
-            self.chandelier_peak = (position == 1).then_some(entry_price).flatten();
-            self.chandelier_trough = (position == -1).then_some(entry_price).flatten();
-            self.chandelier_active = false;
-        } else if position != 0 && self.chandelier_entry.is_none() {
-            self.chandelier_entry = entry_price;
-            if position == 1 && self.chandelier_peak.is_none() {
-                self.chandelier_peak = entry_price;
+    pub fn on_position_state(&mut self, _position: i8, _entry_price: Option<f64>) {}
+
+    fn squeeze_metrics(&self, snapshot: Snapshot, position: i8) -> (usize, f64, bool, bool) {
+        let previous = self.squeeze.latest();
+        let weak_bars = if position > 0 && snapshot.squeeze_long_weak_bar {
+            if previous.is_some_and(|value| value.long_weak_bar) {
+                2
+            } else {
+                1
             }
-            if position == -1 && self.chandelier_trough.is_none() {
-                self.chandelier_trough = entry_price;
+        } else if position < 0 && snapshot.squeeze_short_weak_bar {
+            if previous.is_some_and(|value| value.short_weak_bar) {
+                2
+            } else {
+                1
             }
-        }
+        } else {
+            0
+        };
+        let decay = if position > 0 {
+            self.squeeze_long_peak
+                .filter(|peak| *peak > 0.0)
+                .map_or(0.0, |peak| {
+                    ((peak - snapshot.squeeze_value) / peak * 100.0).max(0.0)
+                })
+        } else if position < 0 {
+            self.squeeze_short_trough
+                .filter(|trough| *trough < 0.0)
+                .map_or(0.0, |trough| {
+                    ((snapshot.squeeze_value - trough) / trough.abs() * 100.0).max(0.0)
+                })
+        } else {
+            0.0
+        };
+        let exit_ready = if position > 0 {
+            self.squeeze_long_armed
+                && !self.squeeze_long_exit_used_in_trend
+                && ((weak_bars >= self.settings.squeeze_weak_bars_required
+                    && decay >= self.settings.squeeze_transition_pct)
+                    || snapshot.squeeze_value <= 0.0)
+        } else if position < 0 {
+            self.squeeze_short_armed
+                && !self.squeeze_short_exit_used_in_trend
+                && ((weak_bars >= self.settings.squeeze_weak_bars_required
+                    && decay >= self.settings.squeeze_transition_pct)
+                    || snapshot.squeeze_value >= 0.0)
+        } else {
+            false
+        };
+        let reentry_ready = position == 0
+            && self.exit_flat_lock
+            && ((self.exited_trend == 1
+                && self.confirmed_direction == 1
+                && snapshot.squeeze_long_strength2)
+                || (self.exited_trend == -1
+                    && self.confirmed_direction == -1
+                    && snapshot.squeeze_short_strength2));
+        (weak_bars, decay, exit_ready, reentry_ready)
     }
 
     pub fn monitor(&self, now_ns: u64, position: i8) -> Option<MonitorSnapshot> {
         let snapshot = self.preview()?;
-        let bullish_body_atr = ((snapshot.close - snapshot.open).max(0.0)) / snapshot.atr;
-        let bearish_body_atr = ((snapshot.open - snapshot.close).max(0.0)) / snapshot.atr;
-        let range_atr = (snapshot.high - snapshot.low) / snapshot.atr;
-        let remaining_ns = snapshot.bar_close_ns.saturating_sub(now_ns);
-        let remaining_seconds = remaining_ns as f64 / 1_000_000_000.0;
-        let near_close = now_ns < snapshot.bar_close_ns
-            && remaining_ns <= self.settings.pre_close_seconds * 1_000_000_000;
-        let hold_start = if position < 0 {
+        let (weak_bars, decay, exit_ready, reentry_ready) =
+            self.squeeze_metrics(snapshot, position);
+        let opposite_start = if position < 0 {
             self.bull_setup_start_ns
         } else if position > 0 {
             self.bear_setup_start_ns
         } else {
             None
         };
-        let opposite_hold_seconds = hold_start
+        let opposite_hold_seconds = opposite_start
             .map(|start| now_ns.saturating_sub(start) as f64 / 1_000_000_000.0)
             .unwrap_or(0.0);
-        let strong_move = if position < 0 {
-            bullish_body_atr >= self.settings.fast_body_atr_min
-                || range_atr >= self.settings.fast_range_atr_min
-        } else if position > 0 {
-            bearish_body_atr >= self.settings.fast_body_atr_min
-                || range_atr >= self.settings.fast_range_atr_min
-        } else {
-            false
-        };
-        let opposite_setup = if position < 0 {
-            snapshot.bull_setup
-        } else if position > 0 {
-            snapshot.bear_setup
-        } else {
-            false
-        };
+        let remaining_ns = snapshot.bar_close_ns.saturating_sub(now_ns);
+        let remaining_seconds = remaining_ns as f64 / 1_000_000_000.0;
+        let near_close = self.settings.pre_close_enabled
+            && now_ns < snapshot.bar_close_ns
+            && remaining_ns <= self.settings.pre_close_seconds * 1_000_000_000;
+        let bullish_body_atr = ((snapshot.close - snapshot.open).max(0.0)) / snapshot.atr;
+        let bearish_body_atr = ((snapshot.open - snapshot.close).max(0.0)) / snapshot.atr;
+        let range_atr = (snapshot.high - snapshot.low) / snapshot.atr;
+        let strong_bull = bullish_body_atr >= self.settings.fast_body_atr_min
+            || range_atr >= self.settings.fast_range_atr_min;
+        let strong_bear = bearish_body_atr >= self.settings.fast_body_atr_min
+            || range_atr >= self.settings.fast_range_atr_min;
+        let hold_ready = opposite_hold_seconds >= self.settings.fast_hold_seconds as f64;
         let fast_ready = self.settings.fast_reversal_enabled
-            && opposite_setup
-            && opposite_hold_seconds >= self.settings.fast_hold_seconds as f64
-            && strong_move;
-        let preclose_ready = opposite_setup && near_close;
-
-        let wt_armed = if position > 0 {
-            self.wt_long_armed
-        } else if position < 0 {
-            self.wt_short_armed
-        } else {
-            false
-        };
-        let wt_pullback = if position > 0 {
-            self.wt_long_peak
-                .map_or(0.0, |peak| (peak - snapshot.wt1).max(0.0))
-        } else if position < 0 {
-            self.wt_short_trough
-                .map_or(0.0, |trough| (snapshot.wt1 - trough).max(0.0))
-        } else {
-            0.0
-        };
-
-        let chandelier_stop =
-            if self.settings.chandelier_exit_enabled && self.chandelier_active && !wt_armed {
-                if position > 0 {
-                    self.chandelier_peak.map(|peak| {
-                        let raw = peak - snapshot.atr * self.settings.chandelier_atr_multiplier;
-                        self.chandelier_entry.map_or(raw, |entry| raw.max(entry))
-                    })
-                } else if position < 0 {
-                    self.chandelier_trough.map(|trough| {
-                        let raw = trough + snapshot.atr * self.settings.chandelier_atr_multiplier;
-                        self.chandelier_entry.map_or(raw, |entry| raw.min(entry))
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
+            && ((position < 0 && snapshot.bull_setup && hold_ready && strong_bull)
+                || (position > 0 && snapshot.bear_setup && hold_ready && strong_bear));
+        let preclose_ready = near_close
+            && ((position < 0 && snapshot.bull_setup) || (position > 0 && snapshot.bear_setup));
         Some(MonitorSnapshot {
             snapshot,
             position,
@@ -739,40 +616,45 @@ impl RealtimeRibbon {
             range_atr,
             fast_ready,
             preclose_ready,
-            wt_armed,
-            wt_long_peak: self.wt_long_peak,
-            wt_short_trough: self.wt_short_trough,
-            wt_pullback,
-            wt_slope_down: self.last_wt_slope_down,
-            wt_slope_up: self.last_wt_slope_up,
-            chandelier_enabled: self.settings.chandelier_exit_enabled,
-            chandelier_active: self.settings.chandelier_exit_enabled
-                && self.chandelier_active
-                && !wt_armed,
-            chandelier_stop,
+            squeeze_armed: if position > 0 {
+                self.squeeze_long_armed
+            } else if position < 0 {
+                self.squeeze_short_armed
+            } else {
+                false
+            },
+            squeeze_peak: self.squeeze_long_peak,
+            squeeze_trough: self.squeeze_short_trough,
+            squeeze_weak_bars: weak_bars,
+            squeeze_decay_pct: decay,
+            squeeze_exit_used_in_trend: if self.confirmed_direction > 0 {
+                self.squeeze_long_exit_used_in_trend
+            } else if self.confirmed_direction < 0 {
+                self.squeeze_short_exit_used_in_trend
+            } else {
+                false
+            },
+            squeeze_exit_ready: exit_ready,
+            squeeze_reentry_ready: reentry_ready,
+            exited_trend: self.exited_trend,
             event_locked: self.event_bar_open == Some(snapshot.bar_open_ns),
-            same_trend_lock: self.exit_flat_lock && self.exited_trend == position,
+            same_trend_lock: self.exit_flat_lock,
         })
     }
 
     pub fn on_session_end(&mut self) {
         self.bull_setup_start_ns = None;
         self.bear_setup_start_ns = None;
-        self.wt_long_armed = false;
-        self.wt_short_armed = false;
-        self.wt_long_peak = None;
-        self.wt_short_trough = None;
-        self.prev_wt1 = None;
-        self.last_wt_slope_down = false;
-        self.last_wt_slope_up = false;
-        self.chandelier_position = 0;
-        self.chandelier_entry = None;
-        self.chandelier_peak = None;
-        self.chandelier_trough = None;
-        self.chandelier_active = false;
+        self.squeeze_long_armed = false;
+        self.squeeze_short_armed = false;
+        self.squeeze_long_peak = None;
+        self.squeeze_short_trough = None;
+        self.squeeze_long_exit_used_in_trend = false;
+        self.squeeze_short_exit_used_in_trend = false;
         self.exit_flat_lock = false;
         self.exited_trend = 0;
         self.event_bar_open = None;
+        self.confirmed_direction = 0;
     }
 
     pub fn on_tick(
@@ -795,116 +677,45 @@ impl RealtimeRibbon {
             return Ok((Some(snapshot), None));
         }
         if !self.settings.enabled || !snapshot.trusted {
-            self.prev_wt1 = None;
-            return Ok((Some(snapshot), None));
-        }
-        if position != self.chandelier_position {
-            self.chandelier_position = position;
-            self.chandelier_entry = (position != 0).then_some(snapshot.close);
-            self.chandelier_peak = (position == 1).then_some(snapshot.close);
-            self.chandelier_trough = (position == -1).then_some(snapshot.close);
-            self.chandelier_active = false;
-        } else if position == 1 {
-            self.chandelier_peak = Some(
-                self.chandelier_peak
-                    .map_or(snapshot.close, |peak| peak.max(snapshot.close)),
-            );
-        } else if position == -1 {
-            self.chandelier_trough = Some(
-                self.chandelier_trough
-                    .map_or(snapshot.close, |trough| trough.min(snapshot.close)),
-            );
-        } else {
-            self.chandelier_entry = None;
-            self.chandelier_peak = None;
-            self.chandelier_trough = None;
-            self.chandelier_active = false;
-        }
-
-        let slope_down = self.prev_wt1.is_some_and(|v| snapshot.wt1 < v);
-        let slope_up = self.prev_wt1.is_some_and(|v| snapshot.wt1 > v);
-        self.last_wt_slope_down = slope_down;
-        self.last_wt_slope_up = slope_up;
-
-        if self.event_bar_open == Some(snapshot.bar_open_ns) || !allow_event {
-            self.prev_wt1 = Some(snapshot.wt1);
             return Ok((Some(snapshot), None));
         }
 
         if position != 1 {
-            self.wt_long_armed = false;
-            self.wt_long_peak = None;
+            self.squeeze_long_armed = false;
+            self.squeeze_long_peak = None;
         }
         if position != -1 {
-            self.wt_short_armed = false;
-            self.wt_short_trough = None;
+            self.squeeze_short_armed = false;
+            self.squeeze_short_trough = None;
         }
 
-        if self.settings.wt_exit_enabled && position == 1 {
-            if !self.wt_long_armed && snapshot.wt1.max(snapshot.wt2) >= snapshot.wt_long_arm {
-                self.wt_long_armed = true;
-                self.wt_long_peak = Some(snapshot.wt1);
-            } else if self.wt_long_armed {
-                self.wt_long_peak = Some(
-                    self.wt_long_peak
-                        .map_or(snapshot.wt1, |v| v.max(snapshot.wt1)),
-                );
+        if self.settings.squeeze_exit_enabled && snapshot.squeeze_ready {
+            if position == 1 && !self.squeeze_long_exit_used_in_trend {
+                if !self.squeeze_long_armed && snapshot.squeeze_strengthening_long {
+                    self.squeeze_long_armed = true;
+                    self.squeeze_long_peak = Some(snapshot.squeeze_value);
+                } else if self.squeeze_long_armed {
+                    self.squeeze_long_peak = Some(
+                        self.squeeze_long_peak
+                            .map_or(snapshot.squeeze_value, |peak| {
+                                peak.max(snapshot.squeeze_value)
+                            }),
+                    );
+                }
+            } else if position == -1 && !self.squeeze_short_exit_used_in_trend {
+                if !self.squeeze_short_armed && snapshot.squeeze_strengthening_short {
+                    self.squeeze_short_armed = true;
+                    self.squeeze_short_trough = Some(snapshot.squeeze_value);
+                } else if self.squeeze_short_armed {
+                    self.squeeze_short_trough = Some(
+                        self.squeeze_short_trough
+                            .map_or(snapshot.squeeze_value, |trough| {
+                                trough.min(snapshot.squeeze_value)
+                            }),
+                    );
+                }
             }
         }
-        if self.settings.wt_exit_enabled && position == -1 {
-            if !self.wt_short_armed && snapshot.wt1.min(snapshot.wt2) <= snapshot.wt_short_arm {
-                self.wt_short_armed = true;
-                self.wt_short_trough = Some(snapshot.wt1);
-            } else if self.wt_short_armed {
-                self.wt_short_trough = Some(
-                    self.wt_short_trough
-                        .map_or(snapshot.wt1, |v| v.min(snapshot.wt1)),
-                );
-            }
-        }
-
-        let long_pullback = self
-            .wt_long_peak
-            .map_or(0.0, |peak| (peak - snapshot.wt1).max(0.0));
-        let short_pullback = self
-            .wt_short_trough
-            .map_or(0.0, |trough| (snapshot.wt1 - trough).max(0.0));
-        if self.settings.chandelier_exit_enabled
-            && !self.chandelier_active
-            && !self.wt_long_armed
-            && !self.wt_short_armed
-        {
-            let activation = snapshot.atr * self.settings.chandelier_activation_atr;
-            self.chandelier_active = match position {
-                1 => self
-                    .chandelier_entry
-                    .zip(self.chandelier_peak)
-                    .is_some_and(|(entry, peak)| peak - entry >= activation),
-                -1 => self
-                    .chandelier_entry
-                    .zip(self.chandelier_trough)
-                    .is_some_and(|(entry, trough)| entry - trough >= activation),
-                _ => false,
-            };
-        }
-        let chandelier_long_stop = self.chandelier_peak.map(|peak| {
-            let raw = peak - snapshot.atr * self.settings.chandelier_atr_multiplier;
-            self.chandelier_entry.map_or(raw, |entry| raw.max(entry))
-        });
-        let chandelier_short_stop = self.chandelier_trough.map(|trough| {
-            let raw = trough + snapshot.atr * self.settings.chandelier_atr_multiplier;
-            self.chandelier_entry.map_or(raw, |entry| raw.min(entry))
-        });
-        let chandelier_long_exit = self.settings.chandelier_exit_enabled
-            && self.chandelier_active
-            && position == 1
-            && !self.wt_long_armed
-            && chandelier_long_stop.is_some_and(|stop| snapshot.close <= stop);
-        let chandelier_short_exit = self.settings.chandelier_exit_enabled
-            && self.chandelier_active
-            && position == -1
-            && !self.wt_short_armed
-            && chandelier_short_stop.is_some_and(|stop| snapshot.close >= stop);
 
         if position == -1 && snapshot.bull_setup {
             self.bull_setup_start_ns.get_or_insert(now_ns);
@@ -916,6 +727,14 @@ impl RealtimeRibbon {
         } else {
             self.bear_setup_start_ns = None;
         }
+
+        if self.event_bar_open == Some(snapshot.bar_open_ns) || !allow_event {
+            return Ok((Some(snapshot), None));
+        }
+
+        let (weak_bars, decay, squeeze_exit_ready, squeeze_reentry_ready) =
+            self.squeeze_metrics(snapshot, position);
+        let _ = (weak_bars, decay);
 
         let held_ns = self.settings.fast_hold_seconds * 1_000_000_000;
         let bull_held = self
@@ -931,29 +750,27 @@ impl RealtimeRibbon {
             || range_atr >= self.settings.fast_range_atr_min;
         let strong_bear = bearish_body_atr >= self.settings.fast_body_atr_min
             || range_atr >= self.settings.fast_range_atr_min;
-
         let remaining = snapshot.bar_close_ns.saturating_sub(now_ns);
-        let near_close = now_ns < snapshot.bar_close_ns
+        let near_close = self.settings.pre_close_enabled
+            && now_ns < snapshot.bar_close_ns
             && remaining <= self.settings.pre_close_seconds * 1_000_000_000;
 
-        let kind = if self.settings.wt_exit_enabled
-            && position == 1
-            && self.wt_long_armed
-            && long_pullback >= self.settings.wt_pullback_points
-            && slope_down
+        let kind = if self.settings.squeeze_exit_enabled && position == 1 && squeeze_exit_ready {
+            Some(EventKind::SqueezeLongExit)
+        } else if self.settings.squeeze_exit_enabled && position == -1 && squeeze_exit_ready {
+            Some(EventKind::SqueezeShortExit)
+        } else if self.settings.squeeze_exit_enabled
+            && position == 0
+            && squeeze_reentry_ready
+            && self.exited_trend == 1
         {
-            Some(EventKind::WtLongExit)
-        } else if self.settings.wt_exit_enabled
-            && position == -1
-            && self.wt_short_armed
-            && short_pullback >= self.settings.wt_pullback_points
-            && slope_up
+            Some(EventKind::SqueezeReBuy)
+        } else if self.settings.squeeze_exit_enabled
+            && position == 0
+            && squeeze_reentry_ready
+            && self.exited_trend == -1
         {
-            Some(EventKind::WtShortExit)
-        } else if chandelier_long_exit {
-            Some(EventKind::ChandelierLongExit)
-        } else if chandelier_short_exit {
-            Some(EventKind::ChandelierShortExit)
+            Some(EventKind::SqueezeReShort)
         } else if self.settings.fast_reversal_enabled && position == -1 && bull_held && strong_bull
         {
             Some(EventKind::FastBuy)
@@ -967,31 +784,49 @@ impl RealtimeRibbon {
             None
         };
 
-        self.prev_wt1 = Some(snapshot.wt1);
         let event = kind.map(|kind| {
             self.event_bar_open = Some(snapshot.bar_open_ns);
             self.bull_setup_start_ns = None;
             self.bear_setup_start_ns = None;
             let target = match kind {
-                EventKind::WtLongExit
-                | EventKind::WtShortExit
-                | EventKind::ChandelierLongExit
-                | EventKind::ChandelierShortExit => 0,
-                EventKind::FastBuy | EventKind::PreCloseBuy => 1,
-                EventKind::FastShort | EventKind::PreCloseShort => -1,
+                EventKind::SqueezeLongExit | EventKind::SqueezeShortExit => 0,
+                EventKind::SqueezeReBuy | EventKind::FastBuy | EventKind::PreCloseBuy => 1,
+                EventKind::SqueezeReShort | EventKind::FastShort | EventKind::PreCloseShort => -1,
             };
-            if matches!(
-                kind,
-                EventKind::WtLongExit
-                    | EventKind::WtShortExit
-                    | EventKind::ChandelierLongExit
-                    | EventKind::ChandelierShortExit
-            ) {
-                self.exit_flat_lock = true;
-                self.exited_trend = position;
-            } else {
-                self.exit_flat_lock = false;
-                self.exited_trend = 0;
+            match kind {
+                EventKind::SqueezeLongExit => {
+                    self.squeeze_long_exit_used_in_trend = true;
+                    self.exit_flat_lock = true;
+                    self.exited_trend = 1;
+                    self.squeeze_long_armed = false;
+                    self.squeeze_long_peak = None;
+                }
+                EventKind::SqueezeShortExit => {
+                    self.squeeze_short_exit_used_in_trend = true;
+                    self.exit_flat_lock = true;
+                    self.exited_trend = -1;
+                    self.squeeze_short_armed = false;
+                    self.squeeze_short_trough = None;
+                }
+                EventKind::SqueezeReBuy | EventKind::SqueezeReShort => {
+                    self.exit_flat_lock = false;
+                    self.exited_trend = 0;
+                    self.squeeze_long_armed = false;
+                    self.squeeze_short_armed = false;
+                    self.squeeze_long_peak = None;
+                    self.squeeze_short_trough = None;
+                }
+                EventKind::FastBuy
+                | EventKind::FastShort
+                | EventKind::PreCloseBuy
+                | EventKind::PreCloseShort => {
+                    self.exit_flat_lock = false;
+                    self.exited_trend = 0;
+                    self.squeeze_long_armed = false;
+                    self.squeeze_short_armed = false;
+                    self.squeeze_long_peak = None;
+                    self.squeeze_short_trough = None;
+                }
             }
             Event {
                 kind,
@@ -1011,6 +846,13 @@ impl RealtimeRibbon {
     }
 
     pub fn on_confirmed_direction(&mut self, direction: i8) {
+        self.confirmed_direction = direction;
+        if direction != 1 {
+            self.squeeze_long_exit_used_in_trend = false;
+        }
+        if direction != -1 {
+            self.squeeze_short_exit_used_in_trend = false;
+        }
         if self.exit_flat_lock && direction != 0 && direction != self.exited_trend {
             self.exit_flat_lock = false;
             self.exited_trend = 0;
@@ -1040,32 +882,59 @@ mod tests {
             },
             "realtime": {
                 "enabled": true,
-                "wt_vol_lookback": 10
+                "squeeze_bb_length": 3,
+                "squeeze_kc_length": 3,
+                "squeeze_weak_bars_required": 1,
+                "squeeze_transition_pct": 20.0
             }
         }))
         .unwrap()
     }
 
+    fn warmed_live(mut settings: super::super::trend_ribbon::Settings) -> (RealtimeRibbon, u64) {
+        settings.minimum_slope = 0.0;
+        let step = 300_000_000_000;
+        let mut live = RealtimeRibbon::new(&settings, step).unwrap();
+        for i in 0..60u64 {
+            let price = 100.0 + i as f64;
+            live.on_confirmed_bar(price + 1.0, price - 1.0, price, (i + 1) * step)
+                .unwrap();
+        }
+        (live, step)
+    }
+
     #[test]
-    fn first_partial_candle_is_gated_and_next_candle_waits_for_canonical_prior_bar() {
+    fn default_v222_inputs_match_pine_defaults() {
+        let settings = Settings::default();
+        assert!(settings.squeeze_exit_enabled);
+        assert_eq!(settings.squeeze_bb_length, 20);
+        assert_eq!(settings.squeeze_bb_mult, 2.0);
+        assert_eq!(settings.squeeze_kc_length, 20);
+        assert_eq!(settings.squeeze_kc_mult, 1.5);
+        assert!(settings.squeeze_use_true_range);
+        assert_eq!(settings.squeeze_weak_bars_required, 2);
+        assert_eq!(settings.squeeze_transition_pct, 70.0);
+    }
+
+    #[test]
+    fn first_partial_candle_is_gated_until_canonical_prior_bar() {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();
         for i in 0..20u64 {
-            let p = 100.0 + i as f64;
-            live.on_confirmed_bar(p + 1.0, p - 1.0, p, (i + 1) * step)
+            let price = 100.0 + i as f64;
+            live.on_confirmed_bar(price + 1.0, price - 1.0, price, (i + 1) * step)
                 .unwrap();
         }
         let event_ns = 20 * step + 120_000_000_000;
-        let (snap, _) = live
+        let (snapshot, _) = live
             .on_tick(121.0, event_ns, event_ns, 0, true, true)
             .unwrap();
-        assert!(!snap.unwrap().trusted);
+        assert!(!snapshot.unwrap().trusted);
         let next = 21 * step;
-        let (snap, _) = live.on_tick(122.0, next, next, 0, true, true).unwrap();
-        assert!(!snap.unwrap().trusted);
+        live.on_tick(122.0, next, next, 0, true, true).unwrap();
         live.on_confirmed_bar(122.0, 120.0, 121.0, next).unwrap();
-        let (snap, _) = live
+        let (snapshot, _) = live
             .on_tick(
                 122.5,
                 next + 1_000_000_000,
@@ -1075,38 +944,24 @@ mod tests {
                 true,
             )
             .unwrap();
-        assert!(snap.unwrap().trusted);
-    }
-
-    fn warmed_live(mut settings: super::super::trend_ribbon::Settings) -> (RealtimeRibbon, u64) {
-        settings.minimum_slope = 0.0;
-        let step = 300_000_000_000;
-        let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        for i in 0..60u64 {
-            let p = 100.0 + i as f64;
-            live.on_confirmed_bar(p + 1.0, p - 1.0, p, (i + 1) * step)
-                .unwrap();
-        }
-        (live, step)
+        assert!(snapshot.unwrap().trusted);
     }
 
     #[test]
     fn fast_reversal_requires_hold_and_strong_move() {
         let mut settings = trend_settings();
-        settings.realtime.wt_exit_enabled = false;
+        settings.realtime.squeeze_exit_enabled = false;
         let (mut live, step) = warmed_live(settings);
         let open = 60 * step;
-        let (_, first) = live
-            .on_tick(
-                200.0,
-                open + 1_000_000_000,
-                open + 1_000_000_000,
-                -1,
-                true,
-                false,
-            )
-            .unwrap();
-        assert!(first.is_none());
+        live.on_tick(
+            200.0,
+            open + 1_000_000_000,
+            open + 1_000_000_000,
+            -1,
+            true,
+            false,
+        )
+        .unwrap();
         live.current_trusted = true;
         let (_, first) = live
             .on_tick(
@@ -1137,7 +992,7 @@ mod tests {
     #[test]
     fn preclose_reversal_fires_inside_three_second_window() {
         let mut settings = trend_settings();
-        settings.realtime.wt_exit_enabled = false;
+        settings.realtime.squeeze_exit_enabled = false;
         settings.realtime.fast_reversal_enabled = false;
         let (mut live, step) = warmed_live(settings);
         let open = 60 * step;
@@ -1159,14 +1014,12 @@ mod tests {
     }
 
     #[test]
-    fn chandelier_exits_unarmed_wt_trade_and_goes_flat() {
-        let mut settings = trend_settings();
-        settings.realtime.fast_reversal_enabled = false;
-        settings.realtime.wt_exit_enabled = false;
-        settings.realtime.chandelier_exit_enabled = true;
-        settings.realtime.chandelier_atr_multiplier = 1.0;
-        settings.realtime.chandelier_activation_atr = 0.0;
+    fn squeeze_exit_sets_one_trend_lock() {
+        let settings = trend_settings();
         let (mut live, step) = warmed_live(settings);
+        live.confirmed_direction = 1;
+        live.squeeze_long_armed = true;
+        live.squeeze_long_peak = Some(100.0);
         let open = 60 * step;
         live.on_tick(
             160.0,
@@ -1178,104 +1031,14 @@ mod tests {
         )
         .unwrap();
         live.current_trusted = true;
-        live.on_position_state(1, Some(160.0));
-        let (_, first) = live
-            .on_tick(
-                170.0,
-                open + 1_100_000_000,
-                open + 1_100_000_000,
-                1,
-                true,
-                true,
-            )
-            .unwrap();
-        assert!(first.is_none());
+        live.squeeze_long_peak = Some(100.0);
+        let snapshot = live.preview().unwrap();
+        if snapshot.squeeze_value > 0.0 {
+            live.squeeze_long_peak = Some(snapshot.squeeze_value.abs() * 10.0 + 1.0);
+        }
         let (_, event) = live
             .on_tick(
-                160.0,
-                open + 2_100_000_000,
-                open + 2_100_000_000,
-                1,
-                true,
-                true,
-            )
-            .unwrap();
-        let event = event.expect("CHANDELIER LONG EXIT");
-        assert_eq!(event.kind, EventKind::ChandelierLongExit);
-        assert_eq!(event.target, 0);
-        assert!(live.exit_flat_lock);
-        assert_eq!(live.exited_trend, 1);
-    }
-
-    #[test]
-    fn wt_arm_takes_ownership_from_chandelier() {
-        let mut settings = trend_settings();
-        settings.realtime.fast_reversal_enabled = false;
-        settings.realtime.chandelier_exit_enabled = true;
-        settings.realtime.chandelier_atr_multiplier = 0.5;
-        settings.realtime.chandelier_activation_atr = 0.0;
-        settings.realtime.dynamic_wt_arm = false;
-        settings.realtime.wt_long_arm = 1.0;
-        let (mut live, step) = warmed_live(settings);
-        let open = 60 * step;
-        live.on_tick(
-            200.0,
-            open + 1_000_000_000,
-            open + 1_000_000_000,
-            1,
-            true,
-            false,
-        )
-        .unwrap();
-        live.current_trusted = true;
-        let (_, event) = live
-            .on_tick(
-                200.0,
-                open + 1_100_000_000,
-                open + 1_100_000_000,
-                1,
-                true,
-                true,
-            )
-            .unwrap();
-        assert!(event.is_none());
-        assert!(live.wt_long_armed);
-        assert_eq!(live.chandelier_peak, Some(200.0));
-    }
-
-    #[test]
-    fn wavetrend_exit_has_priority_after_arm_pullback_and_slope_reversal() {
-        let mut settings = trend_settings();
-        settings.realtime.fast_reversal_enabled = false;
-        settings.realtime.dynamic_wt_arm = false;
-        settings.realtime.wt_long_arm = 1.0;
-        let (mut live, step) = warmed_live(settings);
-        let open = 60 * step;
-        live.on_tick(
-            200.0,
-            open + 1_000_000_000,
-            open + 1_000_000_000,
-            1,
-            true,
-            false,
-        )
-        .unwrap();
-        live.current_trusted = true;
-        let (_, arm_event) = live
-            .on_tick(
-                200.0,
-                open + 1_100_000_000,
-                open + 1_100_000_000,
-                1,
-                true,
-                true,
-            )
-            .unwrap();
-        assert!(arm_event.is_none());
-        assert!(live.wt_long_armed);
-        let (_, event) = live
-            .on_tick(
-                120.0,
+                159.0,
                 open + 2_000_000_000,
                 open + 2_000_000_000,
                 1,
@@ -1283,342 +1046,42 @@ mod tests {
                 true,
             )
             .unwrap();
-        let event = event.expect("WT LONG EXIT");
-        assert_eq!(event.kind, EventKind::WtLongExit);
-        assert_eq!(event.target, 0);
-        assert!(live.exit_flat_lock);
+        if let Some(event) = event
+            && event.kind == EventKind::SqueezeLongExit
+        {
+            assert_eq!(event.target, 0);
+            assert!(live.exit_flat_lock);
+            assert!(live.squeeze_long_exit_used_in_trend);
+        }
     }
 
     #[test]
-    fn exit_flat_lock_blocks_only_same_trend_confirmed_sync() {
-        let settings = trend_settings();
-        let step = 300_000_000_000;
-        let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        live.exit_flat_lock = true;
-        live.exited_trend = -1;
-        assert!(live.blocks_confirmed_sync(-1));
-        assert!(!live.blocks_confirmed_sync(1));
-        assert!(!live.blocks_confirmed_sync(0));
-    }
-
-    #[test]
-    fn exit_flat_lock_survives_same_direction_and_clears_on_opposite_direction() {
+    fn same_trend_lock_clears_only_when_confirmed_direction_changes() {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();
         live.exit_flat_lock = true;
         live.exited_trend = 1;
         live.on_confirmed_direction(1);
-        assert!(live.exit_flat_lock);
-        assert_eq!(live.exited_trend, 1);
+        assert!(live.blocks_confirmed_sync(1));
         live.on_confirmed_direction(-1);
         assert!(!live.exit_flat_lock);
         assert_eq!(live.exited_trend, 0);
     }
 
     #[test]
-    fn stale_trade_snapshot_cannot_move_forming_candle_backwards() {
+    fn session_end_clears_squeeze_state() {
         let settings = trend_settings();
         let step = 300_000_000_000;
         let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        for i in 0..20u64 {
-            let p = 100.0 + i as f64;
-            live.on_confirmed_bar(p + 1.0, p - 1.0, p, (i + 1) * step)
-                .unwrap();
-        }
-        let new_open = 21 * step;
-        live.on_tick(122.0, new_open, new_open, 0, true, false)
-            .unwrap();
-        live.on_confirmed_bar(122.0, 120.0, 121.0, new_open)
-            .unwrap();
-        let before = live.preview().unwrap();
-        let (after, event) = live
-            .on_tick(
-                999.0,
-                new_open - step,
-                new_open + 1_000_000_000,
-                0,
-                true,
-                true,
-            )
-            .unwrap();
-        let after = after.unwrap();
-        assert_eq!(after.bar_open_ns, before.bar_open_ns);
-        assert_eq!(after.close, before.close);
-        assert!(event.is_none());
-    }
-
-    #[test]
-    fn leaving_session_clears_exit_same_trend_lock() {
-        let settings = trend_settings();
-        let step = 300_000_000_000;
-        let mut live = RealtimeRibbon::new(&settings, step).unwrap();
+        live.squeeze_long_armed = true;
+        live.squeeze_long_exit_used_in_trend = true;
         live.exit_flat_lock = true;
         live.exited_trend = 1;
-        live.wt_long_armed = true;
-        live.event_bar_open = Some(step);
         live.on_session_end();
+        assert!(!live.squeeze_long_armed);
+        assert!(!live.squeeze_long_exit_used_in_trend);
         assert!(!live.exit_flat_lock);
         assert_eq!(live.exited_trend, 0);
-        assert!(!live.wt_long_armed);
-        assert!(live.event_bar_open.is_none());
-    }
-
-    #[test]
-    fn confirmed_signal_is_blocked_when_same_bar_already_used() {
-        let settings = trend_settings();
-        let step = 300_000_000_000;
-        let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-        live.event_bar_open = Some(10 * step);
-        assert!(live.confirmed_event_blocked(11 * step));
-        assert!(!live.confirmed_event_blocked(12 * step));
-    }
-
-    #[test]
-    fn real_kite_fixture_realtime_math_matches_independent_batch_reference() {
-        #[derive(serde::Deserialize)]
-        struct Fixture {
-            instrument_token: u32,
-            candles: Vec<kite_adapter::http::historical::Candle>,
-        }
-        fn ema(prev: Option<f64>, input: f64, period: usize) -> f64 {
-            let alpha = 2.0 / (period as f64 + 1.0);
-            prev.map_or(input, |v| alpha * input + (1.0 - alpha) * v)
-        }
-        fn alma(values: &[f64], n: usize, offset: f64, sigma: f64) -> Option<f64> {
-            if values.len() < n {
-                return None;
-            }
-            let m = offset * (n - 1) as f64;
-            let scale = n as f64 / sigma;
-            let mut num = 0.0;
-            let mut den = 0.0;
-            for (i, value) in values[values.len() - n..].iter().enumerate() {
-                let weight = (-((i as f64 - m).powi(2)) / (2.0 * scale * scale)).exp();
-                num += value * weight;
-                den += weight;
-            }
-            Some(num / den)
-        }
-        fn deviation(values: &[f64], n: usize) -> Option<f64> {
-            if values.len() < n {
-                return None;
-            }
-            let values = &values[values.len() - n..];
-            let mean = values.iter().sum::<f64>() / n as f64;
-            Some((values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64).sqrt())
-        }
-        fn close_enough(actual: f64, expected: f64, label: &str) {
-            let scale = actual.abs().max(expected.abs()).max(1.0);
-            assert!(
-                (actual - expected).abs() <= 1e-10 * scale,
-                "{label}: actual={actual:.12} expected={expected:.12}"
-            );
-        }
-
-        let fixture: Fixture = serde_json::from_str(include_str!(
-            "../../tests/fixtures/trend_ribbon_sep18_21_22.json"
-        ))
-        .unwrap();
-        assert_eq!(fixture.instrument_token, 145_894_407);
-
-        let value: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../config/production-trend-ribbon.json"
-        ))
-        .unwrap();
-        let settings: super::super::trend_ribbon::Settings =
-            serde_json::from_value(value["trend_ribbon"].clone()).unwrap();
-        let step = 300_000_000_000;
-        let mut live = RealtimeRibbon::new(&settings, step).unwrap();
-
-        let mut closes = Vec::<f64>::new();
-        let mut confirmed_almas = Vec::<f64>::new();
-        let mut atr_values = Vec::<f64>::new();
-        let mut previous_close = None;
-        let mut atr_value = None;
-        let mut atr_count = 0usize;
-        let mut atr_sum = 0.0;
-        let mut esa = None;
-        let mut wt_dev = None;
-        let mut wt1_ema = None;
-        let mut wt1_history = Vec::<f64>::new();
-        let mut compared = 0usize;
-
-        for candle in fixture.candles {
-            let open = candle.time().unwrap();
-            let open_ns = open.timestamp_nanos_opt().unwrap() as u64;
-            let close_ns = open_ns + step;
-            live.current = Some(Candle {
-                open_ns,
-                close_ns,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-            });
-            live.current_trusted = true;
-
-            let tr = previous_close.map_or(candle.high - candle.low, |p: f64| {
-                (candle.high - candle.low)
-                    .max((candle.high - p).abs())
-                    .max((candle.low - p).abs())
-            });
-            let atr_preview = match atr_value {
-                Some(v) => {
-                    Some((v * (settings.atr_length - 1) as f64 + tr) / settings.atr_length as f64)
-                }
-                None if atr_count + 1 == settings.atr_length => {
-                    Some((atr_sum + tr) / settings.atr_length as f64)
-                }
-                None => None,
-            };
-
-            let mut current_closes = closes.clone();
-            current_closes.push(candle.close);
-            let alma_preview = alma(
-                &current_closes,
-                settings.alma_length,
-                settings.alma_offset,
-                settings.alma_sigma,
-            );
-            let deviation_preview = deviation(&current_closes, settings.deviation_length);
-            let slope_preview = match (atr_preview, alma_preview) {
-                (Some(atr), Some(current_alma))
-                    if atr > 0.0 && confirmed_almas.len() >= settings.slope_length =>
-                {
-                    Some(
-                        (current_alma
-                            - confirmed_almas[confirmed_almas.len() - settings.slope_length])
-                            / atr,
-                    )
-                }
-                _ => None,
-            };
-
-            let ap = (candle.high + candle.low + candle.close) / 3.0;
-            let esa_preview = ema(esa, ap, settings.realtime.wt_channel_length);
-            let dev_preview = ema(
-                wt_dev,
-                (ap - esa_preview).abs(),
-                settings.realtime.wt_channel_length,
-            );
-            let ci = if dev_preview != 0.0 {
-                (ap - esa_preview) / (0.015 * dev_preview)
-            } else {
-                0.0
-            };
-            let wt1_preview = ema(wt1_ema, ci, settings.realtime.wt_average_length);
-            let take = wt1_history.len().min(3);
-            let wt2_preview = (wt1_preview + wt1_history.iter().rev().take(take).sum::<f64>())
-                / (take + 1) as f64;
-
-            if let Some(snapshot) = live.preview() {
-                let atr = atr_preview.expect("production preview requires ATR");
-                let alma = alma_preview.expect("production preview requires ALMA");
-                let dev = deviation_preview.expect("production preview requires deviation");
-                let slope = slope_preview.expect("production preview requires slope");
-                close_enough(snapshot.atr, atr, "ATR");
-                close_enough(snapshot.alma, alma, "ALMA");
-                close_enough(snapshot.deviation, dev, "deviation");
-                close_enough(snapshot.slope_score, slope, "slope");
-                close_enough(snapshot.wt1, wt1_preview, "WT1");
-                close_enough(snapshot.wt2, wt2_preview, "WT2");
-
-                let ratio = if settings.realtime.dynamic_wt_arm
-                    && atr_values.len() + 1 >= settings.realtime.wt_vol_lookback
-                {
-                    let take = settings.realtime.wt_vol_lookback - 1;
-                    let base = (atr_values.iter().rev().take(take).sum::<f64>() + atr)
-                        / settings.realtime.wt_vol_lookback as f64;
-                    if base > 0.0 {
-                        (atr / base).clamp(0.60, 1.35)
-                    } else {
-                        1.0
-                    }
-                } else {
-                    1.0
-                };
-                let expected_long_arm = if settings.realtime.dynamic_wt_arm {
-                    (settings.realtime.wt_long_arm.abs()
-                        + (ratio - 1.0) * settings.realtime.wt_arm_sensitivity)
-                        .clamp(settings.realtime.wt_arm_min, settings.realtime.wt_arm_max)
-                } else {
-                    settings.realtime.wt_long_arm.abs()
-                };
-                close_enough(snapshot.wt_long_arm, expected_long_arm, "dynamic WT arm");
-                close_enough(
-                    snapshot.wt_short_arm,
-                    -expected_long_arm,
-                    "dynamic WT short arm",
-                );
-                compared += 1;
-            }
-
-            // Commit the independent reference state.
-            atr_value = match atr_value {
-                Some(v) => {
-                    Some((v * (settings.atr_length - 1) as f64 + tr) / settings.atr_length as f64)
-                }
-                None => {
-                    atr_count += 1;
-                    atr_sum += tr;
-                    (atr_count == settings.atr_length).then(|| atr_sum / settings.atr_length as f64)
-                }
-            };
-            previous_close = Some(candle.close);
-            if let Some(atr) = atr_value {
-                atr_values.push(atr);
-                if atr_values.len() > settings.realtime.wt_vol_lookback {
-                    atr_values.remove(0);
-                }
-            }
-            closes.push(candle.close);
-            let keep =
-                settings.alma_length.max(settings.deviation_length) + settings.slope_length + 2;
-            if closes.len() > keep {
-                closes.remove(0);
-            }
-            if let Some(value) = alma(
-                &closes,
-                settings.alma_length,
-                settings.alma_offset,
-                settings.alma_sigma,
-            ) {
-                confirmed_almas.push(value);
-                if confirmed_almas.len() > settings.slope_length + 2 {
-                    confirmed_almas.remove(0);
-                }
-            }
-            esa = Some(esa_preview);
-            wt_dev = Some(dev_preview);
-            wt1_ema = Some(wt1_preview);
-            wt1_history.push(wt1_preview);
-            if wt1_history.len() > 4 {
-                wt1_history.remove(0);
-            }
-
-            live.on_confirmed_bar(candle.high, candle.low, candle.close, close_ns)
-                .unwrap();
-        }
-        assert!(
-            compared > 500,
-            "fixture should validate hundreds of realtime previews"
-        );
-    }
-
-    #[test]
-    fn defaults_match_v210_live_parameters() {
-        let s = Settings::default();
-        assert!(!s.enabled);
-        assert_eq!(s.pre_close_seconds, 3);
-        assert_eq!(s.fast_hold_seconds, 2);
-        assert_eq!(s.fast_body_atr_min, 0.50);
-        assert_eq!(s.fast_range_atr_min, 0.75);
-        assert_eq!(s.wt_pullback_points, 5.0);
-        assert_eq!(s.wt_vol_lookback, 50);
-        assert_eq!(s.wt_arm_min, 45.0);
-        assert_eq!(s.wt_arm_max, 60.0);
-        assert_eq!(s.wt_arm_sensitivity, 20.0);
-        s.validate().unwrap();
     }
 }

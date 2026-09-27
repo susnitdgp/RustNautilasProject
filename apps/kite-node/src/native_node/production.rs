@@ -274,18 +274,27 @@ mod tests {
     }
 
     #[test]
-    fn v210_candidate_is_valid_and_live_orders_are_disabled() {
+    fn v222_candidate_is_valid_and_live_orders_are_disabled() {
         let selection = selection();
         selection.validate().unwrap();
+        let realtime = &selection.trend_ribbon.realtime;
         assert_eq!(selection.interval, Interval::FiveMinute);
         assert!(!selection.live_orders_enabled);
         assert!(selection.trend_ribbon.session.reset_daily);
-        assert!(selection.trend_ribbon.realtime.enabled);
-        assert!(selection.trend_ribbon.realtime.fast_reversal_enabled);
-        assert!(selection.trend_ribbon.realtime.wt_exit_enabled);
-        assert_eq!(selection.trend_ribbon.realtime.pre_close_seconds, 3);
-        assert_eq!(selection.trend_ribbon.realtime.fast_hold_seconds, 2);
-        assert_eq!(selection.trend_ribbon.realtime.wt_pullback_points, 5.0);
+        assert!(selection.trend_ribbon.backtest_square_off);
+        assert!(realtime.enabled);
+        assert!(realtime.pre_close_enabled);
+        assert!(realtime.fast_reversal_enabled);
+        assert!(realtime.squeeze_exit_enabled);
+        assert_eq!(realtime.pre_close_seconds, 3);
+        assert_eq!(realtime.fast_hold_seconds, 2);
+        assert_eq!(realtime.squeeze_bb_length, 20);
+        assert_eq!(realtime.squeeze_bb_mult, 2.0);
+        assert_eq!(realtime.squeeze_kc_length, 20);
+        assert_eq!(realtime.squeeze_kc_mult, 1.5);
+        assert!(realtime.squeeze_use_true_range);
+        assert_eq!(realtime.squeeze_weak_bars_required, 2);
+        assert_eq!(realtime.squeeze_transition_pct, 70.0);
     }
 
     #[test]

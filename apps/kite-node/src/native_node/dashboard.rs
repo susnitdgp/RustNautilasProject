@@ -71,24 +71,37 @@ struct MonitorParams {
     fast_hold_seconds: u64,
     fast_body_atr_min: f64,
     fast_range_atr_min: f64,
+    pre_close_enabled: bool,
     pre_close_seconds: u64,
-    wt_pullback_points: f64,
-    chandelier_activation_atr: f64,
-    chandelier_atr_multiplier: f64,
+    squeeze_exit_enabled: bool,
+    squeeze_bb_length: usize,
+    squeeze_bb_mult: f64,
+    squeeze_kc_length: usize,
+    squeeze_kc_mult: f64,
+    squeeze_use_true_range: bool,
+    squeeze_weak_bars_required: usize,
+    squeeze_transition_pct: f64,
     deviation_multiplier: f64,
     minimum_slope: f64,
 }
 
 impl MonitorParams {
     fn from_selection(selection: &super::production::Selection) -> Self {
+        let realtime = &selection.trend_ribbon.realtime;
         Self {
-            fast_hold_seconds: selection.trend_ribbon.realtime.fast_hold_seconds,
-            fast_body_atr_min: selection.trend_ribbon.realtime.fast_body_atr_min,
-            fast_range_atr_min: selection.trend_ribbon.realtime.fast_range_atr_min,
-            pre_close_seconds: selection.trend_ribbon.realtime.pre_close_seconds,
-            wt_pullback_points: selection.trend_ribbon.realtime.wt_pullback_points,
-            chandelier_activation_atr: selection.trend_ribbon.realtime.chandelier_activation_atr,
-            chandelier_atr_multiplier: selection.trend_ribbon.realtime.chandelier_atr_multiplier,
+            fast_hold_seconds: realtime.fast_hold_seconds,
+            fast_body_atr_min: realtime.fast_body_atr_min,
+            fast_range_atr_min: realtime.fast_range_atr_min,
+            pre_close_enabled: realtime.pre_close_enabled,
+            pre_close_seconds: realtime.pre_close_seconds,
+            squeeze_exit_enabled: realtime.squeeze_exit_enabled,
+            squeeze_bb_length: realtime.squeeze_bb_length,
+            squeeze_bb_mult: realtime.squeeze_bb_mult,
+            squeeze_kc_length: realtime.squeeze_kc_length,
+            squeeze_kc_mult: realtime.squeeze_kc_mult,
+            squeeze_use_true_range: realtime.squeeze_use_true_range,
+            squeeze_weak_bars_required: realtime.squeeze_weak_bars_required,
+            squeeze_transition_pct: realtime.squeeze_transition_pct,
             deviation_multiplier: selection.trend_ribbon.deviation_multiplier,
             minimum_slope: selection.trend_ribbon.minimum_slope,
         }
@@ -550,10 +563,10 @@ fn short_time(timestamp: &str) -> String {
 fn reason_label(reason: &str) -> String {
     match reason {
         "trend_reversal" => "REVERSAL",
-        "wt_long_exit" => "WT LX",
-        "wt_short_exit" => "WT SX",
-        "chandelier_long_exit" => "CH LX",
-        "chandelier_short_exit" => "CH SX",
+        "squeeze_long_exit" => "QLX",
+        "squeeze_short_exit" => "QSX",
+        "squeeze_re_buy" => "RB",
+        "squeeze_re_short" => "RS",
         "session_end" => "SQ OFF",
         "shutdown" => "SHUTDOWN",
         "trend_ribbon" => "REVERSAL",
@@ -711,7 +724,7 @@ fn render_header(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
     let title = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.10 - STRATEGY MONITOR ",
+                " TREND RIBBON v2.22 - STRATEGY MONITOR ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   READ-ONLY"),
@@ -829,40 +842,69 @@ fn render_monitor_panel(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: R
     } else {
         "NONE"
     };
-    let wt_state = if m.wt_armed {
-        if m.position > 0 {
-            "LONG ARMED"
-        } else if m.position < 0 {
-            "SHORT ARMED"
+    let squeeze_state = if m.squeeze_on {
+        "SQUEEZE ON"
+    } else if m.squeeze_off {
+        "SQUEEZE OFF"
+    } else if m.squeeze_no {
+        "NO SQUEEZE"
+    } else {
+        "WARMUP"
+    };
+    let squeeze_direction = if !m.squeeze_ready {
+        "WARMUP"
+    } else if m.squeeze_value > 0.0 {
+        if m.squeeze_strengthening_long {
+            "POS STRONG"
         } else {
-            "ARMED"
+            "POS WEAK"
+        }
+    } else if m.squeeze_value < 0.0 {
+        if m.squeeze_strengthening_short {
+            "NEG STRONG"
+        } else {
+            "NEG WEAK"
         }
     } else {
-        "UNARMED"
+        "ZERO"
     };
-    let wt_extreme = if m.position > 0 {
-        m.wt_long_peak
+    let extreme = if m.position > 0 {
+        m.squeeze_peak
     } else if m.position < 0 {
-        m.wt_short_trough
+        m.squeeze_trough
     } else {
         None
     };
-    let wt_slope = if m.wt_slope_down {
-        "DOWN"
-    } else if m.wt_slope_up {
-        "UP"
+    let squeeze_watch = if m.exited_trend == 1 {
+        if m.squeeze_reentry_ready {
+            "RE-BUY READY"
+        } else {
+            "FLAT / WAIT RB"
+        }
+    } else if m.exited_trend == -1 {
+        if m.squeeze_reentry_ready {
+            "RE-SHORT READY"
+        } else {
+            "FLAT / WAIT RS"
+        }
+    } else if m.squeeze_exit_ready {
+        "EXIT READY"
+    } else if m.squeeze_exit_used_in_trend {
+        "EXIT USED"
+    } else if m.position > 0 {
+        if m.squeeze_armed {
+            "LONG TRANS WATCH"
+        } else {
+            "LONG WATCH"
+        }
+    } else if m.position < 0 {
+        if m.squeeze_armed {
+            "SHORT TRANS WATCH"
+        } else {
+            "SHORT WATCH"
+        }
     } else {
-        "FLAT"
-    };
-    let wt_ready = m.wt_armed
-        && m.wt_pullback >= app.params.wt_pullback_points
-        && ((m.position > 0 && m.wt_slope_down) || (m.position < 0 && m.wt_slope_up));
-    let wt_exit = if wt_ready {
-        "READY"
-    } else if m.wt_armed {
-        "WATCH"
-    } else {
-        "WAIT"
+        "IDLE"
     };
     let last_reason = current
         .events_so_far
@@ -876,6 +918,11 @@ fn render_monitor_panel(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: R
         "--"
     };
 
+    let squeeze_value_text = if m.squeeze_ready {
+        format!("{:.1}", m.squeeze_value)
+    } else {
+        "--".into()
+    };
     let lines = vec![
         section_line("TREND / POSITION"),
         kv_pair_line(
@@ -918,42 +965,65 @@ fn render_monitor_panel(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: R
         kv_line(
             "Hold / Pre-close",
             &format!(
-                "N/A replay | {}s / {}s",
-                app.params.fast_hold_seconds, app.params.pre_close_seconds
+                "N/A replay | {}s / {}",
+                app.params.fast_hold_seconds,
+                if app.params.pre_close_enabled {
+                    format!("{}s", app.params.pre_close_seconds)
+                } else {
+                    "OFF".into()
+                }
             ),
         ),
-        section_line("WAVETREND"),
-        kv_line(
-            "WT1 / WT2",
-            &format!("{:.1} / {}", m.wt1, fmt_opt(m.wt2, 1)),
-        ),
-        kv_line(
-            "Long / Short arm",
-            &format!("{:+.1} / {:+.1}", m.wt_long_arm, m.wt_short_arm),
-        ),
-        kv_pair_line("State", wt_state, "Slope", wt_slope),
+        section_line("SQUEEZE MOMENTUM"),
         kv_pair_line(
-            "Peak/Trough",
-            &fmt_opt(wt_extreme, 1),
-            "Pullback",
-            &format!("{:.1}/{:.1}", m.wt_pullback, app.params.wt_pullback_points),
+            "Engine",
+            if app.params.squeeze_exit_enabled {
+                "ON"
+            } else {
+                "OFF"
+            },
+            "Ready",
+            if m.squeeze_ready { "YES" } else { "NO" },
         ),
-        kv_line("WT exit", wt_exit),
-        section_line("CHANDELIER"),
+        kv_pair_line("Value", &squeeze_value_text, "Dir", squeeze_direction),
+        kv_line("State", squeeze_state),
         kv_pair_line(
-            "Enabled",
-            if m.chandelier_enabled { "YES" } else { "NO" },
-            "Active",
-            if m.chandelier_active { "YES" } else { "NO" },
+            "Armed",
+            if m.squeeze_armed { "YES" } else { "NO" },
+            "Extreme",
+            &fmt_opt(extreme, 1),
         ),
-        kv_line(
-            "Activate / Trail",
+        kv_pair_line(
+            "Weak bars",
             &format!(
-                "{:.1} ATR / {:.1} ATR",
-                app.params.chandelier_activation_atr, app.params.chandelier_atr_multiplier
+                "{}/{}",
+                m.squeeze_weak_bars, app.params.squeeze_weak_bars_required
+            ),
+            "Transition",
+            &format!(
+                "{:.0}%/{:.0}%",
+                m.squeeze_decay_pct, app.params.squeeze_transition_pct
             ),
         ),
-        kv_line("Stop", &fmt_opt(m.chandelier_stop, 1)),
+        kv_line("SQZ exit/reentry", squeeze_watch),
+        kv_line(
+            "Inputs BB / KC",
+            &format!(
+                "{}({:.1}) / {}({:.1})",
+                app.params.squeeze_bb_length,
+                app.params.squeeze_bb_mult,
+                app.params.squeeze_kc_length,
+                app.params.squeeze_kc_mult
+            ),
+        ),
+        kv_line(
+            "KC range",
+            if app.params.squeeze_use_true_range {
+                "TRUE RANGE"
+            } else {
+                "HIGH-LOW"
+            },
+        ),
     ];
 
     frame.render_widget(
@@ -1231,7 +1301,7 @@ fn render_live_header(
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.10 - LIVE MONITOR ",
+                " TREND RIBBON v2.22 - LIVE MONITOR ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   PAPER / NO BROKER ORDERS"),
@@ -1283,40 +1353,69 @@ fn render_live_monitor_panel(
     } else {
         "NONE"
     };
-    let wt_state = if m.wt_armed {
-        if m.position > 0 {
-            "LONG ARMED"
-        } else if m.position < 0 {
-            "SHORT ARMED"
+    let squeeze_state = if snapshot.squeeze_on {
+        "SQUEEZE ON"
+    } else if snapshot.squeeze_off {
+        "SQUEEZE OFF"
+    } else if snapshot.squeeze_no {
+        "NO SQUEEZE"
+    } else {
+        "WARMUP"
+    };
+    let squeeze_direction = if !snapshot.squeeze_ready {
+        "WARMUP"
+    } else if snapshot.squeeze_value > 0.0 {
+        if snapshot.squeeze_strengthening_long {
+            "POS STRONG"
         } else {
-            "ARMED"
+            "POS WEAK"
+        }
+    } else if snapshot.squeeze_value < 0.0 {
+        if snapshot.squeeze_strengthening_short {
+            "NEG STRONG"
+        } else {
+            "NEG WEAK"
         }
     } else {
-        "UNARMED"
+        "ZERO"
     };
-    let wt_extreme = if m.position > 0 {
-        m.wt_long_peak
+    let extreme = if m.position > 0 {
+        m.squeeze_peak
     } else if m.position < 0 {
-        m.wt_short_trough
+        m.squeeze_trough
     } else {
         None
     };
-    let wt_slope = if m.wt_slope_down {
-        "DOWN"
-    } else if m.wt_slope_up {
-        "UP"
+    let squeeze_watch = if m.exited_trend == 1 {
+        if m.squeeze_reentry_ready {
+            "RE-BUY READY"
+        } else {
+            "FLAT / WAIT RB"
+        }
+    } else if m.exited_trend == -1 {
+        if m.squeeze_reentry_ready {
+            "RE-SHORT READY"
+        } else {
+            "FLAT / WAIT RS"
+        }
+    } else if m.squeeze_exit_ready {
+        "EXIT READY"
+    } else if m.squeeze_exit_used_in_trend {
+        "EXIT USED"
+    } else if m.position > 0 {
+        if m.squeeze_armed {
+            "LONG TRANS WATCH"
+        } else {
+            "LONG WATCH"
+        }
+    } else if m.position < 0 {
+        if m.squeeze_armed {
+            "SHORT TRANS WATCH"
+        } else {
+            "SHORT WATCH"
+        }
     } else {
-        "FLAT"
-    };
-    let wt_ready = m.wt_armed
-        && m.wt_pullback >= params.wt_pullback_points
-        && ((m.position > 0 && m.wt_slope_down) || (m.position < 0 && m.wt_slope_up));
-    let wt_exit = if wt_ready {
-        "READY"
-    } else if m.wt_armed {
-        "WATCH"
-    } else {
-        "WAIT"
+        "IDLE"
     };
     let signal = state
         .signals
@@ -1343,6 +1442,11 @@ fn render_live_monitor_panel(
     let upper = snapshot.alma + snapshot.deviation * params.deviation_multiplier;
     let lower = snapshot.alma - snapshot.deviation * params.deviation_multiplier;
 
+    let squeeze_value_text = if snapshot.squeeze_ready {
+        format!("{:.1}", snapshot.squeeze_value)
+    } else {
+        "--".into()
+    };
     let lines = vec![
         section_line("TREND / POSITION"),
         kv_pair_line(
@@ -1389,41 +1493,56 @@ fn render_live_monitor_panel(
             "PRE-CLOSE",
             if m.preclose_ready { "READY" } else { "WAIT" },
         ),
-        section_line("WAVETREND"),
-        kv_line(
-            "WT1 / WT2",
-            &format!("{:.1} / {:.1}", snapshot.wt1, snapshot.wt2),
+        section_line("SQUEEZE MOMENTUM"),
+        kv_pair_line(
+            "Engine",
+            if params.squeeze_exit_enabled {
+                "ON"
+            } else {
+                "OFF"
+            },
+            "Ready",
+            if snapshot.squeeze_ready { "YES" } else { "NO" },
         ),
-        kv_line(
-            "Long / Short arm",
+        kv_pair_line("Value", &squeeze_value_text, "Dir", squeeze_direction),
+        kv_line("State", squeeze_state),
+        kv_pair_line(
+            "Armed",
+            if m.squeeze_armed { "YES" } else { "NO" },
+            "Extreme",
+            &fmt_opt(extreme, 1),
+        ),
+        kv_pair_line(
+            "Weak bars",
             &format!(
-                "{:+.1} / {:+.1}",
-                snapshot.wt_long_arm, snapshot.wt_short_arm
+                "{}/{}",
+                m.squeeze_weak_bars, params.squeeze_weak_bars_required
+            ),
+            "Transition",
+            &format!(
+                "{:.0}%/{:.0}%",
+                m.squeeze_decay_pct, params.squeeze_transition_pct
             ),
         ),
-        kv_pair_line("State", wt_state, "Slope", wt_slope),
-        kv_pair_line(
-            "Peak/Trough",
-            &fmt_opt(wt_extreme, 1),
-            "Pullback",
-            &format!("{:.1}/{:.1}", m.wt_pullback, params.wt_pullback_points),
-        ),
-        kv_line("WT exit", wt_exit),
-        section_line("CHANDELIER"),
-        kv_pair_line(
-            "Enabled",
-            if m.chandelier_enabled { "YES" } else { "NO" },
-            "Active",
-            if m.chandelier_active { "YES" } else { "NO" },
-        ),
+        kv_line("SQZ exit/reentry", squeeze_watch),
         kv_line(
-            "Activate / Trail",
+            "Inputs BB / KC",
             &format!(
-                "{:.1} ATR / {:.1} ATR",
-                params.chandelier_activation_atr, params.chandelier_atr_multiplier
+                "{}({:.1}) / {}({:.1})",
+                params.squeeze_bb_length,
+                params.squeeze_bb_mult,
+                params.squeeze_kc_length,
+                params.squeeze_kc_mult
             ),
         ),
-        kv_line("Stop", &fmt_opt(m.chandelier_stop, 1)),
+        kv_line(
+            "KC range",
+            if params.squeeze_use_true_range {
+                "TRUE RANGE"
+            } else {
+                "HIGH-LOW"
+            },
+        ),
     ];
     frame.render_widget(
         Paragraph::new(lines).block(
@@ -1844,7 +1963,7 @@ fn render_summary_header(frame: &mut ratatui::Frame<'_>, app: &SummaryApp, area:
     let lines = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.10 - DAILY PERFORMANCE ",
+                " TREND RIBBON v2.22 - DAILY PERFORMANCE ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   READ-ONLY"),
@@ -2000,7 +2119,7 @@ mod tests {
         let state = super::super::trend_ribbon_actor::State {
             signals: vec![
                 serde_json::json!({"intent":"BUY","reason":"trend_ribbon"}),
-                serde_json::json!({"intent":"BUY_EXIT","reason":"wt_long_exit"}),
+                serde_json::json!({"intent":"BUY_EXIT","reason":"squeeze_long_exit"}),
             ],
             fills: vec![
                 serde_json::json!({"timestamp_ns":1_800_000_000_000_000_000u64,"price":"100.0"}),
@@ -2013,7 +2132,7 @@ mod tests {
         assert!(rows[0].closed);
         assert_eq!(rows[0].side, "LONG");
         assert_eq!(rows[0].points, 12.0);
-        assert_eq!(rows[0].exit_reason.as_deref(), Some("WT LX"));
+        assert_eq!(rows[0].exit_reason.as_deref(), Some("QLX"));
     }
 
     #[test]
@@ -2064,10 +2183,10 @@ mod tests {
         let summary = build_summary(&selection, &fixture.candles, date, date).unwrap();
 
         assert_eq!(summary.days.len(), 1);
-        assert_eq!(summary.days[0].trades, 6);
+        assert_eq!(summary.days[0].trades, 7);
         assert_eq!(summary.days[0].wins, 4);
-        assert_eq!(summary.days[0].losses, 2);
-        assert_eq!(summary.days[0].points, 170.0);
+        assert_eq!(summary.days[0].losses, 3);
+        assert_eq!(summary.days[0].points, 262.0);
     }
 
     #[test]
@@ -2087,11 +2206,12 @@ mod tests {
         let closed: Vec<_> = trades.iter().filter(|trade| trade.closed).collect();
         let total: f64 = closed.iter().map(|trade| trade.points).sum();
 
-        assert_eq!(closed.len(), 6);
-        assert_eq!(total, 170.0);
+        assert_eq!(closed.len(), 7);
+        assert_eq!(total, 262.0);
         assert_eq!(closed[0].side, "LONG");
         assert_eq!(closed[0].entry_price, 8925.0);
-        assert_eq!(closed[0].exit_price, Some(8940.0));
+        assert_eq!(closed[0].exit_price, Some(8962.0));
+        assert_eq!(closed[0].exit_reason.as_deref(), Some("QLX"));
         assert_eq!(
             closed.last().unwrap().exit_reason.as_deref(),
             Some("SQ OFF")
@@ -2107,7 +2227,7 @@ mod tests {
         assert!(monitored.monitor.alma.is_some());
         assert!(monitored.monitor.atr.is_some());
         assert!(monitored.monitor.slope_score.is_some());
-        assert!(monitored.monitor.wt2.is_some());
+        assert!(monitored.monitor.squeeze_ready);
         assert!(monitored.monitor.entry_price.is_some());
         assert!(monitored.monitor.opened_at.is_some());
         assert!(monitored.monitor.mfe_points.unwrap() > 0.0);

@@ -1,16 +1,16 @@
 # Rust Nautilus + Zerodha Kite
 
-Native Rust/NautilusTrader project for the **MCX Crude Oil Trend Ribbon v2.10** strategy using Zerodha Kite market data and execution.
+Native Rust/NautilusTrader project for the **MCX Crude Oil Trend Ribbon v2.22 CLEAN** strategy using Zerodha Kite market data and execution.
 
 ## Current production candidate
 
-- Strategy: Trend Ribbon [BOSWaves] v2.10
+- Strategy: Trend Ribbon [BOSWaves] - FAST + Squeeze Momentum Transition Gate 4-Action v2.22 CLEAN
 - Instrument: `CRUDEOIL26OCTFUT.MCX`
 - Timeframe: 5 minutes
 - Intrabar engine: Kite full ticks / LTP
 - FAST reversal: 2-second hold + ATR strength
 - Pre-close reversal: final 3 seconds
-- WaveTrend: dynamic ATR-based arm + peak/trough pullback exit
+- Squeeze Momentum: transition-gated exit + one same-trend continuation re-entry
 - Session: 09:00–23:15 Asia/Kolkata with daily reset
 - Order model: reducing exit first, then opposite entry
 - Persistence: Redis
@@ -22,12 +22,12 @@ Private/local broker settings live in `config/kite-production.json`.
 ## Important files
 
 - `apps/kite-node/src/native_node/trend_ribbon.rs` — confirmed-bar Trend Ribbon
-- `apps/kite-node/src/native_node/trend_ribbon_realtime.rs` — FAST, pre-close and live WaveTrend logic
-- `apps/kite-node/src/native_node/trend_ribbon_backtest.rs` — historical confirmed-bar v2.10 replay
+- `apps/kite-node/src/native_node/trend_ribbon_realtime.rs` — FAST, pre-close and live Squeeze Momentum logic
+- `apps/kite-node/src/native_node/trend_ribbon_backtest.rs` — historical confirmed-bar v2.22 replay
 - `apps/kite-node/src/native_node/trend_ribbon_replay.rs` — recorded Kite full-tick replay
 - `apps/kite-node/src/native_node/trend_ribbon_recorder.rs` — read-only full-tick recorder
 - `doc/TrendRibbonBOSWaves.md` — strategy/runtime details
-- `deploy/verify-trend-ribbon-v210.sh` — complete offline verification
+- `deploy/verify-trend-ribbon-v222.sh` — complete offline verification
 - `deploy/record-trend-ribbon-ticks.sh` — read-only market-data capture
 - `deploy/run-trend-ribbon-live.sh` — live launcher
 
@@ -35,11 +35,11 @@ Private/local broker settings live in `config/kite-production.json`.
 
 ```bash
 cargo build --locked -p kite-node
-./deploy/verify-trend-ribbon-v210.sh
+./deploy/verify-trend-ribbon-v222.sh
 ```
 
 The verifier checks formatting, strict Clippy, the full test suite, historical
-Trend Ribbon/WaveTrend replay, saved full-tick replay, and Nautilus sandbox
+Trend Ribbon/Squeeze replay, saved full-tick replay, and Nautilus sandbox
 FAST-reversal execution.
 
 ## Kite authentication (Rust only)
@@ -66,7 +66,7 @@ or full redirect URL, exchanges it with Kite, and durably replaces only
 
 ## Terminal dashboard
 
-The Rust-only Ratatui dashboard now combines the trade ledger with a right-side strategy monitor. The monitor shows current Ribbon/ALMA bands, ATR/deviation/slope, FAST/pre-close state, WaveTrend arm/peak/pullback/exit state, Chandelier state, plus current-trade MFE, MAE, giveback and retained-profit percentage.
+The Rust-only Ratatui dashboard now combines the trade ledger with a right-side strategy monitor. The monitor shows current Ribbon/ALMA bands, ATR/deviation/slope, FAST/pre-close state, Squeeze value/state/transition/exit/re-entry state, plus current-trade MFE, MAE, giveback and retained-profit percentage.
 
 Historical replay remains fully read-only and creates no strategy or execution client:
 

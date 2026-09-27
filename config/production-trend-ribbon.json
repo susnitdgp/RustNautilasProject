@@ -33,6 +33,7 @@
     "slope_length": 3,
     "minimum_slope": 0.08,
     "atr_length": 14,
+    "backtest_square_off": true,
     "session": {
       "start": "09:00:00",
       "end": "23:15:00",
@@ -41,25 +42,20 @@
     },
     "realtime": {
       "enabled": true,
+      "pre_close_enabled": true,
       "pre_close_seconds": 3,
       "fast_reversal_enabled": true,
       "fast_hold_seconds": 2,
       "fast_body_atr_min": 0.5,
       "fast_range_atr_min": 0.75,
-      "chandelier_exit_enabled": false,
-      "chandelier_atr_multiplier": 3.0,
-      "chandelier_activation_atr": 1.5,
-      "wt_exit_enabled": true,
-      "wt_channel_length": 10,
-      "wt_average_length": 21,
-      "wt_long_arm": 53.0,
-      "wt_short_arm": -53.0,
-      "wt_pullback_points": 5.0,
-      "dynamic_wt_arm": true,
-      "wt_vol_lookback": 50,
-      "wt_arm_min": 45.0,
-      "wt_arm_max": 60.0,
-      "wt_arm_sensitivity": 20.0
+      "squeeze_exit_enabled": true,
+      "squeeze_bb_length": 20,
+      "squeeze_bb_mult": 2.0,
+      "squeeze_kc_length": 20,
+      "squeeze_kc_mult": 1.5,
+      "squeeze_use_true_range": true,
+      "squeeze_weak_bars_required": 2,
+      "squeeze_transition_pct": 70.0
     }
   }
 }
