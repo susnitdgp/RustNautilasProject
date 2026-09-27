@@ -257,6 +257,26 @@ impl HistoricalChandelier {
         }
     }
 
+    fn stop(&self, side: i8, atr: Option<f64>, multiplier: f64, wt_armed: bool) -> Option<f64> {
+        if wt_armed || !self.active {
+            return None;
+        }
+        let atr = atr?;
+        if side > 0 {
+            self.peak.map(|peak| {
+                let raw = peak - atr * multiplier;
+                self.entry.map_or(raw, |entry| raw.max(entry))
+            })
+        } else if side < 0 {
+            self.trough.map(|trough| {
+                let raw = trough + atr * multiplier;
+                self.entry.map_or(raw, |entry| raw.min(entry))
+            })
+        } else {
+            None
+        }
+    }
+
     fn exit(
         &self,
         side: i8,
@@ -265,27 +285,14 @@ impl HistoricalChandelier {
         multiplier: f64,
         wt_armed: bool,
     ) -> bool {
-        if wt_armed || !self.active {
-            return false;
-        }
-        let Some(atr) = atr else {
-            return false;
-        };
-        if side > 0 {
-            self.peak.is_some_and(|peak| {
-                let raw = peak - atr * multiplier;
-                let stop = self.entry.map_or(raw, |entry| raw.max(entry));
-                close <= stop
+        self.stop(side, atr, multiplier, wt_armed)
+            .is_some_and(|stop| {
+                if side > 0 {
+                    close <= stop
+                } else {
+                    close >= stop
+                }
             })
-        } else if side < 0 {
-            self.trough.is_some_and(|trough| {
-                let raw = trough + atr * multiplier;
-                let stop = self.entry.map_or(raw, |entry| raw.min(entry));
-                close >= stop
-            })
-        } else {
-            false
-        }
     }
 }
 
@@ -302,6 +309,47 @@ pub struct Event {
     pub wt2: Option<f64>,
     pub wt_long_arm: f64,
     pub wt_short_arm: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitorBar {
+    pub timestamp: String,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub direction: i8,
+    pub signal: i8,
+    pub in_session: bool,
+    pub alma: Option<f64>,
+    pub deviation: Option<f64>,
+    pub atr: Option<f64>,
+    pub upper_confirm: Option<f64>,
+    pub lower_confirm: Option<f64>,
+    pub slope_score: Option<f64>,
+    pub bull_setup: bool,
+    pub bear_setup: bool,
+    pub wt1: f64,
+    pub wt2: Option<f64>,
+    pub wt_long_arm: f64,
+    pub wt_short_arm: f64,
+    pub wt_armed: bool,
+    pub wt_long_peak: Option<f64>,
+    pub wt_short_trough: Option<f64>,
+    pub wt_pullback: f64,
+    pub wt_slope_down: bool,
+    pub wt_slope_up: bool,
+    pub chandelier_enabled: bool,
+    pub chandelier_active: bool,
+    pub chandelier_stop: Option<f64>,
+    pub position: i8,
+    pub entry_price: Option<f64>,
+    pub opened_at: Option<String>,
+    pub best_price: Option<f64>,
+    pub worst_price: Option<f64>,
+    pub mfe_points: Option<f64>,
+    pub mae_points: Option<f64>,
+    pub open_points: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +372,9 @@ pub struct Report {
 struct Position {
     side: i8,
     entry: Option<f64>,
+    opened_at: Option<String>,
+    best_price: Option<f64>,
+    worst_price: Option<f64>,
 }
 
 impl Position {
@@ -331,6 +382,19 @@ impl Position {
         Self {
             side: 0,
             entry: None,
+            opened_at: None,
+            best_price: None,
+            worst_price: None,
+        }
+    }
+
+    fn update_extremes(&mut self, high: f64, low: f64) {
+        if self.side > 0 {
+            self.best_price = Some(self.best_price.map_or(high, |v| v.max(high)));
+            self.worst_price = Some(self.worst_price.map_or(low, |v| v.min(low)));
+        } else if self.side < 0 {
+            self.best_price = Some(self.best_price.map_or(low, |v| v.min(low)));
+            self.worst_price = Some(self.worst_price.map_or(high, |v| v.max(high)));
         }
     }
 
@@ -340,6 +404,26 @@ impl Position {
                 price - entry
             } else {
                 entry - price
+            }
+        })
+    }
+
+    fn mfe_points(&self) -> Option<f64> {
+        self.entry.zip(self.best_price).map(|(entry, best)| {
+            if self.side > 0 {
+                best - entry
+            } else {
+                entry - best
+            }
+        })
+    }
+
+    fn mae_points(&self) -> Option<f64> {
+        self.entry.zip(self.worst_price).map(|(entry, worst)| {
+            if self.side > 0 {
+                worst - entry
+            } else {
+                entry - worst
             }
         })
     }
@@ -381,6 +465,9 @@ fn close_position(
     });
     position.side = 0;
     position.entry = None;
+    position.opened_at = None;
+    position.best_price = None;
+    position.worst_price = None;
     points
 }
 
@@ -408,16 +495,20 @@ fn open_position(
     });
     position.side = side;
     position.entry = Some(price);
+    position.opened_at = Some(timestamp.to_owned());
+    position.best_price = Some(price);
+    position.worst_price = Some(price);
 }
 
-pub fn simulate(
+fn simulate_internal(
     settings: super::trend_ribbon::Settings,
     calendar: super::session_calendar::Calendar,
     bar_ns: u64,
     instrument: &str,
     interval: &str,
     candles: &[Candle],
-) -> Result<Report> {
+    capture_monitor: bool,
+) -> Result<(Report, Vec<MonitorBar>)> {
     ensure!(!candles.is_empty(), "historical replay has no candles");
     let mut ribbon =
         super::trend_ribbon::TrendRibbon::new_for_interval(settings.clone(), calendar, bar_ns)?;
@@ -430,6 +521,7 @@ pub fn simulate(
     let mut winning = 0usize;
     let mut losing = 0usize;
     let mut gross = 0.0;
+    let mut monitor = Vec::new();
 
     for candle in candles {
         let open = candle.time()?;
@@ -449,6 +541,9 @@ pub fn simulate(
         );
 
         let position_at_start = position.side;
+        if position_at_start != 0 {
+            position.update_extremes(candle.high, candle.low);
+        }
         wt.update_position_state(position_at_start, values);
         let wt_armed = wt.armed(position_at_start);
         chandelier.update(
@@ -549,10 +644,93 @@ pub fn simulate(
                 losing += 1;
             }
         }
+
+        if capture_monitor {
+            let same_position = position.side == position_at_start;
+            let monitor_wt_armed = same_position && wt.armed(position.side);
+            let monitor_long_peak = if same_position && position.side > 0 {
+                wt.long_peak
+            } else {
+                None
+            };
+            let monitor_short_trough = if same_position && position.side < 0 {
+                wt.short_trough
+            } else {
+                None
+            };
+            let wt_pullback = if position.side > 0 {
+                monitor_long_peak.map_or(0.0, |peak| (peak - values.wt1).max(0.0))
+            } else if position.side < 0 {
+                monitor_short_trough.map_or(0.0, |trough| (values.wt1 - trough).max(0.0))
+            } else {
+                0.0
+            };
+            let chandelier_active = same_position
+                && settings.realtime.chandelier_exit_enabled
+                && chandelier.active
+                && !monitor_wt_armed;
+            let chandelier_stop = if same_position && settings.realtime.chandelier_exit_enabled {
+                chandelier.stop(
+                    position.side,
+                    observation.atr,
+                    settings.realtime.chandelier_atr_multiplier,
+                    monitor_wt_armed,
+                )
+            } else {
+                None
+            };
+            monitor.push(MonitorBar {
+                timestamp: timestamp.clone(),
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                direction: observation.direction,
+                signal: observation.signal,
+                in_session: observation.in_session,
+                alma: observation.alma,
+                deviation: observation.deviation,
+                atr: observation.atr,
+                upper_confirm: observation.upper_confirm,
+                lower_confirm: observation.lower_confirm,
+                slope_score: observation.slope_score,
+                bull_setup: observation.in_session
+                    && observation
+                        .slope_score
+                        .is_some_and(|s| s > settings.minimum_slope)
+                    && observation.upper_confirm.is_some_and(|u| candle.close > u),
+                bear_setup: observation.in_session
+                    && observation
+                        .slope_score
+                        .is_some_and(|s| s < -settings.minimum_slope)
+                    && observation.lower_confirm.is_some_and(|l| candle.close < l),
+                wt1: values.wt1,
+                wt2: values.wt2,
+                wt_long_arm: values.long_arm,
+                wt_short_arm: values.short_arm,
+                wt_armed: monitor_wt_armed,
+                wt_long_peak: monitor_long_peak,
+                wt_short_trough: monitor_short_trough,
+                wt_pullback,
+                wt_slope_down: values.slope_down,
+                wt_slope_up: values.slope_up,
+                chandelier_enabled: settings.realtime.chandelier_exit_enabled,
+                chandelier_active,
+                chandelier_stop,
+                position: position.side,
+                entry_price: position.entry,
+                opened_at: position.opened_at.clone(),
+                best_price: position.best_price,
+                worst_price: position.worst_price,
+                mfe_points: position.mfe_points(),
+                mae_points: position.mae_points(),
+                open_points: position.close_points(candle.close),
+            });
+        }
         previous_inside = inside;
     }
 
-    Ok(Report {
+    let report = Report {
         instrument: instrument.into(),
         interval: interval.into(),
         bars: candles.len(),
@@ -565,7 +743,35 @@ pub fn simulate(
         open_entry_price: position.entry,
         historical_wt_exit_enabled: settings.realtime.wt_exit_enabled,
         historical_chandelier_exit_enabled: settings.realtime.chandelier_exit_enabled,
-    })
+    };
+    Ok((report, monitor))
+}
+
+pub fn simulate(
+    settings: super::trend_ribbon::Settings,
+    calendar: super::session_calendar::Calendar,
+    bar_ns: u64,
+    instrument: &str,
+    interval: &str,
+    candles: &[Candle],
+) -> Result<Report> {
+    simulate_internal(
+        settings, calendar, bar_ns, instrument, interval, candles, false,
+    )
+    .map(|(report, _)| report)
+}
+
+pub fn simulate_with_monitor(
+    settings: super::trend_ribbon::Settings,
+    calendar: super::session_calendar::Calendar,
+    bar_ns: u64,
+    instrument: &str,
+    interval: &str,
+    candles: &[Candle],
+) -> Result<(Report, Vec<MonitorBar>)> {
+    simulate_internal(
+        settings, calendar, bar_ns, instrument, interval, candles, true,
+    )
 }
 
 pub fn run(config: &str, fixture: &str) -> Result<()> {

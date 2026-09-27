@@ -1,6 +1,7 @@
-//! Read-only terminal trade ledger for Trend Ribbon replay.
+//! Terminal trade ledger and strategy-state monitor for Trend Ribbon.
 //!
-//! No charts, no execution client, and no Redis trading-state writes.
+//! Historical mode is fully read-only. Live monitor mode consumes the existing
+//! paper actor and Nautilus Sandbox fills; it never enables Kite broker execution.
 use anyhow::{Context, Result, ensure};
 use chrono::{Duration as ChronoDuration, NaiveDate};
 use crossterm::{
@@ -20,10 +21,11 @@ use ratatui::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, stdout},
+    sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 
-use super::trend_ribbon_backtest::Event as StrategyEvent;
+use super::trend_ribbon_backtest::{Event as StrategyEvent, MonitorBar};
 
 const CONTRACT_MULTIPLIER: f64 = 100.0;
 
@@ -49,6 +51,7 @@ struct ReplayFrame {
     timestamp: String,
     close: f64,
     events_so_far: Vec<EventView>,
+    monitor: MonitorBar,
 }
 
 #[derive(Clone)]
@@ -63,6 +66,35 @@ struct TradeRow {
     closed: bool,
 }
 
+#[derive(Clone)]
+struct MonitorParams {
+    fast_hold_seconds: u64,
+    fast_body_atr_min: f64,
+    fast_range_atr_min: f64,
+    pre_close_seconds: u64,
+    wt_pullback_points: f64,
+    chandelier_activation_atr: f64,
+    chandelier_atr_multiplier: f64,
+    deviation_multiplier: f64,
+    minimum_slope: f64,
+}
+
+impl MonitorParams {
+    fn from_selection(selection: &super::production::Selection) -> Self {
+        Self {
+            fast_hold_seconds: selection.trend_ribbon.realtime.fast_hold_seconds,
+            fast_body_atr_min: selection.trend_ribbon.realtime.fast_body_atr_min,
+            fast_range_atr_min: selection.trend_ribbon.realtime.fast_range_atr_min,
+            pre_close_seconds: selection.trend_ribbon.realtime.pre_close_seconds,
+            wt_pullback_points: selection.trend_ribbon.realtime.wt_pullback_points,
+            chandelier_activation_atr: selection.trend_ribbon.realtime.chandelier_activation_atr,
+            chandelier_atr_multiplier: selection.trend_ribbon.realtime.chandelier_atr_multiplier,
+            deviation_multiplier: selection.trend_ribbon.deviation_multiplier,
+            minimum_slope: selection.trend_ribbon.minimum_slope,
+        }
+    }
+}
+
 struct ReplayApp {
     instrument: String,
     date: NaiveDate,
@@ -70,6 +102,66 @@ struct ReplayApp {
     index: usize,
     playing: bool,
     delay: Duration,
+    params: MonitorParams,
+}
+
+pub struct LiveDashboard {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    instrument: String,
+    params: MonitorParams,
+    started: Instant,
+    seconds: u64,
+}
+
+impl LiveDashboard {
+    pub fn new(selection: &super::production::Selection, seconds: u64) -> Result<Self> {
+        let mut out = stdout();
+        execute!(out, EnterAlternateScreen, cursor::Hide)?;
+        let backend = CrosstermBackend::new(out);
+        let mut terminal = Terminal::new(backend)?;
+        terminal.clear()?;
+        Ok(Self {
+            terminal,
+            instrument: selection.instrument.clone(),
+            params: MonitorParams::from_selection(selection),
+            started: Instant::now(),
+            seconds,
+        })
+    }
+
+    pub fn render(
+        &mut self,
+        state: &super::trend_ribbon_actor::State,
+        control: &super::live_control::Control,
+    ) -> Result<()> {
+        let elapsed = self.started.elapsed().as_secs();
+        let remaining = self.seconds.saturating_sub(elapsed);
+        let instrument = self.instrument.clone();
+        let params = self.params.clone();
+        self.terminal.draw(|frame| {
+            render_live(
+                frame,
+                state,
+                control,
+                &instrument,
+                &params,
+                elapsed,
+                remaining,
+            )
+        })?;
+        Ok(())
+    }
+}
+
+impl Drop for LiveDashboard {
+    fn drop(&mut self) {
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen,
+            cursor::Show
+        );
+        let _ = self.terminal.show_cursor();
+    }
 }
 
 #[derive(Clone)]
@@ -309,7 +401,7 @@ fn build_app(
     date: NaiveDate,
 ) -> Result<ReplayApp> {
     ensure!(!candles.is_empty(), "dashboard replay has no candles");
-    let report = super::trend_ribbon_backtest::simulate(
+    let (report, monitor_bars) = super::trend_ribbon_backtest::simulate_with_monitor(
         selection.trend_ribbon.clone(),
         selection.session_calendar.clone(),
         selection.bar_ns(),
@@ -326,6 +418,11 @@ fn build_app(
             .push(event_view(event));
     }
 
+    let monitor_by_time: BTreeMap<String, MonitorBar> = monitor_bars
+        .into_iter()
+        .map(|bar| (bar.timestamp.clone(), bar))
+        .collect();
+
     let mut events_so_far = Vec::new();
     let mut frames = Vec::new();
     for candle in candles {
@@ -337,10 +434,15 @@ fn build_app(
         if let Some(events) = by_time.get(&timestamp) {
             events_so_far.extend(events.iter().cloned());
         }
+        let monitor = monitor_by_time
+            .get(&timestamp)
+            .cloned()
+            .context("dashboard monitor state missing for candle")?;
         frames.push(ReplayFrame {
             timestamp,
             close: candle.close,
             events_so_far: events_so_far.clone(),
+            monitor,
         });
     }
 
@@ -352,6 +454,7 @@ fn build_app(
         index: 0,
         playing: true,
         delay: Duration::from_millis(80),
+        params: MonitorParams::from_selection(selection),
     })
 }
 
@@ -452,6 +555,11 @@ fn reason_label(reason: &str) -> String {
         "chandelier_long_exit" => "CH LX",
         "chandelier_short_exit" => "CH SX",
         "session_end" => "SQ OFF",
+        "shutdown" => "SHUTDOWN",
+        "trend_ribbon" => "REVERSAL",
+        "fast_buy" | "fast_short" => "FAST",
+        "preclose_buy" | "preclose_short" => "PRE-CLOSE",
+        "close_sync" => "CLOSE SYNC",
         other => other,
     }
     .to_owned()
@@ -524,7 +632,7 @@ fn interactive_loop(
 fn render_snapshot(app: &mut ReplayApp) -> Result<()> {
     app.index = app.frames.len() - 1;
     app.playing = false;
-    let backend = TestBackend::new(142, 28);
+    let backend = TestBackend::new(160, 42);
     let mut terminal = Terminal::new(backend)?;
     terminal.draw(|frame| render(frame, app))?;
     let buffer = terminal.backend().buffer();
@@ -559,26 +667,51 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(5),
+            Constraint::Min(22),
             Constraint::Length(4),
-            Constraint::Min(12),
             Constraint::Length(5),
             Constraint::Length(2),
         ])
         .split(frame.area());
 
     render_header(frame, app, root[0]);
-    render_trade_table(frame, app, root[1]);
-    render_totals(frame, app, root[2]);
-    render_footer(frame, app, root[3]);
+    render_main(frame, app, root[1]);
+    render_current_trade(frame, app, root[2]);
+    render_totals(frame, app, root[3]);
+    render_footer(frame, app, root[4]);
+}
+
+fn render_main(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
+    if area.width < 120 {
+        render_trade_table(frame, app, area);
+        return;
+    }
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .split(area);
+    render_trade_table(frame, app, columns[0]);
+    render_monitor_panel(frame, app, columns[1]);
 }
 
 fn render_header(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
     let current = app.current();
     let mode = if app.playing { "PLAY" } else { "PAUSED" };
+    let monitor = &current.monitor;
+    let last_reason = current
+        .events_so_far
+        .last()
+        .map_or("--".to_owned(), |event| reason_label(&event.reason));
+    let position = position_label(monitor.position);
+    let entry = monitor
+        .entry_price
+        .map_or_else(|| "--".into(), |value| format!("{value:.0}"));
+    let open_points = monitor.open_points.unwrap_or(0.0);
     let title = vec![
         Line::from(vec![
             Span::styled(
-                " TREND RIBBON v2.10 - TRADE LEDGER ",
+                " TREND RIBBON v2.10 - STRATEGY MONITOR ",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw("   READ-ONLY"),
@@ -592,6 +725,10 @@ fn render_header(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
             app.frames.len(),
             mode,
             current.close
+        )),
+        Line::from(format!(
+            " Position: {position} @ {entry} | Open P&L: {open_points:+.0} pt / {:+.0} INR | Last event: {last_reason}",
+            open_points * CONTRACT_MULTIPLIER
         )),
     ];
     frame.render_widget(
@@ -666,6 +803,277 @@ fn render_trade_table(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rec
     frame.render_widget(table, area);
 }
 
+fn render_monitor_panel(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
+    let current = app.current();
+    let m = &current.monitor;
+    let atr = m.atr.unwrap_or(0.0);
+    let bull_body_atr = if atr > 0.0 {
+        (m.close - m.open).max(0.0) / atr
+    } else {
+        0.0
+    };
+    let bear_body_atr = if atr > 0.0 {
+        (m.open - m.close).max(0.0) / atr
+    } else {
+        0.0
+    };
+    let range_atr = if atr > 0.0 {
+        (m.high - m.low) / atr
+    } else {
+        0.0
+    };
+    let setup = if m.bull_setup {
+        "BULL"
+    } else if m.bear_setup {
+        "BEAR"
+    } else {
+        "NONE"
+    };
+    let wt_state = if m.wt_armed {
+        if m.position > 0 {
+            "LONG ARMED"
+        } else if m.position < 0 {
+            "SHORT ARMED"
+        } else {
+            "ARMED"
+        }
+    } else {
+        "UNARMED"
+    };
+    let wt_extreme = if m.position > 0 {
+        m.wt_long_peak
+    } else if m.position < 0 {
+        m.wt_short_trough
+    } else {
+        None
+    };
+    let wt_slope = if m.wt_slope_down {
+        "DOWN"
+    } else if m.wt_slope_up {
+        "UP"
+    } else {
+        "FLAT"
+    };
+    let wt_ready = m.wt_armed
+        && m.wt_pullback >= app.params.wt_pullback_points
+        && ((m.position > 0 && m.wt_slope_down) || (m.position < 0 && m.wt_slope_up));
+    let wt_exit = if wt_ready {
+        "READY"
+    } else if m.wt_armed {
+        "WATCH"
+    } else {
+        "WAIT"
+    };
+    let last_reason = current
+        .events_so_far
+        .last()
+        .map_or("--".to_owned(), |event| reason_label(&event.reason));
+    let signal = if m.signal > 0 {
+        "BUY"
+    } else if m.signal < 0 {
+        "SHORT"
+    } else {
+        "--"
+    };
+
+    let lines = vec![
+        section_line("TREND / POSITION"),
+        kv_pair_line(
+            "Trend",
+            direction_label(m.direction),
+            "Position",
+            position_label(m.position),
+        ),
+        kv_pair_line("Setup", setup, "Entry", &fmt_opt(m.entry_price, 0)),
+        kv_pair_line("Signal", signal, "Reason", &last_reason),
+        section_line("RIBBON"),
+        kv_line("ALMA", &fmt_opt(m.alma, 1)),
+        kv_line(
+            "Upper / Lower",
+            &format!(
+                "{} / {}",
+                fmt_opt(m.upper_confirm, 1),
+                fmt_opt(m.lower_confirm, 1)
+            ),
+        ),
+        kv_pair_line("ATR", &fmt_opt(m.atr, 1), "Dev", &fmt_opt(m.deviation, 1)),
+        kv_pair_line(
+            "Slope",
+            &fmt_opt(m.slope_score, 3),
+            "Session",
+            if m.in_session { "YES" } else { "NO" },
+        ),
+        section_line("FAST / PRE-CLOSE"),
+        kv_line(
+            "Body / Range ATR",
+            &format!("B {bull_body_atr:.2} S {bear_body_atr:.2} | R {range_atr:.2}"),
+        ),
+        kv_line(
+            "Threshold",
+            &format!(
+                "B {:.2} / R {:.2}",
+                app.params.fast_body_atr_min, app.params.fast_range_atr_min
+            ),
+        ),
+        kv_line(
+            "Hold / Pre-close",
+            &format!(
+                "N/A replay | {}s / {}s",
+                app.params.fast_hold_seconds, app.params.pre_close_seconds
+            ),
+        ),
+        section_line("WAVETREND"),
+        kv_line(
+            "WT1 / WT2",
+            &format!("{:.1} / {}", m.wt1, fmt_opt(m.wt2, 1)),
+        ),
+        kv_line(
+            "Long / Short arm",
+            &format!("{:+.1} / {:+.1}", m.wt_long_arm, m.wt_short_arm),
+        ),
+        kv_pair_line("State", wt_state, "Slope", wt_slope),
+        kv_pair_line(
+            "Peak/Trough",
+            &fmt_opt(wt_extreme, 1),
+            "Pullback",
+            &format!("{:.1}/{:.1}", m.wt_pullback, app.params.wt_pullback_points),
+        ),
+        kv_line("WT exit", wt_exit),
+        section_line("CHANDELIER"),
+        kv_pair_line(
+            "Enabled",
+            if m.chandelier_enabled { "YES" } else { "NO" },
+            "Active",
+            if m.chandelier_active { "YES" } else { "NO" },
+        ),
+        kv_line(
+            "Activate / Trail",
+            &format!(
+                "{:.1} ATR / {:.1} ATR",
+                app.params.chandelier_activation_atr, app.params.chandelier_atr_multiplier
+            ),
+        ),
+        kv_line("Stop", &fmt_opt(m.chandelier_stop, 1)),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" CURRENT STRATEGY STATE "),
+        ),
+        area,
+    );
+}
+
+fn render_current_trade(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
+    let m = &app.current().monitor;
+    let lines = if m.position == 0 {
+        vec![
+            Line::from(" FLAT - no open trade"),
+            Line::from(" MFE / MAE / retained profit will appear when a position is open."),
+        ]
+    } else {
+        let mfe = m.mfe_points.unwrap_or(0.0).max(0.0);
+        let mae = m.mae_points.unwrap_or(0.0);
+        let open = m.open_points.unwrap_or(0.0);
+        let retained = if mfe > 0.0 {
+            (open.max(0.0) / mfe * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        let giveback = (mfe - open).max(0.0);
+        let duration = trade_duration(m.opened_at.as_deref(), &m.timestamp);
+        vec![
+            Line::from(format!(
+                " {} @ {}   Best: {}   Worst: {}   MFE: {mfe:+.0} pt   MAE: {mae:+.0} pt   Open: {open:+.0} pt   Retained: {retained:.1}%",
+                position_label(m.position),
+                fmt_opt(m.entry_price, 0),
+                fmt_opt(m.best_price, 0),
+                fmt_opt(m.worst_price, 0),
+            )),
+            Line::from(format!(
+                " Duration: {duration}   Best P&L: {:+.0} INR   Current P&L: {:+.0} INR   Giveback: {giveback:.0} pt",
+                mfe * CONTRACT_MULTIPLIER,
+                open * CONTRACT_MULTIPLIER
+            )),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" CURRENT TRADE "),
+        ),
+        area,
+    );
+}
+
+fn section_line(label: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(" {label}"),
+        Style::default().fg(Color::Cyan),
+    ))
+}
+
+fn kv_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(format!(" {label:<18} {value}"))
+}
+
+fn kv_pair_line(
+    left_label: &str,
+    left_value: &str,
+    right_label: &str,
+    right_value: &str,
+) -> Line<'static> {
+    Line::from(format!(
+        " {left_label:<8} {left_value:<11} {right_label:<8} {right_value}"
+    ))
+}
+
+fn fmt_opt(value: Option<f64>, decimals: usize) -> String {
+    value.map_or_else(|| "--".into(), |value| format!("{value:.decimals$}"))
+}
+
+fn position_label(position: i8) -> &'static str {
+    if position > 0 {
+        "LONG"
+    } else if position < 0 {
+        "SHORT"
+    } else {
+        "FLAT"
+    }
+}
+
+fn direction_label(direction: i8) -> &'static str {
+    if direction > 0 {
+        "BULLISH"
+    } else if direction < 0 {
+        "BEARISH"
+    } else {
+        "FLAT"
+    }
+}
+
+fn trade_duration(opened_at: Option<&str>, current: &str) -> String {
+    let Some(opened_at) = opened_at else {
+        return "--".into();
+    };
+    let Ok(opened) = chrono::DateTime::parse_from_rfc3339(opened_at) else {
+        return "--".into();
+    };
+    let Ok(now) = chrono::DateTime::parse_from_rfc3339(current) else {
+        return "--".into();
+    };
+    let seconds = (now - opened).num_seconds().max(0);
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        (seconds % 3600) / 60,
+        seconds % 60
+    )
+}
+
 fn render_totals(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
     let current = app.current();
     let trades = trade_rows(&current.events_so_far, current.close);
@@ -727,13 +1135,605 @@ fn render_totals(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
 
 fn render_footer(frame: &mut ratatui::Frame<'_>, app: &ReplayApp, area: Rect) {
     let text = format!(
-        " q quit | space play/pause | ←/→ step | Home/End | +/- speed   delay={}ms   NO EXECUTION ",
+        " q quit | space play/pause | ←/→ step | Home/End | +/- speed   delay={}ms   STRATEGY MONITOR   NO EXECUTION ",
         app.delay.as_millis()
     );
     frame.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn render_live(
+    frame: &mut ratatui::Frame<'_>,
+    state: &super::trend_ribbon_actor::State,
+    control: &super::live_control::Control,
+    instrument: &str,
+    params: &MonitorParams,
+    elapsed: u64,
+    remaining: u64,
+) {
+    let root = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(22),
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Length(2),
+        ])
+        .split(frame.area());
+
+    let current_price = live_price(state);
+    let trades = live_trade_rows(state, current_price);
+    render_live_header(
+        frame,
+        state,
+        control,
+        instrument,
+        current_price,
+        (elapsed, remaining),
+        root[0],
+    );
+
+    if root[1].width >= 120 {
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+            .split(root[1]);
+        render_live_trade_table(frame, &trades, columns[0]);
+        render_live_monitor_panel(frame, state, params, columns[1]);
+    } else {
+        render_live_trade_table(frame, &trades, root[1]);
+    }
+    render_live_current_trade(frame, state, current_price, root[2]);
+    render_live_totals(frame, &trades, root[3]);
+    frame.render_widget(
+        Paragraph::new(
+            " Ctrl-C graceful stop | Kite live data | Nautilus Sandbox fills | NO BROKER ORDERS ",
+        )
+        .style(Style::default().fg(Color::DarkGray)),
+        root[4],
+    );
+}
+
+fn render_live_header(
+    frame: &mut ratatui::Frame<'_>,
+    state: &super::trend_ribbon_actor::State,
+    control: &super::live_control::Control,
+    instrument: &str,
+    current_price: f64,
+    runtime: (u64, u64),
+    area: Rect,
+) {
+    let (elapsed, remaining) = runtime;
+    let phase = if control.fault.lock().expect("fault lock").is_some() {
+        "REVIEW REQUIRED"
+    } else if control.stopping.load(Ordering::Acquire) {
+        "STOPPING"
+    } else if control.paused.load(Ordering::Acquire) {
+        "PAUSED / REBUILD"
+    } else {
+        "MONITORING"
+    };
+    let trade = &state.trade_monitor;
+    let position = position_label(trade.side);
+    let entry = fmt_opt(trade.entry, 0);
+    let open_points = trade.open_points(current_price).unwrap_or(0.0);
+    let last_reason = state
+        .signals
+        .last()
+        .and_then(|value| value.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(reason_label)
+        .unwrap_or_else(|| "--".into());
+    let now = super::data::now();
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                " TREND RIBBON v2.10 - LIVE MONITOR ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw("   PAPER / NO BROKER ORDERS"),
+        ]),
+        Line::from(format!(
+            " {instrument} | {} | 5m | {phase} | LTP {:.0} | elapsed {elapsed}s / remaining {remaining}s",
+            format_ns_ist(now),
+            current_price
+        )),
+        Line::from(format!(
+            " Position: {position} @ {entry} | Open P&L: {open_points:+.0} pt / {:+.0} INR | Last event: {last_reason}",
+            open_points * CONTRACT_MULTIPLIER
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
+}
+
+fn render_live_monitor_panel(
+    frame: &mut ratatui::Frame<'_>,
+    state: &super::trend_ribbon_actor::State,
+    params: &MonitorParams,
+    area: Rect,
+) {
+    let Some(m) = state.latest_realtime else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                section_line("CURRENT STRATEGY STATE"),
+                Line::from(" Waiting for trusted realtime candle..."),
+                Line::from(" Completed-bar warmup remains active."),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" CURRENT STRATEGY STATE "),
+            ),
+            area,
+        );
+        return;
+    };
+    let snapshot = m.snapshot;
+    let direction = latest_confirmed_direction(state);
+    let setup = if snapshot.bull_setup {
+        "BULL"
+    } else if snapshot.bear_setup {
+        "BEAR"
+    } else {
+        "NONE"
+    };
+    let wt_state = if m.wt_armed {
+        if m.position > 0 {
+            "LONG ARMED"
+        } else if m.position < 0 {
+            "SHORT ARMED"
+        } else {
+            "ARMED"
+        }
+    } else {
+        "UNARMED"
+    };
+    let wt_extreme = if m.position > 0 {
+        m.wt_long_peak
+    } else if m.position < 0 {
+        m.wt_short_trough
+    } else {
+        None
+    };
+    let wt_slope = if m.wt_slope_down {
+        "DOWN"
+    } else if m.wt_slope_up {
+        "UP"
+    } else {
+        "FLAT"
+    };
+    let wt_ready = m.wt_armed
+        && m.wt_pullback >= params.wt_pullback_points
+        && ((m.position > 0 && m.wt_slope_down) || (m.position < 0 && m.wt_slope_up));
+    let wt_exit = if wt_ready {
+        "READY"
+    } else if m.wt_armed {
+        "WATCH"
+    } else {
+        "WAIT"
+    };
+    let signal = state
+        .signals
+        .last()
+        .and_then(|value| value.get("intent"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("--");
+    let reason = state
+        .signals
+        .last()
+        .and_then(|value| value.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(reason_label)
+        .unwrap_or_else(|| "--".into());
+    let lock = if !snapshot.trusted {
+        "UNTRUSTED"
+    } else if m.event_locked {
+        "EVENT"
+    } else if m.same_trend_lock {
+        "SAME-TREND"
+    } else {
+        "OPEN"
+    };
+    let upper = snapshot.alma + snapshot.deviation * params.deviation_multiplier;
+    let lower = snapshot.alma - snapshot.deviation * params.deviation_multiplier;
+
+    let lines = vec![
+        section_line("TREND / POSITION"),
+        kv_pair_line(
+            "Trend",
+            direction_label(direction),
+            "Position",
+            position_label(m.position),
+        ),
+        kv_pair_line("Setup", setup, "Lock", lock),
+        kv_pair_line("Signal", signal, "Reason", &reason),
+        section_line("RIBBON"),
+        kv_line("ALMA", &format!("{:.1}", snapshot.alma)),
+        kv_line("Upper / Lower", &format!("{upper:.1} / {lower:.1}")),
+        kv_pair_line(
+            "ATR",
+            &format!("{:.1}", snapshot.atr),
+            "Dev",
+            &format!("{:.1}", snapshot.deviation),
+        ),
+        kv_pair_line(
+            "Slope",
+            &format!("{:.3}", snapshot.slope_score),
+            "Min",
+            &format!("±{:.3}", params.minimum_slope),
+        ),
+        section_line("FAST / PRE-CLOSE"),
+        kv_line(
+            "Body / Range ATR",
+            &format!(
+                "B {:.2} S {:.2} | R {:.2}",
+                m.bullish_body_atr, m.bearish_body_atr, m.range_atr
+            ),
+        ),
+        kv_line(
+            "Hold / Close",
+            &format!(
+                "{:.1}/{:.0}s | {:.1}s",
+                m.opposite_hold_seconds, params.fast_hold_seconds as f64, m.remaining_seconds
+            ),
+        ),
+        kv_pair_line(
+            "FAST",
+            if m.fast_ready { "READY" } else { "WAIT" },
+            "PRE-CLOSE",
+            if m.preclose_ready { "READY" } else { "WAIT" },
+        ),
+        section_line("WAVETREND"),
+        kv_line(
+            "WT1 / WT2",
+            &format!("{:.1} / {:.1}", snapshot.wt1, snapshot.wt2),
+        ),
+        kv_line(
+            "Long / Short arm",
+            &format!(
+                "{:+.1} / {:+.1}",
+                snapshot.wt_long_arm, snapshot.wt_short_arm
+            ),
+        ),
+        kv_pair_line("State", wt_state, "Slope", wt_slope),
+        kv_pair_line(
+            "Peak/Trough",
+            &fmt_opt(wt_extreme, 1),
+            "Pullback",
+            &format!("{:.1}/{:.1}", m.wt_pullback, params.wt_pullback_points),
+        ),
+        kv_line("WT exit", wt_exit),
+        section_line("CHANDELIER"),
+        kv_pair_line(
+            "Enabled",
+            if m.chandelier_enabled { "YES" } else { "NO" },
+            "Active",
+            if m.chandelier_active { "YES" } else { "NO" },
+        ),
+        kv_line(
+            "Activate / Trail",
+            &format!(
+                "{:.1} ATR / {:.1} ATR",
+                params.chandelier_activation_atr, params.chandelier_atr_multiplier
+            ),
+        ),
+        kv_line("Stop", &fmt_opt(m.chandelier_stop, 1)),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" CURRENT STRATEGY STATE "),
+        ),
+        area,
+    );
+}
+
+fn render_live_current_trade(
+    frame: &mut ratatui::Frame<'_>,
+    state: &super::trend_ribbon_actor::State,
+    current_price: f64,
+    area: Rect,
+) {
+    let trade = &state.trade_monitor;
+    let lines = if trade.side == 0 {
+        vec![
+            Line::from(" FLAT - no open trade"),
+            Line::from(" MFE / MAE / retained profit will appear when a position is open."),
+        ]
+    } else {
+        let mfe = trade.mfe_points().unwrap_or(0.0).max(0.0);
+        let mae = trade.mae_points().unwrap_or(0.0).min(0.0);
+        let open = trade.open_points(current_price).unwrap_or(0.0);
+        let retained = if mfe > 0.0 {
+            (open.max(0.0) / mfe * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        let giveback = (mfe - open).max(0.0);
+        let duration = trade.opened_ns.map_or_else(
+            || "--".into(),
+            |opened| format_duration_ns(super::data::now().saturating_sub(opened)),
+        );
+        vec![
+            Line::from(format!(
+                " {} @ {}   Best: {}   Worst: {}   MFE: {mfe:+.0} pt   MAE: {mae:+.0} pt   Open: {open:+.0} pt   Retained: {retained:.1}%",
+                position_label(trade.side),
+                fmt_opt(trade.entry, 0),
+                fmt_opt(trade.best_price, 0),
+                fmt_opt(trade.worst_price, 0),
+            )),
+            Line::from(format!(
+                " Duration: {duration}   Best P&L: {:+.0} INR   Current P&L: {:+.0} INR   Giveback: {giveback:.0} pt",
+                mfe * CONTRACT_MULTIPLIER,
+                open * CONTRACT_MULTIPLIER
+            )),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" CURRENT TRADE "),
+        ),
+        area,
+    );
+}
+
+fn render_live_totals(frame: &mut ratatui::Frame<'_>, trades: &[TradeRow], area: Rect) {
+    let realized: f64 = trades
+        .iter()
+        .filter(|trade| trade.closed)
+        .map(|trade| trade.points)
+        .sum();
+    let unrealized: f64 = trades
+        .iter()
+        .filter(|trade| !trade.closed)
+        .map(|trade| trade.points)
+        .sum();
+    let total = clean_zero(realized + unrealized);
+    let closed = trades.iter().filter(|trade| trade.closed).count();
+    let wins = trades
+        .iter()
+        .filter(|trade| trade.closed && trade.points > 0.0)
+        .count();
+    let losses = trades
+        .iter()
+        .filter(|trade| trade.closed && trade.points < 0.0)
+        .count();
+    let lines = vec![
+        Line::from(format!(
+            " Closed trades: {closed}   Winners: {wins}   Losers: {losses}"
+        )),
+        Line::from(vec![
+            Span::raw(format!(
+                " Realized: {realized:+.0} pt / {:+.0} INR    Open: {unrealized:+.0} pt / {:+.0} INR    ",
+                realized * CONTRACT_MULTIPLIER,
+                unrealized * CONTRACT_MULTIPLIER
+            )),
+            Span::styled(
+                format!(
+                    "TOTAL: {total:+.0} pt / {:+.0} INR",
+                    total * CONTRACT_MULTIPLIER
+                ),
+                pnl_style(total),
+            ),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" P&L SUMMARY "),
+        ),
+        area,
+    );
+}
+
+fn render_live_trade_table(frame: &mut ratatui::Frame<'_>, trades: &[TradeRow], area: Rect) {
+    let rows = trades.iter().enumerate().map(|(index, trade)| {
+        let pnl = trade.points * CONTRACT_MULTIPLIER;
+        let style = if trade.points > 0.0 {
+            Style::default().fg(Color::Green)
+        } else if trade.points < 0.0 {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default()
+        };
+        Row::new(vec![
+            Cell::from(format!("{}", index + 1)),
+            Cell::from(trade.side),
+            Cell::from(trade.entry_time.clone()),
+            Cell::from(format!("{:.0}", trade.entry_price)),
+            Cell::from(trade.exit_time.clone().unwrap_or_else(|| "--".into())),
+            Cell::from(
+                trade
+                    .exit_price
+                    .map_or_else(|| "--".into(), |price| format!("{price:.0}")),
+            ),
+            Cell::from(trade.exit_reason.clone().unwrap_or_else(|| "OPEN".into())),
+            Cell::from(format!("{:+.0}", trade.points)),
+            Cell::from(format!("{:+.0}", pnl)),
+            Cell::from(if trade.closed { "CLOSED" } else { "OPEN" }),
+        ])
+        .style(style)
+    });
+    let header = Row::new(vec![
+        "#",
+        "SIDE",
+        "ENTRY",
+        "ENTRY PX",
+        "EXIT",
+        "EXIT PX",
+        "EXIT REASON",
+        "POINTS",
+        "P&L INR",
+        "STATUS",
+    ])
+    .style(Style::default().fg(Color::Cyan));
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(10),
+        Constraint::Length(7),
+        Constraint::Length(9),
+        Constraint::Length(13),
+        Constraint::Length(8),
+        Constraint::Length(11),
+        Constraint::Length(8),
+    ];
+    frame.render_widget(
+        Table::new(rows, widths)
+            .header(header)
+            .column_spacing(1)
+            .block(Block::default().borders(Borders::ALL).title(" TRADES ")),
+        area,
+    );
+}
+
+fn live_trade_rows(state: &super::trend_ribbon_actor::State, current_price: f64) -> Vec<TradeRow> {
+    struct OpenTrade {
+        side: &'static str,
+        entry_time: String,
+        entry_price: f64,
+        direction: i8,
+    }
+
+    let mut open: Option<OpenTrade> = None;
+    let mut rows = Vec::new();
+    for (signal, fill) in state.signals.iter().zip(state.fills.iter()) {
+        let Some(intent) = signal.get("intent").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(price) = fill
+            .get("price")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.parse::<f64>().ok())
+        else {
+            continue;
+        };
+        let ts = fill
+            .get("timestamp_ns")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let time = short_time_ns(ts);
+        let reason = signal
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .map(reason_label)
+            .unwrap_or_else(|| "--".into());
+
+        match intent {
+            "BUY" => {
+                open = Some(OpenTrade {
+                    side: "LONG",
+                    entry_time: time,
+                    entry_price: price,
+                    direction: 1,
+                });
+            }
+            "SELL" => {
+                open = Some(OpenTrade {
+                    side: "SHORT",
+                    entry_time: time,
+                    entry_price: price,
+                    direction: -1,
+                });
+            }
+            "BUY_EXIT" | "SELL_EXIT" => {
+                if let Some(entry) = open.take() {
+                    let points = if entry.direction > 0 {
+                        price - entry.entry_price
+                    } else {
+                        entry.entry_price - price
+                    };
+                    rows.push(TradeRow {
+                        side: entry.side,
+                        entry_time: entry.entry_time,
+                        entry_price: entry.entry_price,
+                        exit_time: Some(time),
+                        exit_price: Some(price),
+                        exit_reason: Some(reason),
+                        points,
+                        closed: true,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(entry) = open {
+        let points = if entry.direction > 0 {
+            current_price - entry.entry_price
+        } else {
+            entry.entry_price - current_price
+        };
+        rows.push(TradeRow {
+            side: entry.side,
+            entry_time: entry.entry_time,
+            entry_price: entry.entry_price,
+            exit_time: None,
+            exit_price: None,
+            exit_reason: None,
+            points,
+            closed: false,
+        });
+    }
+    rows
+}
+
+fn live_price(state: &super::trend_ribbon_actor::State) -> f64 {
+    if let Some(monitor) = state.latest_realtime {
+        return monitor.snapshot.close;
+    }
+    state
+        .last_accepted_quote
+        .map(|quote| (quote.bid_price.as_f64() + quote.ask_price.as_f64()) / 2.0)
+        .unwrap_or(0.0)
+}
+
+fn latest_confirmed_direction(state: &super::trend_ribbon_actor::State) -> i8 {
+    state
+        .indicators
+        .iter()
+        .rev()
+        .find_map(|value| value.get("direction").and_then(serde_json::Value::as_i64))
+        .map_or(0, |value| value as i8)
+}
+
+fn short_time_ns(ns: u64) -> String {
+    if ns == 0 {
+        return "--:--".into();
+    }
+    chrono::DateTime::from_timestamp_nanos(ns as i64)
+        .with_timezone(&chrono::FixedOffset::east_opt(19_800).expect("IST"))
+        .format("%H:%M")
+        .to_string()
+}
+
+fn format_ns_ist(ns: u64) -> String {
+    chrono::DateTime::from_timestamp_nanos(ns as i64)
+        .with_timezone(&chrono::FixedOffset::east_opt(19_800).expect("IST"))
+        .format("%d-%b-%Y %H:%M:%S")
+        .to_string()
+}
+
+fn format_duration_ns(ns: u64) -> String {
+    let seconds = ns / 1_000_000_000;
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        (seconds % 3600) / 60,
+        seconds % 60
+    )
 }
 
 fn run_summary_terminal(
@@ -996,6 +1996,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_fill_ledger_pairs_signals_and_sandbox_fills() {
+        let state = super::super::trend_ribbon_actor::State {
+            signals: vec![
+                serde_json::json!({"intent":"BUY","reason":"trend_ribbon"}),
+                serde_json::json!({"intent":"BUY_EXIT","reason":"wt_long_exit"}),
+            ],
+            fills: vec![
+                serde_json::json!({"timestamp_ns":1_800_000_000_000_000_000u64,"price":"100.0"}),
+                serde_json::json!({"timestamp_ns":1_800_000_300_000_000_000u64,"price":"112.0"}),
+            ],
+            ..Default::default()
+        };
+        let rows = live_trade_rows(&state, 112.0);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].closed);
+        assert_eq!(rows[0].side, "LONG");
+        assert_eq!(rows[0].points, 12.0);
+        assert_eq!(rows[0].exit_reason.as_deref(), Some("WT LX"));
+    }
+
+    #[test]
+    fn live_dashboard_layout_renders_without_broker_state() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config = root.join("../../config/production-trend-ribbon.json");
+        let selection =
+            super::super::production::Selection::load(config.to_str().unwrap()).unwrap();
+        let params = MonitorParams::from_selection(&selection);
+        let state = super::super::trend_ribbon_actor::State::default();
+        let control = super::super::live_control::Control::new(true);
+        let backend = TestBackend::new(160, 42);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_live(
+                    frame,
+                    &state,
+                    &control,
+                    &selection.instrument,
+                    &params,
+                    1,
+                    29,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("LIVE MONITOR"));
+        assert!(text.contains("CURRENT STRATEGY STATE"));
+        assert!(text.contains("NO BROKER ORDERS"));
+    }
+
+    #[test]
     fn sep22_daily_summary_matches_trade_ledger() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let config = root.join("../../config/production-trend-ribbon.json");
@@ -1040,5 +2096,22 @@ mod tests {
             closed.last().unwrap().exit_reason.as_deref(),
             Some("SQ OFF")
         );
+
+        let monitored = app
+            .frames
+            .iter()
+            .find(|frame| {
+                frame.monitor.position != 0 && frame.monitor.mfe_points.is_some_and(|mfe| mfe > 0.0)
+            })
+            .expect("open trade monitor frame");
+        assert!(monitored.monitor.alma.is_some());
+        assert!(monitored.monitor.atr.is_some());
+        assert!(monitored.monitor.slope_score.is_some());
+        assert!(monitored.monitor.wt2.is_some());
+        assert!(monitored.monitor.entry_price.is_some());
+        assert!(monitored.monitor.opened_at.is_some());
+        assert!(monitored.monitor.mfe_points.unwrap() > 0.0);
+        assert!(monitored.monitor.mae_points.unwrap() <= 0.0);
+        assert!(monitored.monitor.open_points.is_some());
     }
 }

@@ -56,6 +56,13 @@ Recorded full-tick codec/forming-candle replay (never accesses the broker):
 Historical v2.10 confirmed-bar backtest against a candle fixture:
 `./target/debug/kite-node native-trend-ribbon-backtest-fixture config/production-trend-ribbon.json apps/kite-node/tests/fixtures/trend_ribbon_sep18_21_22.json`
 
+Historical terminal strategy monitor (read-only; no execution client):
+`./target/debug/kite-node native-trend-ribbon-dashboard-history config/production-trend-ribbon.json 2026-09-25`
+
+Live terminal strategy monitor (Kite market data plus Nautilus Sandbox fills; never a Kite broker execution client):
+`./target/debug/kite-node native-trend-ribbon-dashboard-live config/production-trend-ribbon.json 3600`
+The live monitor shows the same ledger plus forming-candle Ribbon, FAST/pre-close, WaveTrend, Chandelier and MFE/MAE/retained-profit state. Stop it with Ctrl-C; the normal graceful square-off/shutdown path remains active inside the Sandbox execution runtime.
+
 Repeatable offline qualification:
 `bash deploy/verify-trend-ribbon-v210.sh`
 

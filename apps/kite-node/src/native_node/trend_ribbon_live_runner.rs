@@ -69,7 +69,17 @@ pub fn run(config: &str, seconds: u64, sim: bool) -> Result<()> {
     run_with_execution(config, seconds, sim, false)
 }
 pub fn run_with_execution(config: &str, seconds: u64, sim: bool, kite_mock: bool) -> Result<()> {
-    run_backend(config, seconds, sim, kite_mock, None, false)
+    run_backend(
+        config,
+        seconds,
+        sim,
+        kite_mock,
+        None,
+        RunFlags {
+            recovery_fixture: false,
+            dashboard: false,
+        },
+    )
 }
 pub fn run_broker(config: &str, settings: &str) -> Result<()> {
     let selection = super::production::Selection::load(config)?;
@@ -80,16 +90,39 @@ pub fn run_broker(config: &str, settings: &str) -> Result<()> {
         false,
         false,
         Some(settings),
-        false,
+        RunFlags {
+            recovery_fixture: false,
+            dashboard: false,
+        },
     )
 }
+
+pub fn run_dashboard(config: &str, seconds: u64) -> Result<()> {
+    run_backend(
+        config,
+        seconds,
+        false,
+        false,
+        None,
+        RunFlags {
+            recovery_fixture: false,
+            dashboard: true,
+        },
+    )
+}
+#[derive(Clone, Copy)]
+struct RunFlags {
+    recovery_fixture: bool,
+    dashboard: bool,
+}
+
 fn run_backend(
     config: &str,
     seconds: u64,
     sim: bool,
     kite_mock: bool,
     production: Option<kite_adapter::execution::native_client::production::Settings>,
-    recovery_fixture: bool,
+    flags: RunFlags,
 ) -> Result<()> {
     let alerts = super::slack_alerts::Alerts::from_env(sim)?;
     let mode = if production.is_some() {
@@ -104,15 +137,7 @@ fn run_backend(
     alerts.emit(format!(
         "{symbol} {interval_minutes}m {strategy} [{mode}]: STARTING; initialization in progress"
     ));
-    let result = run_backend_inner(
-        config,
-        seconds,
-        sim,
-        kite_mock,
-        production,
-        recovery_fixture,
-        &alerts,
-    );
+    let result = run_backend_inner(config, seconds, sim, kite_mock, production, flags, &alerts);
     alerts.emit(format!("{symbol} {interval_minutes}m {strategy} [{mode}]: {}", if result.is_ok() {
         "CLEAN STOP: flat, no pending orders; inspect saved run report"
     } else {
@@ -126,9 +151,11 @@ fn run_backend_inner(
     sim: bool,
     kite_mock: bool,
     production: Option<kite_adapter::execution::native_client::production::Settings>,
-    recovery_fixture: bool,
+    flags: RunFlags,
     alerts: &super::slack_alerts::Alerts,
 ) -> Result<()> {
+    let recovery_fixture = flags.recovery_fixture;
+    let dashboard = flags.dashboard;
     let real = production.is_some();
     if let Some(s) = &production {
         s.validate()?;
@@ -304,16 +331,23 @@ fn run_backend_inner(
             selection.interval_minutes()
         ));
         let mut was_paused=false;
-        let display = super::trend_ribbon_terminal::Display::new(
-            seconds,
-            warmup.len(),
-            sim,
-            &id.to_string(),
-            real,
-            kite_mock,
-            &selection,
-        )
-        .with_strategy_start_ns(start);
+        let display = (!dashboard).then(|| {
+            super::trend_ribbon_terminal::Display::new(
+                seconds,
+                warmup.len(),
+                sim,
+                &id.to_string(),
+                real,
+                kite_mock,
+                &selection,
+            )
+            .with_strategy_start_ns(start)
+        });
+        let mut dashboard_display = if dashboard {
+            Some(super::dashboard::LiveDashboard::new(&selection, seconds)?)
+        } else {
+            None
+        };
         let result={
             let run=node.run_with_mode(nautilus_live::node::NodeRunMode::Hosted);
             tokio::pin!(run);
@@ -322,7 +356,11 @@ fn run_backend_inner(
             loop {tokio::select! {
                 result=&mut run => break result,
                 _=refresh.tick()=> {
-                    display.render(&state.borrow(),&control);
+                    if let Some(dashboard) = dashboard_display.as_mut() {
+                        dashboard.render(&state.borrow(), &control)?;
+                    } else if let Some(display) = &display {
+                        display.render(&state.borrow(),&control);
+                    }
                     let paused=control.paused.load(Ordering::Acquire);
                     if paused != was_paused {
                         alerts.emit(format!("CRUDEOIL run {id}: {}", if paused {"PAUSED: data recovery required"} else {"RESUMED: validated history rebuilt"}));
@@ -331,7 +369,12 @@ fn run_backend_inner(
                 },
             }}
         };
-        display.render(&state.borrow(),&control);
+        if let Some(dashboard) = dashboard_display.as_mut() {
+            dashboard.render(&state.borrow(), &control)?;
+        } else if let Some(display) = &display {
+            display.render(&state.borrow(),&control);
+        }
+        drop(dashboard_display);
         watcher.abort();owner_monitor.abort();
         // LiveNode disposal disconnects execution clients and performs the final
         // broker reconciliation. Snapshot native state only after that completes;

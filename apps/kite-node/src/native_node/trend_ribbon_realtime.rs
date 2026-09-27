@@ -173,6 +173,31 @@ pub struct Snapshot {
     pub trusted: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MonitorSnapshot {
+    pub snapshot: Snapshot,
+    pub position: i8,
+    pub opposite_hold_seconds: f64,
+    pub remaining_seconds: f64,
+    pub near_close: bool,
+    pub bullish_body_atr: f64,
+    pub bearish_body_atr: f64,
+    pub range_atr: f64,
+    pub fast_ready: bool,
+    pub preclose_ready: bool,
+    pub wt_armed: bool,
+    pub wt_long_peak: Option<f64>,
+    pub wt_short_trough: Option<f64>,
+    pub wt_pullback: f64,
+    pub wt_slope_down: bool,
+    pub wt_slope_up: bool,
+    pub chandelier_enabled: bool,
+    pub chandelier_active: bool,
+    pub chandelier_stop: Option<f64>,
+    pub event_locked: bool,
+    pub same_trend_lock: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Candle {
     open_ns: u64,
@@ -371,6 +396,8 @@ pub struct RealtimeRibbon {
     wt_long_peak: Option<f64>,
     wt_short_trough: Option<f64>,
     prev_wt1: Option<f64>,
+    last_wt_slope_down: bool,
+    last_wt_slope_up: bool,
     chandelier_position: i8,
     chandelier_entry: Option<f64>,
     chandelier_peak: Option<f64>,
@@ -415,6 +442,8 @@ impl RealtimeRibbon {
             wt_long_peak: None,
             wt_short_trough: None,
             prev_wt1: None,
+            last_wt_slope_down: false,
+            last_wt_slope_up: false,
             chandelier_position: 0,
             chandelier_entry: None,
             chandelier_peak: None,
@@ -622,6 +651,110 @@ impl RealtimeRibbon {
         }
     }
 
+    pub fn monitor(&self, now_ns: u64, position: i8) -> Option<MonitorSnapshot> {
+        let snapshot = self.preview()?;
+        let bullish_body_atr = ((snapshot.close - snapshot.open).max(0.0)) / snapshot.atr;
+        let bearish_body_atr = ((snapshot.open - snapshot.close).max(0.0)) / snapshot.atr;
+        let range_atr = (snapshot.high - snapshot.low) / snapshot.atr;
+        let remaining_ns = snapshot.bar_close_ns.saturating_sub(now_ns);
+        let remaining_seconds = remaining_ns as f64 / 1_000_000_000.0;
+        let near_close = now_ns < snapshot.bar_close_ns
+            && remaining_ns <= self.settings.pre_close_seconds * 1_000_000_000;
+        let hold_start = if position < 0 {
+            self.bull_setup_start_ns
+        } else if position > 0 {
+            self.bear_setup_start_ns
+        } else {
+            None
+        };
+        let opposite_hold_seconds = hold_start
+            .map(|start| now_ns.saturating_sub(start) as f64 / 1_000_000_000.0)
+            .unwrap_or(0.0);
+        let strong_move = if position < 0 {
+            bullish_body_atr >= self.settings.fast_body_atr_min
+                || range_atr >= self.settings.fast_range_atr_min
+        } else if position > 0 {
+            bearish_body_atr >= self.settings.fast_body_atr_min
+                || range_atr >= self.settings.fast_range_atr_min
+        } else {
+            false
+        };
+        let opposite_setup = if position < 0 {
+            snapshot.bull_setup
+        } else if position > 0 {
+            snapshot.bear_setup
+        } else {
+            false
+        };
+        let fast_ready = self.settings.fast_reversal_enabled
+            && opposite_setup
+            && opposite_hold_seconds >= self.settings.fast_hold_seconds as f64
+            && strong_move;
+        let preclose_ready = opposite_setup && near_close;
+
+        let wt_armed = if position > 0 {
+            self.wt_long_armed
+        } else if position < 0 {
+            self.wt_short_armed
+        } else {
+            false
+        };
+        let wt_pullback = if position > 0 {
+            self.wt_long_peak
+                .map_or(0.0, |peak| (peak - snapshot.wt1).max(0.0))
+        } else if position < 0 {
+            self.wt_short_trough
+                .map_or(0.0, |trough| (snapshot.wt1 - trough).max(0.0))
+        } else {
+            0.0
+        };
+
+        let chandelier_stop =
+            if self.settings.chandelier_exit_enabled && self.chandelier_active && !wt_armed {
+                if position > 0 {
+                    self.chandelier_peak.map(|peak| {
+                        let raw = peak - snapshot.atr * self.settings.chandelier_atr_multiplier;
+                        self.chandelier_entry.map_or(raw, |entry| raw.max(entry))
+                    })
+                } else if position < 0 {
+                    self.chandelier_trough.map(|trough| {
+                        let raw = trough + snapshot.atr * self.settings.chandelier_atr_multiplier;
+                        self.chandelier_entry.map_or(raw, |entry| raw.min(entry))
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        Some(MonitorSnapshot {
+            snapshot,
+            position,
+            opposite_hold_seconds,
+            remaining_seconds,
+            near_close,
+            bullish_body_atr,
+            bearish_body_atr,
+            range_atr,
+            fast_ready,
+            preclose_ready,
+            wt_armed,
+            wt_long_peak: self.wt_long_peak,
+            wt_short_trough: self.wt_short_trough,
+            wt_pullback,
+            wt_slope_down: self.last_wt_slope_down,
+            wt_slope_up: self.last_wt_slope_up,
+            chandelier_enabled: self.settings.chandelier_exit_enabled,
+            chandelier_active: self.settings.chandelier_exit_enabled
+                && self.chandelier_active
+                && !wt_armed,
+            chandelier_stop,
+            event_locked: self.event_bar_open == Some(snapshot.bar_open_ns),
+            same_trend_lock: self.exit_flat_lock && self.exited_trend == position,
+        })
+    }
+
     pub fn on_session_end(&mut self) {
         self.bull_setup_start_ns = None;
         self.bear_setup_start_ns = None;
@@ -630,6 +763,8 @@ impl RealtimeRibbon {
         self.wt_long_peak = None;
         self.wt_short_trough = None;
         self.prev_wt1 = None;
+        self.last_wt_slope_down = false;
+        self.last_wt_slope_up = false;
         self.chandelier_position = 0;
         self.chandelier_entry = None;
         self.chandelier_peak = None;
@@ -686,6 +821,11 @@ impl RealtimeRibbon {
             self.chandelier_active = false;
         }
 
+        let slope_down = self.prev_wt1.is_some_and(|v| snapshot.wt1 < v);
+        let slope_up = self.prev_wt1.is_some_and(|v| snapshot.wt1 > v);
+        self.last_wt_slope_down = slope_down;
+        self.last_wt_slope_up = slope_up;
+
         if self.event_bar_open == Some(snapshot.bar_open_ns) || !allow_event {
             self.prev_wt1 = Some(snapshot.wt1);
             return Ok((Some(snapshot), None));
@@ -723,8 +863,6 @@ impl RealtimeRibbon {
             }
         }
 
-        let slope_down = self.prev_wt1.is_some_and(|v| snapshot.wt1 < v);
-        let slope_up = self.prev_wt1.is_some_and(|v| snapshot.wt1 > v);
         let long_pullback = self
             .wt_long_peak
             .map_or(0.0, |peak| (peak - snapshot.wt1).max(0.0));

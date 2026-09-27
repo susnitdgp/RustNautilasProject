@@ -66,14 +66,25 @@ or full redirect URL, exchanges it with Kite, and durably replaces only
 
 ## Terminal dashboard
 
-The Rust-only Ratatui trade ledger can replay a historical Kite session directly in the SSH terminal. It shows one row per trade with entry/exit time, entry/exit price, exit reason, points and INR P&L; there are no chart panels:
+The Rust-only Ratatui dashboard now combines the trade ledger with a right-side strategy monitor. The monitor shows current Ribbon/ALMA bands, ATR/deviation/slope, FAST/pre-close state, WaveTrend arm/peak/pullback/exit state, Chandelier state, plus current-trade MFE, MAE, giveback and retained-profit percentage.
+
+Historical replay remains fully read-only and creates no strategy or execution client:
 
 ```bash
 ./target/debug/kite-node native-trend-ribbon-dashboard-history \
   config/production-trend-ribbon.json 2026-09-22
 ```
 
-Controls: `q`/Esc quits the dashboard, Space pauses/resumes, Left/Right steps one 5-minute bar, Home/End jumps to the first/last bar, and `+`/`-` changes replay speed. The dashboard is read-only and creates no execution client.
+Controls: `q`/Esc quits the replay dashboard, Space pauses/resumes, Left/Right steps one 5-minute bar, Home/End jumps to the first/last bar, and `+`/`-` changes replay speed. Intrabar-only fields such as the two-second FAST hold and final-three-second pre-close window are explicitly shown as unavailable in confirmed-bar replay.
+
+For live monitoring with Kite market data and Nautilus Sandbox fills only:
+
+```bash
+./target/debug/kite-node native-trend-ribbon-dashboard-live \
+  config/production-trend-ribbon.json 3600
+```
+
+The live dashboard uses the same Trend Ribbon actor/realtime engine as paper execution, shows actual Sandbox fill prices in the ledger, and never creates a Kite broker execution client. `Ctrl-C` performs the normal graceful stop. The header explicitly reports `PAPER / NO BROKER ORDERS`.
 
 For deterministic terminal/screenshot verification without interactive raw mode:
 

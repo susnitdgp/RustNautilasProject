@@ -18,11 +18,84 @@ use nautilus_trading::{
 use std::sync::atomic::Ordering;
 use std::{cell::RefCell, rc::Rc};
 
+#[derive(Default, Debug, Clone)]
+pub struct TradeMonitor {
+    pub side: i8,
+    pub entry: Option<f64>,
+    pub opened_ns: Option<u64>,
+    pub best_price: Option<f64>,
+    pub worst_price: Option<f64>,
+}
+
+impl TradeMonitor {
+    fn update(&mut self, side: i8, entry: Option<f64>, price: f64, ts_ns: u64) {
+        if side != self.side {
+            self.side = side;
+            self.entry = (side != 0)
+                .then_some(entry)
+                .flatten()
+                .or((side != 0).then_some(price));
+            self.opened_ns = (side != 0).then_some(ts_ns);
+            self.best_price = self.entry;
+            self.worst_price = self.entry;
+        } else if side != 0
+            && let Some(entry) = entry
+        {
+            self.entry = Some(entry);
+        }
+
+        if side > 0 {
+            self.best_price = Some(self.best_price.map_or(price, |v| v.max(price)));
+            self.worst_price = Some(self.worst_price.map_or(price, |v| v.min(price)));
+        } else if side < 0 {
+            self.best_price = Some(self.best_price.map_or(price, |v| v.min(price)));
+            self.worst_price = Some(self.worst_price.map_or(price, |v| v.max(price)));
+        } else {
+            self.entry = None;
+            self.opened_ns = None;
+            self.best_price = None;
+            self.worst_price = None;
+        }
+    }
+
+    pub fn mfe_points(&self) -> Option<f64> {
+        self.entry.zip(self.best_price).map(|(entry, best)| {
+            if self.side > 0 {
+                best - entry
+            } else {
+                entry - best
+            }
+        })
+    }
+
+    pub fn mae_points(&self) -> Option<f64> {
+        self.entry.zip(self.worst_price).map(|(entry, worst)| {
+            if self.side > 0 {
+                worst - entry
+            } else {
+                entry - worst
+            }
+        })
+    }
+
+    pub fn open_points(&self, price: f64) -> Option<f64> {
+        self.entry.map(|entry| {
+            if self.side > 0 {
+                price - entry
+            } else {
+                entry - price
+            }
+        })
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct State {
     pub cache: Option<Rc<RefCell<Cache>>>,
     pub live_quotes: u64,
     pub last_accepted_quote: Option<QuoteTick>,
+    pub latest_realtime: Option<super::trend_ribbon_realtime::MonitorSnapshot>,
+    pub trade_monitor: TradeMonitor,
     pub rejected_quotes: u64,
     pub rebuilds: Vec<serde_json::Value>,
     pub indicators: Vec<serde_json::Value>,
@@ -319,6 +392,12 @@ impl DataActor for BarStrategy {
             } else {
                 0
             };
+            {
+                let mut state = self.state.borrow_mut();
+                state
+                    .trade_monitor
+                    .update(position, entry_price, price, trade_ts);
+            }
             self.ribbon_live.on_position_state(position, entry_price);
             let (snapshot, event) = self.ribbon_live.on_tick(
                 price,
@@ -328,6 +407,7 @@ impl DataActor for BarStrategy {
                 in_session,
                 !self.pending,
             )?;
+            self.state.borrow_mut().latest_realtime = self.ribbon_live.monitor(now, position);
             if let Some(event) = event {
                 self.target = event.target;
                 self.ribbon_sync_active = true;
@@ -457,7 +537,12 @@ impl DataActor for BarStrategy {
                 )?;
                 self.last_bar = 0;
                 self.target = 0;
-                self.state.borrow_mut().indicators.clear();
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.indicators.clear();
+                    state.latest_realtime = None;
+                    state.trade_monitor = TradeMonitor::default();
+                }
                 for bar in bars {
                     self.on_bar(&bar)?;
                 }
@@ -564,15 +649,35 @@ nautilus_strategy!(BarStrategy, {
                 .flat
                 .store(self.position() == 0.0, Ordering::Release);
         }
-        self.state.borrow_mut().fills.push(serde_json::json!({
-            "instrument_id":event.instrument_id.to_string(),
-            "timestamp_ns":event.ts_event.as_u64(),
-            "client_order_id":event.client_order_id.to_string(),
-            "side":event.order_side.to_string(),
-            "quantity":event.last_qty.to_string(),
-            "price":event.last_px.to_string(),
-            "commission":event.commission.map(|value|value.to_string())
-        }));
+        let (position_after, entry_price) = self.position_with_entry();
+        let position_side = if position_after > 0.0 {
+            1
+        } else if position_after < 0.0 {
+            -1
+        } else {
+            0
+        };
+        let reason = self.target_reason.unwrap_or("trend_ribbon");
+        {
+            let mut state = self.state.borrow_mut();
+            state.trade_monitor.update(
+                position_side,
+                entry_price,
+                event.last_px.as_f64(),
+                event.ts_event.as_u64(),
+            );
+            state.fills.push(serde_json::json!({
+                "instrument_id":event.instrument_id.to_string(),
+                "timestamp_ns":event.ts_event.as_u64(),
+                "client_order_id":event.client_order_id.to_string(),
+                "side":event.order_side.to_string(),
+                "quantity":event.last_qty.to_string(),
+                "price":event.last_px.to_string(),
+                "commission":event.commission.map(|value|value.to_string()),
+                "reason":reason,
+                "position_after":position_after
+            }));
+        }
     }
 
     fn on_order_canceled(&mut self, _: &OrderCanceled) {
