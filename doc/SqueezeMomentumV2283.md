@@ -16,7 +16,7 @@ Default rules:
 
 - BUY: positive momentum strengthening for 2 bars.
 - SHORT: negative momentum strengthening downward for 2 bars.
-- QLX/SELL: 2 consecutive positive weakening bars and the configured peak-to-zero retracement, or immediate zero cross. The supplied Pine baseline is 70%; the active production profile is OPT45/DB0 with 45%.
+- QLX/SELL: 2 consecutive positive weakening bars and the configured peak-to-zero retracement, or immediate zero cross. The supplied Pine baseline is 70%; the active production profile uses a 50% transition threshold.
 - QSX/COVER: exact inverse.
 - A positive wave can produce at most one LONG trade; a negative wave can produce at most one SHORT trade. The side rearms only after momentum reaches/crosses zero.
 - One action maximum per candle. An exit does not reverse on the same candle.
@@ -53,4 +53,4 @@ Historical fixture testing and the Sandbox execution audit both use the same Rus
 
 ## Dynamic Wave Deadband candidate
 
-The optional dynamic entry filter keeps exit logic unchanged. For each new SQZ sign-wave it computes `max(sqz_entry_deadband, EMA(abs(SQZ), length) * pct / 100)` from prior confirmed bars, freezes that threshold for the wave, and resets/recalculates only after SQZ reaches/crosses zero. `sqz_dynamic_deadband_pct=0.0` disables the feature. The final-test candidate uses EMA length 25 and 30%. Production remains OPT45 / DB0 with dynamic percentage 0.
+The optional dynamic entry filter keeps exit logic unchanged. For each new SQZ sign-wave it computes `max(sqz_entry_deadband, EMA(abs(SQZ), length) * pct / 100)` from prior confirmed bars, freezes that threshold for the wave, and resets/recalculates only after SQZ reaches/crosses zero. `sqz_dynamic_deadband_pct=0.0` disables the feature. Active production uses EMA length 25 and 30%, fixed DB0, with the threshold frozen for each wave; exit decay is 50%.

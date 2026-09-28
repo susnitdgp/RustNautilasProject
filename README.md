@@ -6,10 +6,10 @@ Native Rust/NautilusTrader project for **MCX Crude PURE Squeeze Momentum v2.28.3
 
 There is one active strategy only: `squeeze_momentum_lazybear_v2283`.
 
-The strategy keeps the supplied TradingView Pine v2.28.3 structure, with the active production profile optimized to **OPT45 / DB0**:
+The strategy keeps the supplied TradingView Pine v2.28.3 structure, with the active production profile set to **Dynamic Wave DB EMA25×30% / Decay50**:
 
 - BUY: SQZ momentum positive and strengthening for configured N bars (default 2)
-- SELL / QLX: configured weakening persistence (2 bars) plus configured retracement toward zero (**active 45%**; supplied Pine baseline was 70%), or immediate zero cross
+- SELL / QLX: configured weakening persistence (2 bars) plus configured retracement toward zero (**active 50%**; supplied Pine baseline was 70%), or immediate zero cross
 - SHORT: SQZ momentum negative and strengthening downward for configured N bars
 - COVER / QSX: inverse weakening/retracement rule, or immediate zero cross
 - one trade per momentum wave; no RB/RS same-wave re-entry
@@ -38,9 +38,9 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
   "entry_strength_bars": 2,
   "sqz_entry_deadband": 0.0,
   "sqz_dynamic_deadband_ema_length": 25,
-  "sqz_dynamic_deadband_pct": 0.0,
+  "sqz_dynamic_deadband_pct": 30.0,
   "sqz_weak_bars_req": 2,
-  "sqz_transition_pct": 45.0,
+  "sqz_transition_pct": 50.0,
   "session_timezone": "Asia/Kolkata",
   "allow_entries_only_in_session": true,
   "force_flat_at_session_end": true,
@@ -49,7 +49,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
 }
 ```
 
-The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The supplied Pine baseline used a 70% transition exit; the active production profile uses the tested OPT45 value of 45%. `sqz_entry_deadband=0.0` preserves the original entry behavior; positive values are an optional entry-only anti-chop filter and do not change wave reset or exit logic. Dynamic wave deadband is disabled in production with `sqz_dynamic_deadband_pct=0.0`. When enabled, a new wave freezes `max(fixed_deadband, prior EMA(|SQZ|) × dynamic_pct)` until SQZ crosses zero; the reference EMA is updated only after each confirmed bar.
+The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The active production profile uses a 50% transition exit and Dynamic Wave DB EMA25×30%. At each new SQZ sign-wave, the entry threshold freezes `max(fixed_deadband, prior EMA(|SQZ|) × dynamic_pct)` until SQZ crosses zero; the reference EMA is updated only after each confirmed bar. Fixed DB remains 0.0.
 
 ## Build and verify
 
