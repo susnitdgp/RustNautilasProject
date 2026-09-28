@@ -21,7 +21,7 @@ expected={
  "entry_strength_bars":2,
  "sqz_entry_deadband":0.0,
  "sqz_weak_bars_req":2,
- "sqz_transition_pct":70.0,
+ "sqz_transition_pct":45.0,
  "session_timezone":"Asia/Kolkata",
  "allow_entries_only_in_session":True,
  "force_flat_at_session_end":True,
@@ -31,7 +31,7 @@ expected={
 for k,val in expected.items(): assert s[k]==val,(k,s[k],val)
 assert s["session"]=={"start":"09:00:00","end":"23:15:00","days":"23456","reset_daily":False}
 assert s["display"]=={"show_markers":True,"show_dashboard":True,"shade_outside":True,"outside_session_color":"gray@86"}
-print("config parity: PASS (PURE SQZ v2.28.3, JSON inputs, live orders OFF)")
+print("config parity: PASS (PURE SQZ v2.28.3 OPT45/DB0 active profile, live orders OFF)")
 PY
 
 cargo fmt --all -- --check
@@ -51,7 +51,7 @@ r=json.load(open(sys.argv[1]))
 assert r["interval"]=="5minute"
 assert r["force_flat_at_session_end"] is True
 assert r["closed_trades"]==27,r["closed_trades"]
-assert r["gross_points"]==192.0,r["gross_points"]
+assert r["gross_points"]==271.0,r["gross_points"]
 assert r["open_position"]==0,r["open_position"]
 assert {e["action"] for e in r["events"]}=={"BUY","SELL","SHORT","COVER"}
 allowed={"sqz_strength_long","sqz_strength_short","sqz_transition","zero_cross","session_force_flat"}
@@ -89,4 +89,4 @@ print("sandbox confirmed-bar path: PASS",{"signals":len(signals),"fills":complet
 PY
 
 git diff --check
-echo "MCX Crude PURE Squeeze Momentum v2.28.3 verification: PASS"
+echo "MCX Crude PURE Squeeze Momentum v2.28.3 OPT45/DB0 verification: PASS"

@@ -6,10 +6,10 @@ Native Rust/NautilusTrader project for **MCX Crude PURE Squeeze Momentum v2.28.3
 
 There is one active strategy only: `squeeze_momentum_lazybear_v2283`.
 
-The strategy mirrors the supplied TradingView Pine v2.28.3 baseline:
+The strategy keeps the supplied TradingView Pine v2.28.3 structure, with the active production profile optimized to **OPT45 / DB0**:
 
 - BUY: SQZ momentum positive and strengthening for configured N bars (default 2)
-- SELL / QLX: configured weakening persistence (default 2 bars) plus configured retracement toward zero (default 70%), or immediate zero cross
+- SELL / QLX: configured weakening persistence (2 bars) plus configured retracement toward zero (**active 45%**; supplied Pine baseline was 70%), or immediate zero cross
 - SHORT: SQZ momentum negative and strengthening downward for configured N bars
 - COVER / QSX: inverse weakening/retracement rule, or immediate zero cross
 - one trade per momentum wave; no RB/RS same-wave re-entry
@@ -38,7 +38,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
   "entry_strength_bars": 2,
   "sqz_entry_deadband": 0.0,
   "sqz_weak_bars_req": 2,
-  "sqz_transition_pct": 70.0,
+  "sqz_transition_pct": 45.0,
   "session_timezone": "Asia/Kolkata",
   "allow_entries_only_in_session": true,
   "force_flat_at_session_end": true,
@@ -47,7 +47,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
 }
 ```
 
-The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. `sqz_entry_deadband=0.0` preserves the original v2.28.3 entry behavior; positive values are an optional entry-only anti-chop filter and do not change wave reset or exit logic.
+The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The supplied Pine baseline used a 70% transition exit; the active production profile uses the tested OPT45 value of 45%. `sqz_entry_deadband=0.0` preserves the original entry behavior; positive values are an optional entry-only anti-chop filter and do not change wave reset or exit logic.
 
 ## Build and verify
 

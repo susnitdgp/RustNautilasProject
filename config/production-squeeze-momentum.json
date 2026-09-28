@@ -32,7 +32,7 @@
     "entry_strength_bars": 2,
     "sqz_entry_deadband": 0.0,
     "sqz_weak_bars_req": 2,
-    "sqz_transition_pct": 70.0,
+    "sqz_transition_pct": 45.0,
     "session_timezone": "Asia/Kolkata",
     "allow_entries_only_in_session": true,
     "force_flat_at_session_end": true,

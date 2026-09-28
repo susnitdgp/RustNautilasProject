@@ -16,7 +16,7 @@ Default rules:
 
 - BUY: positive momentum strengthening for 2 bars.
 - SHORT: negative momentum strengthening downward for 2 bars.
-- QLX/SELL: 2 consecutive positive weakening bars and at least 70% peak-to-zero retracement, or immediate zero cross.
+- QLX/SELL: 2 consecutive positive weakening bars and the configured peak-to-zero retracement, or immediate zero cross. The supplied Pine baseline is 70%; the active production profile is OPT45/DB0 with 45%.
 - QSX/COVER: exact inverse.
 - A positive wave can produce at most one LONG trade; a negative wave can produce at most one SHORT trade. The side rearms only after momentum reaches/crosses zero.
 - One action maximum per candle. An exit does not reverse on the same candle.

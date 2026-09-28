@@ -2,8 +2,8 @@
 
 The active strategy is **MCX Crude PURE Squeeze Momentum v2.28.3**.
 
-- `production-squeeze-momentum.json` — authoritative instrument, session, Pure SQZ strategy inputs and display settings.
-- `candidate-squeeze-momentum-opt45.json` — optimization candidate; identical to production except SQZ transition is 45% instead of 70%. It is not the production config.
+- `production-squeeze-momentum.json` — authoritative active profile: OPT45 / DB0 (45% transition exit, entry deadband 0).
+- `candidate-squeeze-momentum-opt45.json` — retained comparison copy of the OPT45 / DB0 settings now promoted to production.
 - `candidate-squeeze-momentum-db5.json` — entry-deadband candidate; keeps the 70% exit and requires absolute SQZ momentum >= 5 for new entries. Wave reset remains unchanged.
 - `kite-production.json` — local/private Kite production settings.
 - `kite-sandbox.toml` — local sandbox settings.
