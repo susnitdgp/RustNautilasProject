@@ -29,6 +29,7 @@ pub struct Settings {
     pub sqz_mult_kc: f64,
     pub sqz_use_true_range: bool,
     pub entry_strength_bars: usize,
+    pub sqz_entry_deadband: f64,
     pub sqz_weak_bars_req: usize,
     pub sqz_transition_pct: f64,
     pub session_timezone: String,
@@ -46,6 +47,10 @@ impl Settings {
         ensure!(
             (1..=3).contains(&self.entry_strength_bars),
             "Entry Strengthening Bars must be 1..3"
+        );
+        ensure!(
+            self.sqz_entry_deadband.is_finite() && self.sqz_entry_deadband >= 0.0,
+            "SQZ Entry Deadband must be finite and >= 0"
         );
         ensure!(
             (1..=5).contains(&self.sqz_weak_bars_req),
@@ -226,6 +231,14 @@ impl Engine {
         }
     }
 
+    fn deadband_ready(&self, values: Values, side: i8) -> bool {
+        match side {
+            1 => values.value >= self.settings.sqz_entry_deadband,
+            -1 => values.value <= -self.settings.sqz_entry_deadband,
+            _ => false,
+        }
+    }
+
     fn day_end_sqoff_bar(&self, in_session: bool, bar_close_ns: u64) -> bool {
         if !self.settings.force_flat_at_session_end || !in_session {
             return false;
@@ -362,7 +375,8 @@ impl Engine {
         let entry_ready = position == 0
             && entry_session_ok
             && !wave_used
-            && self.strength_ready(values, wave_side);
+            && self.strength_ready(values, wave_side)
+            && self.deadband_ready(values, wave_side);
 
         Observation {
             bar_close_ns,
@@ -535,11 +549,13 @@ impl Engine {
         let long_entry = position == 0
             && entry_session_ok
             && !self.long_wave_used
-            && self.strength_ready(values, 1);
+            && self.strength_ready(values, 1)
+            && self.deadband_ready(values, 1);
         let short_entry = position == 0
             && entry_session_ok
             && !self.short_wave_used
-            && self.strength_ready(values, -1);
+            && self.strength_ready(values, -1)
+            && self.deadband_ready(values, -1);
         let day_end = self.day_end_sqoff_bar(in_session, bar_close_ns);
 
         let mut force_flat_event = false;
@@ -626,6 +642,7 @@ mod tests {
             "sqz_mult_kc":1.5,
             "sqz_use_true_range":true,
             "entry_strength_bars":2,
+            "sqz_entry_deadband":0.0,
             "sqz_weak_bars_req":2,
             "sqz_transition_pct":70.0,
             "session_timezone":"Asia/Kolkata",
@@ -643,11 +660,47 @@ mod tests {
         let settings = baseline_settings();
         settings.validate().unwrap();
         assert_eq!(settings.entry_strength_bars, 2);
+        assert_eq!(settings.sqz_entry_deadband, 0.0);
         assert_eq!(settings.sqz_weak_bars_req, 2);
         assert_eq!(settings.sqz_transition_pct, 70.0);
         assert!(settings.force_flat_at_session_end);
         assert_eq!(settings.auto_sq_off_hour, 23);
         assert_eq!(settings.auto_sq_off_minute, 15);
+    }
+
+    #[test]
+    fn entry_deadband_filters_only_entry_magnitude() {
+        let mut settings = baseline_settings();
+        settings.sqz_entry_deadband = 10.0;
+        let engine = Engine::new(settings, super::super::session_calendar::fixture()).unwrap();
+
+        let long_inside = Values {
+            ready: true,
+            value: 9.9,
+            long_strength2: true,
+            ..Values::default()
+        };
+        let long_edge = Values {
+            value: 10.0,
+            ..long_inside
+        };
+        let short_inside = Values {
+            ready: true,
+            value: -9.9,
+            short_strength2: true,
+            ..Values::default()
+        };
+        let short_edge = Values {
+            value: -10.0,
+            ..short_inside
+        };
+
+        assert!(engine.strength_ready(long_inside, 1));
+        assert!(!engine.deadband_ready(long_inside, 1));
+        assert!(engine.deadband_ready(long_edge, 1));
+        assert!(engine.strength_ready(short_inside, -1));
+        assert!(!engine.deadband_ready(short_inside, -1));
+        assert!(engine.deadband_ready(short_edge, -1));
     }
 
     #[test]

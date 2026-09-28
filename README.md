@@ -35,6 +35,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
   "sqz_mult_kc": 1.5,
   "sqz_use_true_range": true,
   "entry_strength_bars": 2,
+  "sqz_entry_deadband": 0.0,
   "sqz_weak_bars_req": 2,
   "sqz_transition_pct": 70.0,
   "session_timezone": "Asia/Kolkata",
@@ -45,7 +46,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
 }
 ```
 
-The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code.
+The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. `sqz_entry_deadband=0.0` preserves the original v2.28.3 entry behavior; positive values are an optional entry-only anti-chop filter and do not change wave reset or exit logic.
 
 ## Build and verify
 

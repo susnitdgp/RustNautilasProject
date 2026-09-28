@@ -19,6 +19,7 @@ expected={
  "sqz_mult_kc":1.5,
  "sqz_use_true_range":True,
  "entry_strength_bars":2,
+ "sqz_entry_deadband":0.0,
  "sqz_weak_bars_req":2,
  "sqz_transition_pct":45.0,
  "session_timezone":"Asia/Kolkata",

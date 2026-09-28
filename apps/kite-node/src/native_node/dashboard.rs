@@ -68,6 +68,7 @@ struct MonitorParams {
     sqz_mult_kc: f64,
     use_true_range: bool,
     entry_strength_bars: usize,
+    entry_deadband: f64,
     weak_bars: usize,
     transition_pct: f64,
     allow_entries_only_in_session: bool,
@@ -86,6 +87,7 @@ impl MonitorParams {
             sqz_mult_kc: s.sqz_mult_kc,
             use_true_range: s.sqz_use_true_range,
             entry_strength_bars: s.entry_strength_bars,
+            entry_deadband: s.sqz_entry_deadband,
             weak_bars: s.sqz_weak_bars_req,
             transition_pct: s.sqz_transition_pct,
             allow_entries_only_in_session: s.allow_entries_only_in_session,
@@ -826,11 +828,12 @@ fn monitor_lines<'a>(
             p.auto_sq_off_minute
         )),
         Line::from(format!(
-            " Inputs         BB {} | KC {} x {:.1} | TR {}",
+            " Inputs         BB {} | KC {} x {:.1} | TR {} | Entry DB {:.1}",
             p.sqz_length,
             p.sqz_length_kc,
             p.sqz_mult_kc,
-            if p.use_true_range { "ON" } else { "OFF" }
+            if p.use_true_range { "ON" } else { "OFF" },
+            p.entry_deadband
         )),
         Line::from(format!(" Last Event     {event}")),
         Line::from(format!(" Reason         {reason}")),

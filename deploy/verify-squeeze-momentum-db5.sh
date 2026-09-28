@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-CONFIG="config/production-squeeze-momentum.json"
+CONFIG="config/candidate-squeeze-momentum-db5.json"
 
 python3 - "$CONFIG" <<'PY'
 import json,sys
@@ -19,7 +19,7 @@ expected={
  "sqz_mult_kc":1.5,
  "sqz_use_true_range":True,
  "entry_strength_bars":2,
- "sqz_entry_deadband":0.0,
+ "sqz_entry_deadband":5.0,
  "sqz_weak_bars_req":2,
  "sqz_transition_pct":70.0,
  "session_timezone":"Asia/Kolkata",
@@ -31,7 +31,7 @@ expected={
 for k,val in expected.items(): assert s[k]==val,(k,s[k],val)
 assert s["session"]=={"start":"09:00:00","end":"23:15:00","days":"23456","reset_daily":False}
 assert s["display"]=={"show_markers":True,"show_dashboard":True,"shade_outside":True,"outside_session_color":"gray@86"}
-print("config parity: PASS (PURE SQZ v2.28.3, JSON inputs, live orders OFF)")
+print("DB5 config parity: PASS (2 strength / DB5 / 2 weak / 70% transition, live orders OFF)")
 PY
 
 cargo fmt --all -- --check
@@ -50,13 +50,13 @@ import json,sys
 r=json.load(open(sys.argv[1]))
 assert r["interval"]=="5minute"
 assert r["force_flat_at_session_end"] is True
-assert r["closed_trades"]==27,r["closed_trades"]
-assert r["gross_points"]==192.0,r["gross_points"]
+assert r["closed_trades"]==24,r["closed_trades"]
+assert r["gross_points"]==435.0,r["gross_points"]
 assert r["open_position"]==0,r["open_position"]
 assert {e["action"] for e in r["events"]}=={"BUY","SELL","SHORT","COVER"}
 allowed={"sqz_strength_long","sqz_strength_short","sqz_transition","zero_cross","session_force_flat"}
 assert {e["reason"] for e in r["events"]} <= allowed
-print("historical fixture: PASS",{"closed_trades":r["closed_trades"],"gross_points":r["gross_points"]})
+print("DB5 historical fixture: PASS",{"closed_trades":r["closed_trades"],"gross_points":r["gross_points"]})
 PY
 
 ./target/debug/kite-node native-squeeze-momentum-sim "$CONFIG" > "$SIM_TMP"
@@ -85,8 +85,8 @@ assert all(s["confirmed_bar_only"] is True for s in signals)
 assert all(s["timestamp_ns"] >= s["bar_close_ns"] for s in signals)
 assert len({s["bar_close_ns"] for s in signals})==len(signals),"more than one action on a candle"
 assert all(s["reason"] in {"sqz_strength_long","sqz_strength_short","sqz_transition","zero_cross","session_force_flat"} for s in signals)
-print("sandbox confirmed-bar path: PASS",{"signals":len(signals),"fills":complete["fills"],"report":str(report)})
+print("DB5 sandbox confirmed-bar path: PASS",{"signals":len(signals),"fills":complete["fills"],"report":str(report)})
 PY
 
 git diff --check
-echo "MCX Crude PURE Squeeze Momentum v2.28.3 verification: PASS"
+echo "MCX Crude PURE Squeeze Momentum DB5 verification: PASS"
