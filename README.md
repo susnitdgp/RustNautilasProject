@@ -21,7 +21,7 @@ The strategy keeps the supplied TradingView Pine v2.28.3 structure, with the act
 - day-end auto square-off default: ON at the candle closing 23:15
 - safety hardening: the 23:10–23:15 square-off candle can close an existing position but can never open a fresh BUY/SHORT
 - Algomojo action vocabulary: BUY / SELL / SHORT / COVER
-- real orders remain disabled in the committed configuration
+- production live-order strategy gate is enabled; the private broker gate must also be enabled for real orders
 
 The source of truth is `config/production-squeeze-momentum.json`.
 

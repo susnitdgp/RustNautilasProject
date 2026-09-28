@@ -11,7 +11,7 @@ assert v["strategy"]=="squeeze_momentum_lazybear_v2283"
 assert v["interval"]=="5minute"
 assert v["contracts"]==1
 assert v["atr_stop_enabled"] is False
-assert v["live_orders_enabled"] is False
+assert v["live_orders_enabled"] is True
 s=v["squeeze_momentum"]
 expected={
  "sqz_length":20,
@@ -33,7 +33,7 @@ expected={
 for k,val in expected.items(): assert s[k]==val,(k,s[k],val)
 assert s["session"]=={"start":"09:00:00","end":"23:15:00","days":"23456","reset_daily":False}
 assert s["display"]=={"show_markers":True,"show_dashboard":True,"shade_outside":True,"outside_session_color":"gray@86"}
-print("config parity: PASS (PURE SQZ v2.28.3 Dynamic EMA25x30 / Decay45 active profile, live orders OFF)")
+print("config parity: PASS (PURE SQZ v2.28.3 Dynamic EMA25x30 / Decay45 active profile, strategy live gate ON)")
 PY
 
 cargo fmt --all -- --check

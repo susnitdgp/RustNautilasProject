@@ -6,7 +6,7 @@
   "interval": "5minute",
   "contracts": 1,
   "atr_stop_enabled": false,
-  "live_orders_enabled": false,
+  "live_orders_enabled": true,
   "expected_expiry": "2026-10-19",
   "session_calendar": {
     "timezone": "Asia/Kolkata",

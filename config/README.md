@@ -3,15 +3,12 @@
 The active strategy is **MCX Crude PURE Squeeze Momentum v2.28.3**.
 
 - `production-squeeze-momentum.json` — authoritative active profile: Dynamic Wave DB EMA25×30%, fixed DB0, 2 weak bars, 45% transition exit.
-- `candidate-squeeze-momentum-opt45.json` — retained comparison copy of the OPT45 / DB0 settings now promoted to production.
-- `candidate-squeeze-momentum-db5.json` — entry-deadband candidate; keeps the 70% exit and requires absolute SQZ momentum >= 5 for new entries. Wave reset remains unchanged.
-- `candidate-squeeze-momentum-dynwave25x30.json` — final-test dynamic wave candidate: OPT45 / fixed DB0 plus EMA25 of prior |SQZ| × 30%, frozen at each new sign-wave until zero cross.
 - `kite-production.json` — local/private Kite production settings.
-- `kite-sandbox.toml` — local sandbox settings.
+- `kite-sandbox.example.toml` — sandbox configuration template.
 
-All strategy inputs are JSON-driven under `squeeze_momentum`. The committed candidate keeps `live_orders_enabled: false`.
+The committed production strategy gate is enabled. `kite-production.json` is private/local and its broker gate must also be enabled for real order routing.
 
-Validate the candidate:
+Validate the final production profile:
 
 ```bash
 ./deploy/verify-squeeze-momentum-v2283.sh

@@ -282,12 +282,12 @@ mod tests {
     }
 
     #[test]
-    fn squeeze_baseline_is_valid_and_live_orders_are_disabled() {
+    fn final_squeeze_production_profile_is_valid_and_live_enabled() {
         let selection = selection();
         selection.validate().unwrap();
         let sqz = &selection.squeeze_momentum;
         assert_eq!(selection.interval, Interval::FiveMinute);
-        assert!(!selection.live_orders_enabled);
+        assert!(selection.live_orders_enabled);
         assert_eq!(selection.strategy, "squeeze_momentum_lazybear_v2283");
         assert_eq!(sqz.sqz_length, 20);
         assert_eq!(sqz.sqz_length_kc, 20);
