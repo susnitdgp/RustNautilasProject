@@ -69,6 +69,8 @@ struct MonitorParams {
     use_true_range: bool,
     entry_strength_bars: usize,
     entry_deadband: f64,
+    dynamic_deadband_ema_length: usize,
+    dynamic_deadband_pct: f64,
     weak_bars: usize,
     transition_pct: f64,
     allow_entries_only_in_session: bool,
@@ -88,6 +90,8 @@ impl MonitorParams {
             use_true_range: s.sqz_use_true_range,
             entry_strength_bars: s.entry_strength_bars,
             entry_deadband: s.sqz_entry_deadband,
+            dynamic_deadband_ema_length: s.sqz_dynamic_deadband_ema_length,
+            dynamic_deadband_pct: s.sqz_dynamic_deadband_pct,
             weak_bars: s.sqz_weak_bars_req,
             transition_pct: s.sqz_transition_pct,
             allow_entries_only_in_session: s.allow_entries_only_in_session,
@@ -773,6 +777,14 @@ fn monitor_lines<'a>(
     reason: &'a str,
     p: &MonitorParams,
 ) -> Vec<Line<'a>> {
+    let deadband_label = if p.dynamic_deadband_pct > 0.0 {
+        format!(
+            "DYN EMA{} x {:.0}%",
+            p.dynamic_deadband_ema_length, p.dynamic_deadband_pct
+        )
+    } else {
+        format!("{:.1}", p.entry_deadband)
+    };
     vec![
         Line::from(format!(" State          {}", position_label(position))),
         Line::from(format!(
@@ -828,12 +840,12 @@ fn monitor_lines<'a>(
             p.auto_sq_off_minute
         )),
         Line::from(format!(
-            " Inputs         BB {} | KC {} x {:.1} | TR {} | Entry DB {:.1}",
+            " Inputs         BB {} | KC {} x {:.1} | TR {} | DB {}",
             p.sqz_length,
             p.sqz_length_kc,
             p.sqz_mult_kc,
             if p.use_true_range { "ON" } else { "OFF" },
-            p.entry_deadband
+            deadband_label
         )),
         Line::from(format!(" Last Event     {event}")),
         Line::from(format!(" Reason         {reason}")),

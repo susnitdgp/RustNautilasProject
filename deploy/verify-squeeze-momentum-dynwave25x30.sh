@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-CONFIG="config/candidate-squeeze-momentum-opt45.json"
+CONFIG="config/candidate-squeeze-momentum-dynwave25x30.json"
 
 python3 - "$CONFIG" <<'PY'
 import json,sys
@@ -21,7 +21,7 @@ expected={
  "entry_strength_bars":2,
  "sqz_entry_deadband":0.0,
  "sqz_dynamic_deadband_ema_length":25,
- "sqz_dynamic_deadband_pct":0.0,
+ "sqz_dynamic_deadband_pct":30.0,
  "sqz_weak_bars_req":2,
  "sqz_transition_pct":45.0,
  "session_timezone":"Asia/Kolkata",
@@ -33,7 +33,7 @@ expected={
 for k,val in expected.items(): assert s[k]==val,(k,s[k],val)
 assert s["session"]=={"start":"09:00:00","end":"23:15:00","days":"23456","reset_daily":False}
 assert s["display"]=={"show_markers":True,"show_dashboard":True,"shade_outside":True,"outside_session_color":"gray@86"}
-print("OPT45 config parity: PASS (2 strength / 2 weak / 45% transition, live orders OFF)")
+print("dynamic config parity: PASS (OPT45 / DB0 / EMA25 x 30%, live orders OFF)")
 PY
 
 cargo fmt --all -- --check
@@ -52,13 +52,13 @@ import json,sys
 r=json.load(open(sys.argv[1]))
 assert r["interval"]=="5minute"
 assert r["force_flat_at_session_end"] is True
-assert r["closed_trades"]==27,r["closed_trades"]
-assert r["gross_points"]==271.0,r["gross_points"]
+assert r["closed_trades"]==22,r["closed_trades"]
+assert r["gross_points"]==521.0,r["gross_points"]
 assert r["open_position"]==0,r["open_position"]
 assert {e["action"] for e in r["events"]}=={"BUY","SELL","SHORT","COVER"}
 allowed={"sqz_strength_long","sqz_strength_short","sqz_transition","zero_cross","session_force_flat"}
 assert {e["reason"] for e in r["events"]} <= allowed
-print("OPT45 historical fixture: PASS",{"closed_trades":r["closed_trades"],"gross_points":r["gross_points"]})
+print("dynamic historical fixture: PASS",{"closed_trades":r["closed_trades"],"gross_points":r["gross_points"]})
 PY
 
 ./target/debug/kite-node native-squeeze-momentum-sim "$CONFIG" > "$SIM_TMP"
@@ -86,8 +86,9 @@ assert all(s["intent"] in {"BUY","SELL","SHORT","COVER"} for s in signals)
 assert all(s["confirmed_bar_only"] is True for s in signals)
 assert all(s["timestamp_ns"] >= s["bar_close_ns"] for s in signals)
 assert len({s["bar_close_ns"] for s in signals})==len(signals),"more than one action on a candle"
-print("OPT45 sandbox confirmed-bar path: PASS",{"signals":len(signals),"fills":complete["fills"],"report":str(report)})
+assert all(s["reason"] in {"sqz_strength_long","sqz_strength_short","sqz_transition","zero_cross","session_force_flat"} for s in signals)
+print("dynamic sandbox confirmed-bar path: PASS",{"signals":len(signals),"fills":complete["fills"],"report":str(report)})
 PY
 
 git diff --check
-echo "MCX Crude PURE Squeeze Momentum OPT45 verification: PASS"
+echo "MCX Crude PURE Squeeze Momentum Dynamic Wave DB25x30 verification: PASS"

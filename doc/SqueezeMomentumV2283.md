@@ -49,3 +49,8 @@ The live dashboard previews the current SQZ value and diagnostics tick-by-tick b
 ```
 
 Historical fixture testing and the Sandbox execution audit both use the same Rust state machine. The Sandbox verifier requires `confirmed_bar_only=true`, signal time >= bar-close time and at most one action per bar-close timestamp.
+
+
+## Dynamic Wave Deadband candidate
+
+The optional dynamic entry filter keeps exit logic unchanged. For each new SQZ sign-wave it computes `max(sqz_entry_deadband, EMA(abs(SQZ), length) * pct / 100)` from prior confirmed bars, freezes that threshold for the wave, and resets/recalculates only after SQZ reaches/crosses zero. `sqz_dynamic_deadband_pct=0.0` disables the feature. The final-test candidate uses EMA length 25 and 30%. Production remains OPT45 / DB0 with dynamic percentage 0.

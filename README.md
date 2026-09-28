@@ -37,6 +37,8 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
   "sqz_use_true_range": true,
   "entry_strength_bars": 2,
   "sqz_entry_deadband": 0.0,
+  "sqz_dynamic_deadband_ema_length": 25,
+  "sqz_dynamic_deadband_pct": 0.0,
   "sqz_weak_bars_req": 2,
   "sqz_transition_pct": 45.0,
   "session_timezone": "Asia/Kolkata",
@@ -47,7 +49,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
 }
 ```
 
-The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The supplied Pine baseline used a 70% transition exit; the active production profile uses the tested OPT45 value of 45%. `sqz_entry_deadband=0.0` preserves the original entry behavior; positive values are an optional entry-only anti-chop filter and do not change wave reset or exit logic.
+The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The supplied Pine baseline used a 70% transition exit; the active production profile uses the tested OPT45 value of 45%. `sqz_entry_deadband=0.0` preserves the original entry behavior; positive values are an optional entry-only anti-chop filter and do not change wave reset or exit logic. Dynamic wave deadband is disabled in production with `sqz_dynamic_deadband_pct=0.0`. When enabled, a new wave freezes `max(fixed_deadband, prior EMA(|SQZ|) × dynamic_pct)` until SQZ crosses zero; the reference EMA is updated only after each confirmed bar.
 
 ## Build and verify
 

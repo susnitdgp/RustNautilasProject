@@ -30,6 +30,8 @@ pub struct Settings {
     pub sqz_use_true_range: bool,
     pub entry_strength_bars: usize,
     pub sqz_entry_deadband: f64,
+    pub sqz_dynamic_deadband_ema_length: usize,
+    pub sqz_dynamic_deadband_pct: f64,
     pub sqz_weak_bars_req: usize,
     pub sqz_transition_pct: f64,
     pub session_timezone: String,
@@ -51,6 +53,15 @@ impl Settings {
         ensure!(
             self.sqz_entry_deadband.is_finite() && self.sqz_entry_deadband >= 0.0,
             "SQZ Entry Deadband must be finite and >= 0"
+        );
+        ensure!(
+            (2..=200).contains(&self.sqz_dynamic_deadband_ema_length),
+            "Dynamic SQZ Deadband EMA Length must be 2..200"
+        );
+        ensure!(
+            self.sqz_dynamic_deadband_pct.is_finite()
+                && (0.0..=100.0).contains(&self.sqz_dynamic_deadband_pct),
+            "Dynamic SQZ Deadband % must be 0..100"
         );
         ensure!(
             (1..=5).contains(&self.sqz_weak_bars_req),
@@ -89,7 +100,12 @@ impl Settings {
     }
 
     pub fn required_warmup(&self) -> usize {
-        (self.sqz_length_kc * 2 + 4).max(self.sqz_length + 4)
+        let base = (self.sqz_length_kc * 2 + 4).max(self.sqz_length + 4);
+        if self.sqz_dynamic_deadband_pct > 0.0 {
+            base + self.sqz_dynamic_deadband_ema_length
+        } else {
+            base
+        }
     }
 }
 
@@ -190,6 +206,9 @@ pub struct Engine {
     short_trough: Option<f64>,
     long_weak_bars: usize,
     short_weak_bars: usize,
+    abs_sqz_ema: Option<f64>,
+    long_wave_deadband: Option<f64>,
+    short_wave_deadband: Option<f64>,
     last_bar_close_ns: u64,
 }
 
@@ -207,6 +226,9 @@ impl Engine {
             short_trough: None,
             long_weak_bars: 0,
             short_weak_bars: 0,
+            abs_sqz_ema: None,
+            long_wave_deadband: None,
+            short_wave_deadband: None,
             last_bar_close_ns: 0,
         })
     }
@@ -231,12 +253,56 @@ impl Engine {
         }
     }
 
-    fn deadband_ready(&self, values: Values, side: i8) -> bool {
+    fn new_wave_deadband(&self) -> f64 {
+        let dynamic = self.abs_sqz_ema.map_or(0.0, |ema| {
+            ema * self.settings.sqz_dynamic_deadband_pct / 100.0
+        });
+        self.settings.sqz_entry_deadband.max(dynamic)
+    }
+
+    fn sync_wave_deadbands(&mut self, value: f64) {
+        if value <= 0.0 {
+            self.long_wave_deadband = None;
+        }
+        if value >= 0.0 {
+            self.short_wave_deadband = None;
+        }
+        if value > 0.0 && self.long_wave_deadband.is_none() {
+            self.long_wave_deadband = Some(self.new_wave_deadband());
+        }
+        if value < 0.0 && self.short_wave_deadband.is_none() {
+            self.short_wave_deadband = Some(self.new_wave_deadband());
+        }
+    }
+
+    fn wave_deadband(&self, side: i8) -> f64 {
         match side {
-            1 => values.value >= self.settings.sqz_entry_deadband,
-            -1 => values.value <= -self.settings.sqz_entry_deadband,
+            1 => self
+                .long_wave_deadband
+                .unwrap_or_else(|| self.new_wave_deadband()),
+            -1 => self
+                .short_wave_deadband
+                .unwrap_or_else(|| self.new_wave_deadband()),
+            _ => self.settings.sqz_entry_deadband,
+        }
+    }
+
+    fn deadband_ready(&self, values: Values, side: i8) -> bool {
+        let deadband = self.wave_deadband(side);
+        match side {
+            1 => values.value >= deadband,
+            -1 => values.value <= -deadband,
             _ => false,
         }
+    }
+
+    fn update_dynamic_reference(&mut self, value: f64) {
+        let x = value.abs();
+        let alpha = 2.0 / (self.settings.sqz_dynamic_deadband_ema_length as f64 + 1.0);
+        self.abs_sqz_ema = Some(
+            self.abs_sqz_ema
+                .map_or(x, |ema| alpha * x + (1.0 - alpha) * ema),
+        );
     }
 
     fn day_end_sqoff_bar(&self, in_session: bool, bar_close_ns: u64) -> bool {
@@ -499,6 +565,10 @@ impl Engine {
             ));
         }
 
+        // Freeze the dynamic entry threshold when a new sign-wave begins. The
+        // reference EMA contains only prior confirmed SQZ bars.
+        self.sync_wave_deadbands(values.value);
+
         // Exact Pine wave reset: sign reaching/crossing zero re-arms that side.
         if values.value <= 0.0 {
             self.long_wave_used = false;
@@ -631,6 +701,7 @@ impl Engine {
         } else {
             false
         };
+        self.update_dynamic_reference(values.value);
         Ok(observation)
     }
 }
@@ -647,6 +718,8 @@ mod tests {
             "sqz_use_true_range":true,
             "entry_strength_bars":2,
             "sqz_entry_deadband":0.0,
+            "sqz_dynamic_deadband_ema_length":25,
+            "sqz_dynamic_deadband_pct":0.0,
             "sqz_weak_bars_req":2,
             "sqz_transition_pct":70.0,
             "session_timezone":"Asia/Kolkata",
@@ -665,6 +738,8 @@ mod tests {
         settings.validate().unwrap();
         assert_eq!(settings.entry_strength_bars, 2);
         assert_eq!(settings.sqz_entry_deadband, 0.0);
+        assert_eq!(settings.sqz_dynamic_deadband_ema_length, 25);
+        assert_eq!(settings.sqz_dynamic_deadband_pct, 0.0);
         assert_eq!(settings.sqz_weak_bars_req, 2);
         assert_eq!(settings.sqz_transition_pct, 70.0);
         assert!(settings.force_flat_at_session_end);
@@ -705,6 +780,25 @@ mod tests {
         assert!(engine.strength_ready(short_inside, -1));
         assert!(!engine.deadband_ready(short_inside, -1));
         assert!(engine.deadband_ready(short_edge, -1));
+    }
+
+    #[test]
+    fn dynamic_wave_deadband_is_frozen_until_zero_cross() {
+        let mut settings = baseline_settings();
+        settings.sqz_dynamic_deadband_pct = 30.0;
+        let calendar = super::super::session_calendar::fixture();
+        let mut engine = Engine::new(settings, calendar).unwrap();
+        engine.abs_sqz_ema = Some(40.0);
+
+        engine.sync_wave_deadbands(1.0);
+        assert_eq!(engine.long_wave_deadband, Some(12.0));
+        engine.abs_sqz_ema = Some(100.0);
+        engine.sync_wave_deadbands(5.0);
+        assert_eq!(engine.long_wave_deadband, Some(12.0));
+
+        engine.sync_wave_deadbands(-1.0);
+        assert_eq!(engine.long_wave_deadband, None);
+        assert_eq!(engine.short_wave_deadband, Some(30.0));
     }
 
     #[test]

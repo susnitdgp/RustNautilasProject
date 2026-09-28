@@ -295,6 +295,8 @@ mod tests {
         assert!(sqz.sqz_use_true_range);
         assert_eq!(sqz.entry_strength_bars, 2);
         assert_eq!(sqz.sqz_entry_deadband, 0.0);
+        assert_eq!(sqz.sqz_dynamic_deadband_ema_length, 25);
+        assert_eq!(sqz.sqz_dynamic_deadband_pct, 0.0);
         assert_eq!(sqz.sqz_weak_bars_req, 2);
         assert_eq!(sqz.sqz_transition_pct, 45.0);
         assert!(sqz.allow_entries_only_in_session);
