@@ -583,9 +583,8 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5),
-            Constraint::Min(20),
-            Constraint::Length(5),
-            Constraint::Length(2),
+            Constraint::Min(17),
+            Constraint::Length(1),
         ])
         .split(frame.area());
     let current = app.current();
@@ -613,9 +612,9 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
             current.close
         )),
         Line::from(format!(
-            " Position: {} | Realized: {realized:+.0} pt / {:+.0} INR | Realtime dashboard preview is tick-by-tick; actions are close-only",
-            realized * CONTRACT_MULTIPLIER,
-            position_label(current.monitor.position)
+            " Position: {} | Realized: {realized:+.0} pt / {:+.0} INR | Actions: confirmed close only",
+            position_label(current.monitor.position),
+            realized * CONTRACT_MULTIPLIER
         )),
     ];
     frame.render_widget(
@@ -625,7 +624,7 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(root[1]);
     render_trade_table(frame, &rows, main[0]);
     render_historical_monitor(
@@ -637,20 +636,11 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
     );
     frame.render_widget(
         Paragraph::new(format!(
-            " Closed trades: {} | Net: {realized:+.0} pt / {:+.0} INR",
+            " Closed {} | Net {realized:+.0} pt / {:+.0} INR | q quit | space play/pause | ←/→ step",
             rows.iter().filter(|r| r.closed).count(),
             realized * CONTRACT_MULTIPLIER
-        ))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" P&L SUMMARY "),
-        ),
+        )),
         root[2],
-    );
-    frame.render_widget(
-        Paragraph::new(" q quit | space play/pause | ←/→ step | Home/End"),
-        root[3],
     );
 }
 
@@ -680,20 +670,20 @@ fn render_trade_table(frame: &mut ratatui::Frame<'_>, rows: &[TradeRow], area: R
         .style(style)
     });
     let widths = [
-        Constraint::Length(3),
+        Constraint::Length(2),
+        Constraint::Length(6),
+        Constraint::Length(6),
         Constraint::Length(7),
+        Constraint::Length(6),
         Constraint::Length(7),
-        Constraint::Length(9),
-        Constraint::Length(7),
-        Constraint::Length(9),
-        Constraint::Length(12),
-        Constraint::Length(8),
         Constraint::Length(10),
+        Constraint::Length(6),
+        Constraint::Length(8),
     ];
     let table = Table::new(table_rows, widths)
         .header(
             Row::new(vec![
-                "#", "SIDE", "ENTRY", "ENTRY PX", "EXIT", "EXIT PX", "REASON", "POINTS", "P&L INR",
+                "#", "SIDE", "ENTRY", "ENT PX", "EXIT", "EXT PX", "REASON", "PTS", "P&L",
             ])
             .style(Style::default().fg(Color::Cyan)),
         )
@@ -786,9 +776,9 @@ fn monitor_lines<'a>(
         format!("{:.1}", p.entry_deadband)
     };
     vec![
-        Line::from(format!(" State          {}", position_label(position))),
+        Line::from(format!(" State       {}", position_label(position))),
         Line::from(format!(
-            " Bar Status     {}",
+            " Bar         {}",
             if confirmed {
                 "CONFIRMED"
             } else {
@@ -796,32 +786,32 @@ fn monitor_lines<'a>(
             }
         )),
         Line::from(format!(
-            " SQZ Mom        {}",
+            " SQZ         {}",
             if ready {
                 format!("{value:.1}")
             } else {
                 "--".into()
             }
         )),
-        Line::from(format!(" Direction      {}", momentum.label())),
-        Line::from(format!(" Squeeze        {squeeze}")),
-        Line::from(format!(" Wave           {wave}")),
+        Line::from(format!(" Direction   {}", momentum.label())),
+        Line::from(format!(" Squeeze     {squeeze}")),
+        Line::from(format!(" Wave        {wave}")),
         Line::from(format!(
-            " Entry Ready    {}  Strength {strength_count}/{}",
+            " Entry       {} | Str {strength_count}/{}",
             if entry_ready { "YES" } else { "NO" },
             p.entry_strength_bars
         )),
-        Line::from(format!(" Weak Bars      {weak_count}/{}", p.weak_bars)),
+        Line::from(format!(" Weak        {weak_count}/{}", p.weak_bars)),
         Line::from(format!(
-            " Retracement    {retracement:.1}% / {:.0}%",
+            " Decay       {retracement:.1}% / {:.0}%",
             p.transition_pct
         )),
         Line::from(format!(
-            " Extreme        {}",
+            " Extreme     {}",
             extreme.map_or_else(|| "-".into(), |v| format!("{v:.1}"))
         )),
         Line::from(format!(
-            " Session        {} | Entry restriction {}",
+            " Session     {} | Entries {}",
             if in_session { "YES" } else { "NO" },
             if p.allow_entries_only_in_session {
                 "ON"
@@ -830,7 +820,7 @@ fn monitor_lines<'a>(
             }
         )),
         Line::from(format!(
-            " Day-end        {} {:02}:{:02}",
+            " SqOff       {} {:02}:{:02}",
             if p.force_flat_at_session_end {
                 "ON"
             } else {
@@ -840,15 +830,15 @@ fn monitor_lines<'a>(
             p.auto_sq_off_minute
         )),
         Line::from(format!(
-            " Inputs         BB {} | KC {} x {:.1} | TR {} | DB {}",
+            " Inputs      B{} K{}x{:.1} TR{} DB{}",
             p.sqz_length,
             p.sqz_length_kc,
             p.sqz_mult_kc,
             if p.use_true_range { "ON" } else { "OFF" },
             deadband_label
         )),
-        Line::from(format!(" Last Event     {event}")),
-        Line::from(format!(" Reason         {reason}")),
+        Line::from(format!(" Event       {event}")),
+        Line::from(format!(" Reason      {reason}")),
     ]
 }
 
