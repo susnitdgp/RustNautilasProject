@@ -3,8 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
-CONFIG="config/production-trend-ribbon.json"
+CONFIG="config/production-squeeze-momentum.json"
 DURATION="${1:-}"
 
 if [[ -z "$DURATION" || ! "$DURATION" =~ ^[0-9]+$ || "$DURATION" -lt 60 || "$DURATION" -gt 86400 ]]; then
@@ -13,13 +12,12 @@ if [[ -z "$DURATION" || ! "$DURATION" =~ ^[0-9]+$ || "$DURATION" -lt 60 || "$DUR
 fi
 
 python3 - "$CONFIG" <<'PY'
-import json, sys
+import json,sys
 v=json.load(open(sys.argv[1]))
-assert v["strategy"]=="trend_ribbon_boswaves"
-assert v["interval"]=="5minute", "recorder candidate must remain five-minute"
-assert v["live_orders_enabled"] is False, "SAFETY: live orders must remain disabled"
-assert v["trend_ribbon"]["realtime"]["enabled"] is True
+assert v["strategy"]=="squeeze_momentum_lazybear_v2283"
+assert v["interval"]=="5minute"
+assert v["live_orders_enabled"] is False
 print("recorder safety: PASS (market data only; execution client absent)")
 PY
 
-exec ./target/debug/kite-node native-trend-ribbon-record "$CONFIG" "$DURATION"
+exec ./target/debug/kite-node native-squeeze-momentum-record "$CONFIG" "$DURATION"

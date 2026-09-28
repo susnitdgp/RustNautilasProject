@@ -1,4 +1,4 @@
-//! Read-only Kite full-tick recorder for Trend Ribbon realtime parity work.
+//! Read-only Kite full-tick recorder for Squeeze Momentum realtime parity work.
 //!
 //! This module never creates a strategy, RiskEngine, execution client or order.
 //! It records complete Kite full packets into the native Parquet catalog only.
@@ -55,7 +55,7 @@ pub fn run(config: &str, seconds: u64) -> Result<()> {
     println!(
         "{}",
         serde_json::json!({
-            "event":"trend_ribbon_tick_recording_started",
+            "event":"squeeze_momentum_tick_recording_started",
             "namespace":id.to_string(),
             "instrument":instrument.id.to_string(),
             "instrument_token":report.instrument_token,
@@ -137,7 +137,7 @@ pub fn run(config: &str, seconds: u64) -> Result<()> {
     println!(
         "{}",
         serde_json::json!({
-            "event":"trend_ribbon_tick_recording_complete",
+            "event":"squeeze_momentum_tick_recording_complete",
             "namespace":id.to_string(),
             "instrument":instrument.id.to_string(),
             "instrument_token":report.instrument_token,

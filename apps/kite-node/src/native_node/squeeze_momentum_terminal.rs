@@ -1,6 +1,5 @@
-//! Compact Trend Ribbon runtime status output.
-use super::{data, live_control::Control, trend_ribbon_actor::State};
-use serde_json::Value;
+//! Compact Pure Squeeze Momentum runtime status output.
+use super::{data, live_control::Control, squeeze_momentum_actor::State};
 use std::{sync::atomic::Ordering, time::Instant};
 
 pub struct Display {
@@ -18,6 +17,7 @@ pub struct Display {
 }
 
 impl Display {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         seconds: u64,
         warmup: usize,
@@ -74,17 +74,22 @@ impl Display {
 
     pub fn render(&self, state: &State, control: &Control) {
         let now = data::now();
-        let latest = state.indicators.last();
-        let bar = u64_metric(latest, "bar_close_ns").unwrap_or(0);
-        let direction = i64_metric(latest, "direction")
-            .map(direction_name)
-            .unwrap_or("WARMING");
+        let latest = state.latest_strategy;
+        let bar = latest.map_or(0, |v| v.bar_close_ns);
+        let sqz = latest.map_or("WARMUP", |v| v.momentum_state.label());
+        let bar_status = latest.map_or("WARMUP", |v| {
+            if v.confirmed {
+                "CONFIRMED"
+            } else {
+                "LIVE/FORMING"
+            }
+        });
         let position = state
             .cache
             .as_ref()
             .map(|cache| {
-                let cache = cache.borrow();
                 let qty: f64 = cache
+                    .borrow()
                     .positions_open(None, None, None, None, None)
                     .iter()
                     .map(|p| p.signed_qty)
@@ -107,21 +112,22 @@ impl Display {
                     + cache.orders_inflight(None, None, None, None, None).len()
             })
             .unwrap_or(0);
-        let quote = state.last_accepted_quote.as_ref();
-        let price = quote
+        let price = state
+            .last_accepted_quote
+            .as_ref()
             .map(|q| format!("bid {} / ask {}", q.bid_price, q.ask_price))
             .unwrap_or_else(|| "waiting for quote".into());
         let signal = state
             .signals
             .last()
             .and_then(|v| v.get("intent"))
-            .and_then(Value::as_str)
+            .and_then(serde_json::Value::as_str)
             .unwrap_or("none");
         let reason = state
             .signals
             .last()
             .and_then(|v| v.get("reason"))
-            .and_then(Value::as_str)
+            .and_then(serde_json::Value::as_str)
             .unwrap_or("--");
         let phase = if control.fault.lock().expect("fault lock").is_some() {
             "REVIEW REQUIRED"
@@ -142,7 +148,7 @@ impl Display {
             .map(|v| format!(" | cutoff {v}"))
             .unwrap_or_default();
         eprintln!(
-            "[{}] {} | {}s elapsed / {}s remaining{}\n  {} | Position: {} | Open/inflight: {}\n  Bar: {} | Direction: {} | Signals: {} [{} / {}] | Fills: {} | Recoveries: {}",
+            "[{}] {} | {}s elapsed / {}s remaining{}\n  {} | Position: {} | Open/inflight: {}\n  Bar: {} | {} | SQZ: {} | Signals: {} [{} / {}] | Fills: {} | Recoveries: {}",
             format_ist(now),
             phase,
             elapsed,
@@ -156,7 +162,8 @@ impl Display {
             } else {
                 "--".into()
             },
-            direction,
+            bar_status,
+            sqz,
             state.signals.len(),
             signal,
             reason,
@@ -205,22 +212,6 @@ pub fn finish(clean: bool, folder: &std::path::Path, real: bool) {
         if real { "ENABLED" } else { "OFF" },
         folder.display()
     );
-}
-
-fn u64_metric(value: Option<&Value>, key: &str) -> Option<u64> {
-    value?.get(key)?.as_u64()
-}
-
-fn i64_metric(value: Option<&Value>, key: &str) -> Option<i64> {
-    value?.get(key)?.as_i64()
-}
-
-fn direction_name(value: i64) -> &'static str {
-    match value {
-        1 => "LONG",
-        -1 => "SHORT",
-        _ => "FLAT",
-    }
 }
 
 fn format_ist(ns: u64) -> String {

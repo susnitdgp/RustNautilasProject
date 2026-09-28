@@ -60,6 +60,7 @@ impl Control {
         self.stopping.store(true, Ordering::Release);
         self.done.store(true, Ordering::Release);
     }
+    #[allow(dead_code)]
     pub fn current_bar(&self, bar: u64, now: u64) -> bool {
         self.sim
             || (bar > 0 && bar <= now && bar == super::bar_timing::eligible_close(now, self.bar_ns))

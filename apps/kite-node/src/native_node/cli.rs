@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 
-/// Native Trend Ribbon and operational entry points.
+/// Native Pure Squeeze Momentum v2.28.3 and operational entry points.
 pub fn dispatch(args: &[String]) -> Option<Result<()>> {
     let command = args.first()?.as_str();
     if !command.starts_with("native-") {
@@ -8,48 +8,44 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
     }
 
     Some(match (command, &args[1..]) {
-        ("native-trend-ribbon-sim", [config]) => trend_ribbon_selection(config)
-            .and_then(|_| super::trend_ribbon_live_runner::run(config, 30, true)),
-        ("native-trend-ribbon-paper", [config, seconds]) => trend_ribbon_selection(config)
+        ("native-squeeze-momentum-sim", [config]) => squeeze_selection(config)
+            .and_then(|_| super::squeeze_momentum_live_runner::run(config, 30, true)),
+        ("native-squeeze-momentum-paper", [config, seconds]) => squeeze_selection(config)
             .and_then(|_| seconds.parse::<u64>().map_err(anyhow::Error::from))
-            .and_then(|seconds| super::trend_ribbon_live_runner::run(config, seconds, false)),
-        ("native-trend-ribbon-kite-mock", [config]) => {
-            trend_ribbon_selection(config).and_then(|_| {
-                super::trend_ribbon_live_runner::run_with_execution(config, 30, true, true)
+            .and_then(|seconds| super::squeeze_momentum_live_runner::run(config, seconds, false)),
+        ("native-squeeze-momentum-kite-mock", [config]) => {
+            squeeze_selection(config).and_then(|_| {
+                super::squeeze_momentum_live_runner::run_with_execution(config, 30, true, true)
             })
         }
-        ("native-trend-ribbon-replay", [config, catalog]) => trend_ribbon_selection(config)
-            .and_then(|_| super::trend_ribbon_replay::run(config, catalog)),
-        ("native-trend-ribbon-record", [config, seconds]) => trend_ribbon_selection(config)
+        ("native-squeeze-momentum-record", [config, seconds]) => squeeze_selection(config)
             .and_then(|_| seconds.parse::<u64>().map_err(anyhow::Error::from))
-            .and_then(|seconds| super::trend_ribbon_recorder::run(config, seconds)),
-        ("native-trend-ribbon-backtest-fixture", [config, fixture]) => {
-            trend_ribbon_selection(config)
-                .and_then(|_| super::trend_ribbon_backtest::run(config, fixture))
+            .and_then(|seconds| super::squeeze_momentum_recorder::run(config, seconds)),
+        ("native-squeeze-momentum-backtest-fixture", [config, fixture]) => {
+            squeeze_selection(config)
+                .and_then(|_| super::squeeze_momentum_backtest::run(config, fixture))
         }
-        ("native-trend-ribbon-dashboard-live", [config, seconds]) => trend_ribbon_selection(config)
+        ("native-squeeze-momentum-dashboard-live", [config, seconds]) => squeeze_selection(config)
             .and_then(|_| seconds.parse::<u64>().map_err(anyhow::Error::from))
-            .and_then(|seconds| super::trend_ribbon_live_runner::run_dashboard(config, seconds)),
-        ("native-trend-ribbon-dashboard-history", [config, date]) => trend_ribbon_selection(config)
+            .and_then(|seconds| {
+                super::squeeze_momentum_live_runner::run_dashboard(config, seconds)
+            }),
+        ("native-squeeze-momentum-dashboard-history", [config, date]) => squeeze_selection(config)
             .and_then(|_| super::dashboard::run_history(config, date, false)),
-        ("native-trend-ribbon-dashboard-snapshot", [config, date]) => {
-            trend_ribbon_selection(config)
-                .and_then(|_| super::dashboard::run_history(config, date, true))
-        }
-        ("native-trend-ribbon-dashboard-summary", [config, from, to]) => {
-            trend_ribbon_selection(config)
+        ("native-squeeze-momentum-dashboard-snapshot", [config, date]) => squeeze_selection(config)
+            .and_then(|_| super::dashboard::run_history(config, date, true)),
+        ("native-squeeze-momentum-dashboard-summary", [config, from, to]) => {
+            squeeze_selection(config)
                 .and_then(|_| super::dashboard::run_summary(config, from, to, false))
         }
-        ("native-trend-ribbon-dashboard-summary-snapshot", [config, from, to]) => {
-            trend_ribbon_selection(config)
+        ("native-squeeze-momentum-dashboard-summary-snapshot", [config, from, to]) => {
+            squeeze_selection(config)
                 .and_then(|_| super::dashboard::run_summary(config, from, to, true))
         }
-        ("native-trend-ribbon-kite-production", [config, broker]) => trend_ribbon_selection(config)
-            .and_then(|_| super::trend_ribbon_live_runner::run_broker(config, broker)),
-        ("native-trend-ribbon-production-check", [config, broker]) => {
-            trend_ribbon_selection(config)
-                .and_then(|_| super::production::production_check(config, broker))
-        }
+        ("native-squeeze-momentum-kite-production", [config, broker]) => squeeze_selection(config)
+            .and_then(|_| super::squeeze_momentum_live_runner::run_broker(config, broker)),
+        ("native-squeeze-momentum-production-check", [config, broker]) => squeeze_selection(config)
+            .and_then(|_| super::production::production_check(config, broker)),
         ("native-contract-check", [config]) => super::production::contract_check(config),
         ("native-production-preflight", [config]) => super::production::preflight(config),
         ("native-kite-auth", []) => kite_adapter::auth::login::interactive().map(|result| {
@@ -91,15 +87,15 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 
 fn usage() -> Result<()> {
     bail!(
-        "Usage: native-trend-ribbon-sim CONFIG | native-trend-ribbon-paper CONFIG SECONDS | native-trend-ribbon-kite-mock CONFIG | native-trend-ribbon-replay CONFIG CATALOG | native-trend-ribbon-record CONFIG SECONDS | native-trend-ribbon-backtest-fixture CONFIG FIXTURE | native-trend-ribbon-dashboard-live CONFIG SECONDS | native-trend-ribbon-dashboard-history CONFIG YYYY-MM-DD | native-trend-ribbon-dashboard-snapshot CONFIG YYYY-MM-DD | native-trend-ribbon-dashboard-summary CONFIG FROM_YYYY-MM-DD TO_YYYY-MM-DD | native-trend-ribbon-dashboard-summary-snapshot CONFIG FROM_YYYY-MM-DD TO_YYYY-MM-DD | native-trend-ribbon-production-check CONFIG BROKER | native-trend-ribbon-kite-production CONFIG BROKER | native-contract-check CONFIG | native-production-preflight CONFIG | native-kite-auth | native-kite-auth-login-url | native-kite-margins-check CONFIG | native-full-audit CATALOG | native-kite-review NAMESPACE | native-kite-status ACCOUNT | native-kite-mock-release-reviewed NAMESPACE | native-recover NAMESPACE"
+        "Usage: native-squeeze-momentum-sim CONFIG | native-squeeze-momentum-paper CONFIG SECONDS | native-squeeze-momentum-kite-mock CONFIG | native-squeeze-momentum-record CONFIG SECONDS | native-squeeze-momentum-backtest-fixture CONFIG FIXTURE | native-squeeze-momentum-dashboard-live CONFIG SECONDS | native-squeeze-momentum-dashboard-history CONFIG YYYY-MM-DD | native-squeeze-momentum-dashboard-snapshot CONFIG YYYY-MM-DD | native-squeeze-momentum-dashboard-summary CONFIG FROM_YYYY-MM-DD TO_YYYY-MM-DD | native-squeeze-momentum-dashboard-summary-snapshot CONFIG FROM_YYYY-MM-DD TO_YYYY-MM-DD | native-squeeze-momentum-production-check CONFIG BROKER | native-squeeze-momentum-kite-production CONFIG BROKER | native-contract-check CONFIG | native-production-preflight CONFIG | native-kite-auth | native-kite-auth-login-url | native-kite-margins-check CONFIG | native-full-audit CATALOG | native-kite-review NAMESPACE | native-kite-status ACCOUNT | native-kite-mock-release-reviewed NAMESPACE | native-recover NAMESPACE"
     )
 }
 
-fn trend_ribbon_selection(path: &str) -> Result<()> {
+fn squeeze_selection(path: &str) -> Result<()> {
     let selection = super::production::Selection::load(path)?;
     anyhow::ensure!(
-        selection.strategy == "trend_ribbon_boswaves",
-        "This command requires the Trend Ribbon v2.23 Exit-First selection"
+        selection.strategy == "squeeze_momentum_lazybear_v2283",
+        "This command requires MCX Crude PURE Squeeze Momentum v2.28.3"
     );
     Ok(())
 }

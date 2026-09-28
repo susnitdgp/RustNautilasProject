@@ -8,9 +8,9 @@ pub mod lifecycle;
 pub mod persistence;
 pub mod recovery;
 pub mod redis_cache;
+pub mod squeeze_momentum_actor;
 pub mod status;
 mod synthetic;
-pub mod trend_ribbon_actor;
 
 mod production;
 
@@ -19,9 +19,9 @@ mod live_bars;
 mod live_control;
 mod live_data;
 mod live_lease;
-mod trend_ribbon_live_runner;
+mod squeeze_momentum_live_runner;
 
-mod trend_ribbon_terminal;
+mod squeeze_momentum_terminal;
 
 mod history_revision;
 
@@ -35,12 +35,11 @@ mod session_calendar;
 
 mod strategy_session;
 
-mod trend_ribbon;
-mod trend_ribbon_backtest;
-mod trend_ribbon_realtime;
-mod trend_ribbon_recorder;
-mod trend_ribbon_replay;
-mod trend_ribbon_squeeze;
+mod squeeze_momentum_recorder;
 
 #[cfg(test)]
 mod test_support;
+
+mod squeeze_momentum_backtest;
+mod squeeze_momentum_indicator;
+mod squeeze_momentum_strategy;

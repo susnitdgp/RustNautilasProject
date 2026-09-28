@@ -1,9 +1,10 @@
-//! Explicit same-day IST session policy for the Pivot Point strategy.
+//! Explicit same-day IST session policy for the active strategy.
 use super::session_calendar::Calendar;
 use anyhow::{Result, ensure};
 use chrono::{Datelike, FixedOffset, NaiveDate, NaiveTime, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]
 pub const BAR_NS: u64 = 300_000_000_000;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -17,20 +18,20 @@ impl Session {
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.start < self.end,
-            "Pivot session must start and end on the same IST day"
+            "Strategy session must start and end on the same IST day"
         );
         ensure!(
             [self.start, self.end]
                 .iter()
                 .all(|t| t.second() == 0 && t.nanosecond() == 0 && t.minute() % 5 == 0),
-            "Pivot session must align with five-minute candles"
+            "Strategy session must align with five-minute candles"
         );
         let days: std::collections::BTreeSet<_> = self.days.bytes().collect();
         ensure!(
             !days.is_empty()
                 && days.len() == self.days.len()
                 && days.iter().all(|d| (b'1'..=b'7').contains(d)),
-            "Invalid Pivot session days (1=Sunday .. 7=Saturday)"
+            "Invalid Strategy session days (1=Sunday .. 7=Saturday)"
         );
         Ok(())
     }
@@ -47,9 +48,9 @@ impl Session {
             let utc = zone
                 .from_local_datetime(&date.and_time(t))
                 .single()
-                .ok_or_else(|| anyhow::anyhow!("Invalid Pivot session time"))?;
+                .ok_or_else(|| anyhow::anyhow!("Invalid Strategy session time"))?;
             Ok(u64::try_from(utc.timestamp_nanos_opt().ok_or_else(
-                || anyhow::anyhow!("Pivot session timestamp overflow"),
+                || anyhow::anyhow!("Strategy session timestamp overflow"),
             )?)?)
         };
         let start = market_start.max(stamp(self.start)?);

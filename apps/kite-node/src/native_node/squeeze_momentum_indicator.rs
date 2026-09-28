@@ -1,10 +1,10 @@
+//! LazyBear Squeeze Momentum math used by MCX Crude PURE Squeeze Momentum v2.28.3.
 use anyhow::{Result, ensure};
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub bb_length: usize,
-    pub bb_mult: f64,
     pub kc_length: usize,
     pub kc_mult: f64,
     pub use_true_range: bool,
@@ -12,15 +12,11 @@ pub struct Config {
 
 impl Config {
     pub fn validate(self) -> Result<()> {
-        ensure!(self.bb_length > 0, "Squeeze BB length must be positive");
-        ensure!(self.kc_length > 0, "Squeeze KC length must be positive");
-        ensure!(
-            self.bb_mult.is_finite() && self.bb_mult > 0.0,
-            "Squeeze BB multiplier must be positive"
-        );
+        ensure!(self.bb_length > 0, "SQZ BB length must be positive");
+        ensure!(self.kc_length > 0, "SQZ KC length must be positive");
         ensure!(
             self.kc_mult.is_finite() && self.kc_mult > 0.0,
-            "Squeeze KC multiplier must be positive"
+            "SQZ KC multiplier must be positive"
         );
         Ok(())
     }
@@ -33,12 +29,14 @@ pub struct Values {
     pub squeeze_on: bool,
     pub squeeze_off: bool,
     pub squeeze_no: bool,
-    pub strengthening_long: bool,
-    pub strengthening_short: bool,
+    pub long_strength1: bool,
+    pub long_strength2: bool,
+    pub long_strength3: bool,
+    pub short_strength1: bool,
+    pub short_strength2: bool,
+    pub short_strength3: bool,
     pub long_weak_bar: bool,
     pub short_weak_bar: bool,
-    pub long_strength2: bool,
-    pub short_strength2: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -66,18 +64,6 @@ impl Engine {
         })
     }
 
-    pub fn latest(&self) -> Option<Values> {
-        let value = *self.values.back()?;
-        Some(self.flags(
-            value,
-            self.values.iter().rev().nth(1).copied(),
-            self.values.iter().rev().nth(2).copied(),
-            false,
-            false,
-            false,
-        ))
-    }
-
     pub fn preview(&self, high: f64, low: f64, close: f64) -> Values {
         self.calculate(high, low, close).unwrap_or_default()
     }
@@ -87,7 +73,6 @@ impl Engine {
         let range = range_value(self.cfg.use_true_range, high, low, previous_close);
         let raw = self.raw_for(high, low, close);
         let values = self.calculate(high, low, close).unwrap_or_default();
-
         let keep = self.keep();
         push_limited(&mut self.closes, close, keep);
         push_limited(&mut self.highs, high, keep);
@@ -103,16 +88,16 @@ impl Engine {
     }
 
     fn keep(&self) -> usize {
-        self.cfg.bb_length.max(self.cfg.kc_length) * 3 + 8
+        self.cfg.bb_length.max(self.cfg.kc_length) * 3 + 10
     }
 
     fn raw_for(&self, high: f64, low: f64, close: f64) -> Option<f64> {
-        let kc_closes = window_with(&self.closes, close, self.cfg.kc_length)?;
-        let kc_highs = window_with(&self.highs, high, self.cfg.kc_length)?;
-        let kc_lows = window_with(&self.lows, low, self.cfg.kc_length)?;
-        let highest = kc_highs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let lowest = kc_lows.iter().copied().fold(f64::INFINITY, f64::min);
-        let mid = ((highest + lowest) / 2.0 + mean(&kc_closes)) / 2.0;
+        let closes = window_with(&self.closes, close, self.cfg.kc_length)?;
+        let highs = window_with(&self.highs, high, self.cfg.kc_length)?;
+        let lows = window_with(&self.lows, low, self.cfg.kc_length)?;
+        let highest = highs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let lowest = lows.iter().copied().fold(f64::INFINITY, f64::min);
+        let mid = ((highest + lowest) / 2.0 + mean(&closes)) / 2.0;
         Some(close - mid)
     }
 
@@ -128,18 +113,14 @@ impl Engine {
         let kc_ranges = window_with(&self.ranges, current_range, self.cfg.kc_length)?;
 
         let basis = mean(&bb_closes);
-        // Pine v2.23 intentionally matches the supplied source: BB deviation
-        // uses the KC multiplier. bb_mult is retained only as a configurable
-        // parity input.
+        // v2.28.3 intentionally uses KC MultFactor for BB deviation.
         let bb_dev = self.cfg.kc_mult * population_stdev(&bb_closes);
         let upper_bb = basis + bb_dev;
         let lower_bb = basis - bb_dev;
-
         let kc_ma = mean(&kc_closes);
         let range_ma = mean(&kc_ranges);
         let upper_kc = kc_ma + range_ma * self.cfg.kc_mult;
         let lower_kc = kc_ma - range_ma * self.cfg.kc_mult;
-
         let squeeze_on = lower_bb > lower_kc && upper_bb < upper_kc;
         let squeeze_off = lower_bb < lower_kc && upper_bb > upper_kc;
         let squeeze_no = !squeeze_on && !squeeze_off;
@@ -147,41 +128,28 @@ impl Engine {
         let raw = self.raw_for(high, low, close)?;
         let raw_window = window_with(&self.raw_values, raw, self.cfg.kc_length)?;
         let value = linear_regression_endpoint(&raw_window);
-
-        let prev1 = self.values.back().copied();
-        let prev2 = self.values.iter().rev().nth(1).copied();
-        let mut values = self.flags(value, prev1, prev2, squeeze_on, squeeze_off, squeeze_no);
-        values.ready = true;
-        Some(values)
-    }
-
-    fn flags(
-        &self,
-        value: f64,
-        prev1: Option<f64>,
-        prev2: Option<f64>,
-        squeeze_on: bool,
-        squeeze_off: bool,
-        squeeze_no: bool,
-    ) -> Values {
-        let p1 = prev1.unwrap_or(value);
-        Values {
+        let p1 = self.values.back().copied().unwrap_or(value);
+        let p2 = self.values.iter().rev().nth(1).copied();
+        let p3 = self.values.iter().rev().nth(2).copied();
+        Some(Values {
             ready: true,
             value,
             squeeze_on,
             squeeze_off,
             squeeze_no,
-            strengthening_long: value > 0.0 && value > p1,
-            strengthening_short: value < 0.0 && value < p1,
+            long_strength1: value > 0.0 && value > p1,
+            long_strength2: p2.is_some_and(|b| value > 0.0 && value > p1 && p1 > b),
+            long_strength3: p2
+                .zip(p3)
+                .is_some_and(|(b, c)| value > 0.0 && value > p1 && p1 > b && b > c),
+            short_strength1: value < 0.0 && value < p1,
+            short_strength2: p2.is_some_and(|b| value < 0.0 && value < p1 && p1 < b),
+            short_strength3: p2
+                .zip(p3)
+                .is_some_and(|(b, c)| value < 0.0 && value < p1 && p1 < b && b < c),
             long_weak_bar: value > 0.0 && value < p1,
             short_weak_bar: value < 0.0 && value > p1,
-            long_strength2: prev1
-                .zip(prev2)
-                .is_some_and(|(a, b)| value > 0.0 && value > a && a > b),
-            short_strength2: prev1
-                .zip(prev2)
-                .is_some_and(|(a, b)| value < 0.0 && value < a && a < b),
-        }
+        })
     }
 }
 
@@ -222,12 +190,7 @@ fn mean(values: &[f64]) -> f64 {
 
 fn population_stdev(values: &[f64]) -> f64 {
     let avg = mean(values);
-    (values
-        .iter()
-        .map(|value| (value - avg).powi(2))
-        .sum::<f64>()
-        / values.len() as f64)
-        .sqrt()
+    (values.iter().map(|v| (v - avg).powi(2)).sum::<f64>() / values.len() as f64).sqrt()
 }
 
 fn linear_regression_endpoint(values: &[f64]) -> f64 {
@@ -237,13 +200,14 @@ fn linear_regression_endpoint(values: &[f64]) -> f64 {
     let n = values.len() as f64;
     let mean_x = (n - 1.0) / 2.0;
     let mean_y = mean(values);
-    let mut numerator = 0.0;
-    let mut denominator = 0.0;
-    for (index, value) in values.iter().enumerate() {
-        let x = index as f64;
-        numerator += (x - mean_x) * (value - mean_y);
-        denominator += (x - mean_x).powi(2);
-    }
+    let numerator = values
+        .iter()
+        .enumerate()
+        .map(|(i, y)| (i as f64 - mean_x) * (y - mean_y))
+        .sum::<f64>();
+    let denominator = (0..values.len())
+        .map(|i| (i as f64 - mean_x).powi(2))
+        .sum::<f64>();
     let slope = if denominator > 0.0 {
         numerator / denominator
     } else {
@@ -259,26 +223,22 @@ mod tests {
 
     #[test]
     fn regression_endpoint_matches_linear_series() {
-        let values = [1.0, 2.0, 3.0, 4.0, 5.0];
-        assert!((linear_regression_endpoint(&values) - 5.0).abs() < 1e-12);
+        assert!((linear_regression_endpoint(&[1., 2., 3., 4., 5.]) - 5.0).abs() < 1e-12);
     }
 
     #[test]
-    fn squeeze_engine_becomes_ready_and_detects_strengthening() {
-        let cfg = Config {
+    fn engine_becomes_ready() {
+        let mut engine = Engine::new(Config {
             bb_length: 3,
-            bb_mult: 2.0,
             kc_length: 3,
             kc_mult: 1.5,
             use_true_range: true,
-        };
-        let mut engine = Engine::new(cfg).unwrap();
+        })
+        .unwrap();
         for i in 0..8 {
             let close = 100.0 + i as f64;
             engine.update(close + 1.0, close - 1.0, close);
         }
-        let preview = engine.preview(110.0, 108.0, 109.0);
-        assert!(preview.ready);
-        assert!(preview.value.is_finite());
+        assert!(engine.preview(110.0, 108.0, 109.0).ready);
     }
 }

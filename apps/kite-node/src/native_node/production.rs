@@ -17,7 +17,7 @@ pub struct Selection {
     contracts: u32,
     atr_stop_enabled: bool,
     live_orders_enabled: bool,
-    pub trend_ribbon: super::trend_ribbon::Settings,
+    pub squeeze_momentum: super::squeeze_momentum_strategy::Settings,
 }
 
 impl Selection {
@@ -52,36 +52,41 @@ impl Selection {
     }
 
     pub fn session_bounds(&self, date: NaiveDate) -> Result<(u64, u64)> {
-        self.trend_ribbon
+        self.squeeze_momentum
             .session
             .window(date, &self.session_calendar)?
-            .ok_or_else(|| anyhow::anyhow!("No Trend Ribbon trading session for {date}"))
+            .ok_or_else(|| anyhow::anyhow!("No Pure SQZ trading session for {date}"))
     }
 
-    /// Effective live cutoff retains the application's MIS exit buffer.
+    /// Runtime bounds. Entry eligibility remains controlled by the strategy's
+    /// JSON session, but the process stays alive beyond 23:15 so the confirmed
+    /// 23:10-23:15 bar and its optional square-off can be processed.
     pub fn execution_bounds(&self, date: NaiveDate, real: bool) -> Result<(u64, u64)> {
-        let (start, mut end) = self.session_bounds(date)?;
-        if real {
-            let (_, market_close) = self.session_calendar.bounds(date)?;
-            let cutoff = market_close
+        let (start, _) = self.session_bounds(date)?;
+        let (_, market_close) = self.session_calendar.bounds(date)?;
+        let end = if real {
+            market_close
                 .checked_sub(super::execution_session::EXIT_BUFFER_SECONDS * 1_000_000_000)
-                .ok_or_else(|| anyhow::anyhow!("Invalid production session cutoff"))?;
-            end = end.min(cutoff);
-            ensure!(
-                start < end,
-                "Production session ends before its configured start"
-            );
-        }
+                .ok_or_else(|| anyhow::anyhow!("Invalid production session cutoff"))?
+        } else {
+            market_close
+        };
+        ensure!(
+            start < end,
+            "Runtime session ends before its configured start"
+        );
         Ok((start, end))
     }
 
     pub fn production_duration(&self, now: u64) -> Result<u64> {
-        let (start, end) = self.execution_bounds(super::strategy_session::date(now), true)?;
+        let date = super::strategy_session::date(now);
+        let (entry_start, entry_end) = self.session_bounds(date)?;
+        let (_, runtime_end) = self.execution_bounds(date, true)?;
         ensure!(
-            now >= start && now + 15_000_000_000 < end,
-            "Start Trend Ribbon production during its session and before the exit window"
+            now >= entry_start && now + 15_000_000_000 < entry_end,
+            "Start Squeeze Momentum production during its 09:00-23:15 entry session"
         );
-        Ok((end - now).div_ceil(1_000_000_000))
+        Ok((runtime_end - now).div_ceil(1_000_000_000))
     }
 
     pub fn broker_settings(
@@ -90,7 +95,7 @@ impl Selection {
     ) -> Result<kite_adapter::execution::native_client::production::Settings> {
         ensure!(
             self.live_orders_enabled,
-            "Trend Ribbon production requires live_orders_enabled=true in the strategy JSON"
+            "Squeeze Momentum production requires live_orders_enabled=true in the strategy JSON"
         );
         let mut settings: kite_adapter::execution::native_client::production::Settings =
             serde_json::from_str(&std::fs::read_to_string(path)?)?;
@@ -131,8 +136,8 @@ impl Selection {
     fn validate(&self) -> Result<()> {
         self.session_calendar.validate()?;
         ensure!(
-            self.strategy == "trend_ribbon_boswaves",
-            "Only trend_ribbon_boswaves is supported by the active selection"
+            self.strategy == "squeeze_momentum_lazybear_v2283",
+            "Only squeeze_momentum_lazybear_v2283 is supported by the active selection"
         );
         ensure!(
             self.expected_expiry >= self.session_calendar.valid_from
@@ -151,7 +156,10 @@ impl Selection {
                 && (2020..=2099).contains(&self.expected_expiry.year()),
             "Configured symbol and expected expiry month disagree"
         );
-        ensure!(!self.atr_stop_enabled, "Trend Ribbon has no added ATR stop");
+        ensure!(
+            !self.atr_stop_enabled,
+            "Squeeze Momentum baseline has no added ATR stop"
+        );
         ensure!(
             kite_adapter::instruments::contract::validate_symbol(&self.symbol).is_ok()
                 && self.instrument == format!("{}.MCX", self.symbol)
@@ -159,7 +167,7 @@ impl Selection {
                 && self.contracts == 1,
             "Selection requires one configured MCX crude oil contract"
         );
-        self.trend_ribbon.validate()?;
+        self.squeeze_momentum.validate()?;
         for date in self.session_calendar.range(
             self.session_calendar.valid_from,
             self.session_calendar.valid_through,
@@ -240,7 +248,7 @@ pub fn production_check(config: &str, broker: &str) -> Result<()> {
     println!(
         "{}",
         serde_json::json!({
-            "event":"trend_ribbon_production_configuration_check",
+            "event":"squeeze_momentum_production_configuration_check",
             "configuration_valid":true,
             "strategy":selection.strategy,
             "interval":selection.interval_name(),
@@ -268,34 +276,32 @@ mod tests {
 
     fn selection() -> Selection {
         serde_json::from_str(include_str!(
-            "../../../../config/production-trend-ribbon.json"
+            "../../../../config/production-squeeze-momentum.json"
         ))
         .unwrap()
     }
 
     #[test]
-    fn v223_candidate_is_valid_and_live_orders_are_disabled() {
+    fn squeeze_baseline_is_valid_and_live_orders_are_disabled() {
         let selection = selection();
         selection.validate().unwrap();
-        let realtime = &selection.trend_ribbon.realtime;
+        let sqz = &selection.squeeze_momentum;
         assert_eq!(selection.interval, Interval::FiveMinute);
         assert!(!selection.live_orders_enabled);
-        assert!(selection.trend_ribbon.session.reset_daily);
-        assert!(selection.trend_ribbon.backtest_square_off);
-        assert!(realtime.enabled);
-        assert!(realtime.pre_close_enabled);
-        assert!(realtime.fast_reversal_enabled);
-        assert!(realtime.squeeze_exit_enabled);
-        assert!(!realtime.squeeze_reentry_enabled);
-        assert_eq!(realtime.pre_close_seconds, 3);
-        assert_eq!(realtime.fast_hold_seconds, 2);
-        assert_eq!(realtime.squeeze_bb_length, 20);
-        assert_eq!(realtime.squeeze_bb_mult, 2.0);
-        assert_eq!(realtime.squeeze_kc_length, 20);
-        assert_eq!(realtime.squeeze_kc_mult, 1.5);
-        assert!(realtime.squeeze_use_true_range);
-        assert_eq!(realtime.squeeze_weak_bars_required, 2);
-        assert_eq!(realtime.squeeze_transition_pct, 70.0);
+        assert_eq!(selection.strategy, "squeeze_momentum_lazybear_v2283");
+        assert_eq!(sqz.sqz_length, 20);
+        assert_eq!(sqz.sqz_length_kc, 20);
+        assert_eq!(sqz.sqz_mult_kc, 1.5);
+        assert!(sqz.sqz_use_true_range);
+        assert_eq!(sqz.entry_strength_bars, 2);
+        assert_eq!(sqz.sqz_weak_bars_req, 2);
+        assert_eq!(sqz.sqz_transition_pct, 70.0);
+        assert!(sqz.allow_entries_only_in_session);
+        assert!(sqz.force_flat_at_session_end);
+        assert_eq!(sqz.auto_sq_off_hour, 23);
+        assert_eq!(sqz.auto_sq_off_minute, 15);
+        assert_eq!(sqz.session.start.to_string(), "09:00:00");
+        assert_eq!(sqz.session.end.to_string(), "23:15:00");
     }
 
     #[test]
@@ -319,7 +325,7 @@ mod tests {
     #[test]
     fn invalid_identity_calendar_or_risk_shape_fails_closed() {
         let base: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../config/production-trend-ribbon.json"
+            "../../../../config/production-squeeze-momentum.json"
         ))
         .unwrap();
 
@@ -327,7 +333,7 @@ mod tests {
             ("expected_expiry", serde_json::json!("2026-09-21")),
             ("atr_stop_enabled", serde_json::json!(true)),
             ("contracts", serde_json::json!(2)),
-            ("strategy", serde_json::json!("pivot_point_supertrend")),
+            ("strategy", serde_json::json!("retired_strategy")),
         ] {
             let mut value = base.clone();
             value[mutate.0] = mutate.1;
@@ -348,7 +354,7 @@ mod tests {
     #[test]
     fn interval_is_selected_from_json_and_must_align_with_session() {
         let mut value: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../config/production-trend-ribbon.json"
+            "../../../../config/production-squeeze-momentum.json"
         ))
         .unwrap();
         value["interval"] = serde_json::json!("3minute");
@@ -358,10 +364,10 @@ mod tests {
         assert_eq!(selection.bar_ns(), 180_000_000_000);
 
         let mut misaligned: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../config/production-trend-ribbon.json"
+            "../../../../config/production-squeeze-momentum.json"
         ))
         .unwrap();
-        misaligned["trend_ribbon"]["session"]["end"] = serde_json::json!("23:14:00");
+        misaligned["squeeze_momentum"]["session"]["end"] = serde_json::json!("23:14:00");
         assert!(
             serde_json::from_value::<Selection>(misaligned)
                 .unwrap()

@@ -1,25 +1,21 @@
 # Active configuration
 
-This directory contains only current operational configuration.
+The active strategy is **MCX Crude PURE Squeeze Momentum v2.28.3**.
 
-- `production-trend-ribbon.json` — authoritative Trend Ribbon v2.23 Exit-First strategy,
-  instrument, session calendar and realtime parameters.
+- `production-squeeze-momentum.json` — authoritative instrument, session, Pure SQZ strategy inputs and display settings.
 - `kite-production.json` — local/private Kite production settings.
 - `kite-sandbox.toml` — local sandbox settings.
 
-The committed Trend Ribbon candidate keeps `live_orders_enabled: false`.
-Do not change that gate merely to run tests or market-data recording.
+All strategy inputs are JSON-driven under `squeeze_momentum`. The committed candidate keeps `live_orders_enabled: false`.
 
-Validate the current candidate with:
-
-```bash
-./deploy/verify-trend-ribbon-v223.sh
-```
-
-Record read-only Kite full ticks with:
+Validate the candidate:
 
 ```bash
-./deploy/record-trend-ribbon-ticks.sh 3600
+./deploy/verify-squeeze-momentum-v2283.sh
 ```
 
-- `squeeze_reentry_enabled=false` disables same-trend SQZ RB/RS re-entry after QLX/QSX.
+Record read-only Kite full ticks:
+
+```bash
+./deploy/record-squeeze-momentum-ticks.sh 3600
+```

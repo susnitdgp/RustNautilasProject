@@ -1,4 +1,4 @@
-//! Single paper-strategy owner; an unclean run retains its Redis ownership.
+//! Single Squeeze Momentum owner; an unclean run retains its Redis ownership.
 use anyhow::{Result, ensure};
 pub struct Lease {
     con: redis::Connection,
@@ -12,11 +12,11 @@ impl Lease {
         let mut con = redis::Client::open(kite_journal::connection::url_from_env()?.as_str())?
             .get_connection()?;
         let key = if real {
-            format!("kite:production:supertrend:{symbol}:owner")
+            format!("kite:production:squeeze-momentum:{symbol}:owner")
         } else if sim {
-            format!("kite:paper:supertrend:sim:{owner}:owner")
+            format!("kite:paper:squeeze-momentum:sim:{owner}:owner")
         } else {
-            format!("kite:paper:supertrend:{symbol}:owner")
+            format!("kite:paper:squeeze-momentum:{symbol}:owner")
         };
         let set: Option<String> = redis::cmd("SET")
             .arg(&key)
@@ -25,7 +25,7 @@ impl Lease {
             .query(&mut con)?;
         ensure!(
             set.is_some(),
-            "Paper Supertrend owner exists; review prior run before restarting"
+            "Squeeze Momentum owner exists; review prior run before restarting"
         );
         Ok(Self {
             con,
@@ -39,7 +39,7 @@ impl Lease {
     }
     pub fn finish(&mut self, clean: bool, position: f64) -> Result<()> {
         let kind = if self.real { "production" } else { "paper" };
-        let record = format!("kite:{kind}:supertrend:{}:health", self.owner);
+        let record = format!("kite:{kind}:squeeze-momentum:{}:health", self.owner);
         redis::cmd("HSET")
             .arg(record)
             .arg("state")

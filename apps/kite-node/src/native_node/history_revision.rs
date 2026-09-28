@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(history.update(revised, date, now).unwrap().revised, 1);
     }
     #[test]
-    fn ribbon_merges_volume_corrections_without_rebuild_or_losing_fresh_bars() {
+    fn strategy_merges_volume_corrections_without_rebuild_or_losing_fresh_bars() {
         let (mut rows, date, now) = fixture();
         let mut history = History::new(&rows[..100], super::super::session_calendar::fixture())
             .unwrap()
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn ribbon_missing_candle_does_not_commit_a_volume_correction() {
+    fn strategy_missing_candle_does_not_commit_a_volume_correction() {
         let (mut rows, date, now) = fixture();
         let mut history = History::new(&rows[..100], super::super::session_calendar::fixture())
             .unwrap()

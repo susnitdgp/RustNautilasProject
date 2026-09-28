@@ -1,4 +1,4 @@
-//! Native external-bar client for paper Supertrend; broker reads only.
+//! Native external-bar client for the active strategy; broker reads only.
 use super::{bar_timing as timing, data::now, live_bars as bars, live_control::Control};
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
@@ -67,7 +67,7 @@ pub struct Config {
     pub warmup: Vec<Candle>,
     pub simulated: Vec<Candle>,
     pub control: Control,
-    pub ribbon_realtime: bool,
+    pub emit_intrabar_ticks: bool,
 }
 impl ClientConfig for Config {
     fn as_any(&self) -> &dyn Any {
@@ -81,7 +81,7 @@ impl DataClientFactory for Factory {
         "STBARS"
     }
     fn config_type(&self) -> &str {
-        "SupertrendBars"
+        "SqueezeMomentumBars"
     }
     fn create(
         &self,
@@ -165,7 +165,7 @@ impl Client {
                         }
                         let close = bars::close_for(bar, c.interval)?;
                         let open = close - c.interval.nanoseconds();
-                        if c.ribbon_realtime {
+                        if c.emit_intrabar_ticks {
                             let previous = index
                                 .checked_sub(1)
                                 .and_then(|i| c.simulated.get(i))
@@ -202,7 +202,7 @@ impl Client {
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(c.synthetic_delay_ms))
                             .await;
-                        if c.ribbon_realtime {
+                        if c.emit_intrabar_ticks {
                             wait_for_simulated_order(&c.control).await;
                         }
                         if c.control.recovery_fixture && index == 10 {
@@ -431,7 +431,7 @@ impl DataClient for Client {
     fn subscribe(&mut self, cmd: SubscribeCustomData) -> Result<()> {
         ensure!(
             self.config.control.sim
-                && self.config.ribbon_realtime
+                && self.config.emit_intrabar_ticks
                 && cmd.data_type.type_name() == "KiteFullTick",
             "Only realtime Ribbon simulation may subscribe to synthetic KiteFullTick data"
         );

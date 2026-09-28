@@ -5,7 +5,7 @@ use super::{
     live_data as feed,
     live_lease::Lease,
     persistence,
-    trend_ribbon_actor::{BarStrategy, State},
+    squeeze_momentum_actor::{BarStrategy, State},
 };
 use anyhow::{Result, ensure};
 use kite_adapter::http::historical::Candle;
@@ -25,7 +25,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
-fn ribbon_synthetic(
+fn squeeze_synthetic(
     selection: &super::production::Selection,
 ) -> Result<(Vec<Candle>, Vec<Candle>)> {
     let date = selection.session_calendar.range(
@@ -37,7 +37,7 @@ fn ribbon_synthetic(
     let count = ((end - first) / step) as usize;
     ensure!(
         count >= 140,
-        "Trend Ribbon simulation fixture needs a regular full session"
+        "Squeeze Momentum simulation fixture needs a regular full session"
     );
     let mut candles = Vec::new();
     let phase = 10;
@@ -160,7 +160,7 @@ fn run_backend_inner(
     if let Some(s) = &production {
         s.validate()?;
     }
-    super::trend_ribbon_terminal::step("Checking strategy selection and duration");
+    super::squeeze_momentum_terminal::step("Checking strategy selection and duration");
     let selection = super::production::Selection::load(config)?;
     ensure!(
         (5..=86360).contains(&seconds),
@@ -169,7 +169,7 @@ fn run_backend_inner(
     let date = chrono::Utc::now()
         .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
         .date_naive();
-    super::trend_ribbon_terminal::step("Resolving instrument and data credentials");
+    super::squeeze_momentum_terminal::step("Resolving instrument and data credentials");
     let (instrument, token, credentials) = if sim {
         (
             selection.synthetic_instrument()?,
@@ -185,12 +185,12 @@ fn run_backend_inner(
             Some(Arc::new(kite_adapter::credentials::redis::load_from_env()?)),
         )
     };
-    super::trend_ribbon_terminal::step(&format!(
+    super::squeeze_momentum_terminal::step(&format!(
         "Loading completed {}-minute candles for warmup",
         selection.interval_minutes()
     ));
     let (warmup, simulated) = if sim {
-        ribbon_synthetic(&selection)?
+        squeeze_synthetic(&selection)?
     } else {
         let raw = tokio::runtime::Runtime::new()?.block_on(
             kite_adapter::http::historical::fetch_window_for(token, date, 7, selection.interval),
@@ -200,17 +200,10 @@ fn run_backend_inner(
             Vec::new(),
         )
     };
-    let ribbon = &selection.trend_ribbon;
-    let required_warmup = 100.max(
-        ribbon
-            .alma_length
-            .max(ribbon.deviation_length)
-            .max(ribbon.atr_length)
-            + ribbon.slope_length,
-    );
+    let required_warmup = selection.squeeze_momentum.required_warmup();
     ensure!(
         warmup.len() >= required_warmup,
-        "Insufficient Trend Ribbon indicator warmup"
+        "Insufficient Squeeze Momentum indicator warmup"
     );
     if !sim {
         bars::validate_warmup_for(
@@ -241,7 +234,7 @@ fn run_backend_inner(
         seconds.min(remaining.div_ceil(1_000_000_000))
     };
     ensure!(seconds >= 5, "Too close to session end to start");
-    super::trend_ribbon_terminal::step("Checking Redis persistence and strategy ownership");
+    super::squeeze_momentum_terminal::step("Checking Redis persistence and strategy ownership");
     let redis = persistence::redis_config()?;
     if kite_mock || real {
         let account = production
@@ -263,7 +256,7 @@ fn run_backend_inner(
         calendar: selection.session_calendar.clone(),
         interval: selection.interval,
         volume_sensitive: false,
-        synthetic_delay_ms: if selection.trend_ribbon.realtime.enabled {
+        synthetic_delay_ms: if true {
             60
         } else if kite_mock {
             180
@@ -273,7 +266,7 @@ fn run_backend_inner(
         warmup: warmup.clone(),
         simulated,
         control: control.clone(),
-        ribbon_realtime: selection.trend_ribbon.realtime.enabled,
+        emit_intrabar_ticks: true,
     };
     let outcome=tokio::runtime::Runtime::new()?.block_on(async {
         let mut cfg=LiveNodeConfig{environment:if real {Environment::Live}else{Environment::Sandbox},trader_id:"SUSANTA-001".into(),instance_id:Some(id),
@@ -304,7 +297,7 @@ fn run_backend_inner(
             start,
             end,
             state.clone(),
-            selection.trend_ribbon.clone(),
+            selection.squeeze_momentum.clone(),
             selection.session_calendar.clone(),
             selection.bar_ns(),
         )?
@@ -324,7 +317,7 @@ fn run_backend_inner(
             }
             handle.stop();
         });
-        println!("{}",serde_json::json!({"event":"trend_ribbon_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":selection.strategy,"interval":selection.interval_name(),"simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"square_off_ns":if sim{None}else{Some(end)},"live_orders_enabled":real}));
+        println!("{}",serde_json::json!({"event":"squeeze_momentum_live_started","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"runtime":"LiveNode","strategy":selection.strategy,"interval":selection.interval_name(),"simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"warmup_bars":warmup.len(),"square_off_ns":if sim{None}else{Some(end)},"live_orders_enabled":real}));
         alerts.emit(format!(
             "{} {}m: run {id} initialized; real_orders={real}",
             selection.symbol,
@@ -332,7 +325,7 @@ fn run_backend_inner(
         ));
         let mut was_paused=false;
         let display = (!dashboard).then(|| {
-            super::trend_ribbon_terminal::Display::new(
+            super::squeeze_momentum_terminal::Display::new(
                 seconds,
                 warmup.len(),
                 sim,
@@ -409,7 +402,7 @@ fn run_backend_inner(
         && state.borrow().errors.is_empty()
         && state.borrow().stopped;
     lease.finish(clean, position.unwrap_or(f64::NAN))?;
-    let folder = std::path::PathBuf::from(format!("data/trend-ribbon-live/{id}"));
+    let folder = std::path::PathBuf::from(format!("data/squeeze-momentum-live/{id}"));
     std::fs::create_dir_all(&folder)?;
     let s = state.borrow();
     super::backtest_report::json(&folder, "indicators.json", &s.indicators)?;
@@ -418,7 +411,7 @@ fn run_backend_inner(
     super::backtest_report::json(&folder, "recoveries.json", &s.rebuilds)?;
     let bar_feed = control.bar_feed.lock().expect("bar feed stats").clone();
     super::backtest_report::json(&folder, "bar-feed.json", &bar_feed)?;
-    let output = serde_json::json!({"event":"trend_ribbon_live_complete","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"status":if clean{"Clean"}else{"ReviewRequired"},
+    let output = serde_json::json!({"event":"squeeze_momentum_live_complete","namespace":id.to_string(),"instrument":instrument.id.to_string(),"instrument_token":token,"status":if clean{"Clean"}else{"ReviewRequired"},
         "runtime":"LiveNode","strategy":selection.strategy,"interval":selection.interval_name(),"contracts":1,"atr_stop_enabled":false,
         "simulated_feed":sim,"execution":if real {"Kite production"}else if kite_mock{"Kite native mock"}else{"Nautilus Sandbox"},"quotes":s.live_quotes,"rejected_quotes":s.rejected_quotes,
         "bars":s.indicators.len(),"warmup_bars":warmup.len(),"signals":s.signals.len(),"fills":s.fills.len(),"open_contracts":position,
@@ -426,7 +419,7 @@ fn run_backend_inner(
         "bar_feed":bar_feed,"square_off_ns":if sim{None}else{Some(end)},"indicator_rebuilds":control.recoveries.load(Ordering::Acquire),"automatic_resume_enabled":false,"report_directory":folder,"live_orders_enabled":real,"broker_orders_sent":if real {serde_json::Value::Null}else{serde_json::json!(false)}});
     super::backtest_report::json(&folder, "summary.json", &output)?;
     println!("{output}");
-    super::trend_ribbon_terminal::finish(clean, &folder, real);
+    super::squeeze_momentum_terminal::finish(clean, &folder, real);
     outcome?;
     ensure!(clean, "Strategy run requires recovery review");
     Ok(())
