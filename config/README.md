@@ -23,3 +23,5 @@ Record read-only Kite full ticks:
 ```
 
 `sqz_entry_deadband` is an entry-only absolute SQZ momentum filter. `0.0` preserves the v2.28.3 baseline exactly; positive values require BUY momentum >= +deadband and SHORT momentum <= -deadband. Wave reset remains sign/zero based.
+
+The day-end square-off candle is entry-blocked: an existing position may exit on the candle closing 23:15, but a flat strategy cannot open a new BUY/SHORT on that candle.

@@ -25,7 +25,7 @@ Default rules:
 
 Default entry session is 09:00–23:15 Asia/Kolkata. `allow_entries_only_in_session=true` restricts only new entries. Normal SQZ exits remain valid outside the entry window if a position is carried.
 
-`force_flat_at_session_end=true` uses the confirmed candle whose close time is configured by `auto_sq_off_hour=23` and `auto_sq_off_minute=15`. Exit rules have priority over day-end safety, and day-end safety has priority over entries, matching the supplied Pine dispatcher ordering.
+`force_flat_at_session_end=true` uses the confirmed candle whose close time is configured by `auto_sq_off_hour=23` and `auto_sq_off_minute=15`. Exit rules have priority over day-end safety. As an explicit safety hardening, the day-end square-off candle is not eligible to open a fresh BUY/SHORT when flat; this prevents a 23:10–23:15 entry from being carried overnight. This is a deliberate divergence from the originally supplied Pine dispatcher edge case.
 
 ## JSON source of truth
 

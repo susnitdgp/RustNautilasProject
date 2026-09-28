@@ -19,6 +19,7 @@ The strategy mirrors the supplied TradingView Pine v2.28.3 baseline:
 - dashboard SQZ diagnostics can preview the forming candle tick-by-tick
 - entry session default: 09:00–23:15 Asia/Kolkata
 - day-end auto square-off default: ON at the candle closing 23:15
+- safety hardening: the 23:10–23:15 square-off candle can close an existing position but can never open a fresh BUY/SHORT
 - Algomojo action vocabulary: BUY / SELL / SHORT / COVER
 - real orders remain disabled in the committed configuration
 

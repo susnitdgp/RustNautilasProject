@@ -51,7 +51,7 @@ r=json.load(open(sys.argv[1]))
 assert r["interval"]=="5minute"
 assert r["force_flat_at_session_end"] is True
 assert r["closed_trades"]==24,r["closed_trades"]
-assert r["gross_points"]==435.0,r["gross_points"]
+assert r["gross_points"]==356.0,r["gross_points"]
 assert r["open_position"]==0,r["open_position"]
 assert {e["action"] for e in r["events"]}=={"BUY","SELL","SHORT","COVER"}
 allowed={"sqz_strength_long","sqz_strength_short","sqz_transition","zero_cross","session_force_flat"}

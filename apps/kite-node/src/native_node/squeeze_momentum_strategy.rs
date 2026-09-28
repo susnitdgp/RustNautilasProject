@@ -249,6 +249,11 @@ impl Engine {
             && local.minute() == self.settings.auto_sq_off_minute
     }
 
+    fn entry_allowed_on_bar(&self, in_session: bool, bar_close_ns: u64) -> bool {
+        let session_ok = !self.settings.allow_entries_only_in_session || in_session;
+        session_ok && !self.day_end_sqoff_bar(in_session, bar_close_ns)
+    }
+
     fn state_for(&self, values: Values) -> MomentumState {
         if !values.ready {
             MomentumState::Warmup
@@ -371,9 +376,9 @@ impl Engine {
         } else {
             false
         };
-        let entry_session_ok = !self.settings.allow_entries_only_in_session || in_session;
+        let entry_bar_ok = self.entry_allowed_on_bar(in_session, bar_close_ns);
         let entry_ready = position == 0
-            && entry_session_ok
+            && entry_bar_ok
             && !wave_used
             && self.strength_ready(values, wave_side)
             && self.deadband_ready(values, wave_side);
@@ -545,19 +550,18 @@ impl Engine {
         let short_transition_exit = position == -1
             && self.short_weak_bars >= self.settings.sqz_weak_bars_req
             && short_decay >= self.settings.sqz_transition_pct;
-        let entry_session_ok = !self.settings.allow_entries_only_in_session || in_session;
+        let day_end = self.day_end_sqoff_bar(in_session, bar_close_ns);
+        let entry_bar_ok = self.entry_allowed_on_bar(in_session, bar_close_ns);
         let long_entry = position == 0
-            && entry_session_ok
+            && entry_bar_ok
             && !self.long_wave_used
             && self.strength_ready(values, 1)
             && self.deadband_ready(values, 1);
         let short_entry = position == 0
-            && entry_session_ok
+            && entry_bar_ok
             && !self.short_wave_used
             && self.strength_ready(values, -1)
             && self.deadband_ready(values, -1);
-        let day_end = self.day_end_sqoff_bar(in_session, bar_close_ns);
-
         let mut force_flat_event = false;
         let mut exit_zero_cross = false;
         let action = if allow_action {
@@ -701,6 +705,25 @@ mod tests {
         assert!(engine.strength_ready(short_inside, -1));
         assert!(!engine.deadband_ready(short_inside, -1));
         assert!(engine.deadband_ready(short_edge, -1));
+    }
+
+    #[test]
+    fn day_end_square_off_bar_blocks_new_entries() {
+        let settings = baseline_settings();
+        let calendar = super::super::session_calendar::fixture();
+        let engine = Engine::new(settings, calendar.clone()).unwrap();
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 22).unwrap();
+        let (session_open, _) = calendar.bounds(date).unwrap();
+
+        // 23:05-23:10 candle close: entry is still allowed.
+        let close_2310 = session_open + (14 * 60 + 10) * 60 * 1_000_000_000u64;
+        assert!(engine.entry_allowed_on_bar(true, close_2310));
+
+        // 23:10-23:15 candle close: this is the configured day-end square-off bar,
+        // so a flat strategy must not open a fresh BUY/SHORT here.
+        let close_2315 = session_open + (14 * 60 + 15) * 60 * 1_000_000_000u64;
+        assert!(engine.day_end_sqoff_bar(true, close_2315));
+        assert!(!engine.entry_allowed_on_bar(true, close_2315));
     }
 
     #[test]
