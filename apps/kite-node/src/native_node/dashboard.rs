@@ -71,6 +71,7 @@ struct MonitorParams {
     entry_deadband: f64,
     dynamic_deadband_ema_length: usize,
     dynamic_deadband_pct: f64,
+    same_wave_reentry_limit: usize,
     weak_bars: usize,
     transition_pct: f64,
     allow_entries_only_in_session: bool,
@@ -92,6 +93,7 @@ impl MonitorParams {
             entry_deadband: s.sqz_entry_deadband,
             dynamic_deadband_ema_length: s.sqz_dynamic_deadband_ema_length,
             dynamic_deadband_pct: s.sqz_dynamic_deadband_pct,
+            same_wave_reentry_limit: s.same_wave_reentry_limit,
             weak_bars: s.sqz_weak_bars_req,
             transition_pct: s.sqz_transition_pct,
             allow_entries_only_in_session: s.allow_entries_only_in_session,
@@ -710,13 +712,17 @@ fn render_historical_monitor(
         "NO SQZ"
     };
     let wave = if m.wave_side > 0 {
-        if m.wave_used {
+        if m.reentry_armed {
+            "LONG RE-ENTRY"
+        } else if m.wave_used {
             "LONG USED"
         } else {
             "LONG READY"
         }
     } else if m.wave_side < 0 {
-        if m.wave_used {
+        if m.reentry_armed {
+            "SHORT RE-ENTRY"
+        } else if m.wave_used {
             "SHORT USED"
         } else {
             "SHORT READY"
@@ -733,6 +739,8 @@ fn render_historical_monitor(
         squeeze,
         wave,
         m.entry_ready,
+        m.reentry_armed,
+        m.reentries_used,
         m.strengthening_count,
         m.weakening_count,
         m.retracement_pct,
@@ -760,6 +768,8 @@ fn monitor_lines<'a>(
     squeeze: &'a str,
     wave: &'a str,
     entry_ready: bool,
+    reentry_armed: bool,
+    reentries_used: usize,
     strength_count: usize,
     weak_count: usize,
     retracement: f64,
@@ -810,6 +820,11 @@ fn monitor_lines<'a>(
         Line::from(format!(
             " Entry {entry_text} Str {strength_count}/{} | Weak {weak_count}/{}",
             p.entry_strength_bars, p.weak_bars
+        )),
+        Line::from(format!(
+            " ReEntry {} {reentries_used}/{}",
+            if reentry_armed { "ARMED" } else { "-" },
+            p.same_wave_reentry_limit
         )),
         Line::from(format!(
             " Decay {retracement:.1}/{:.0}% | Extreme {extreme_text}",
@@ -984,13 +999,17 @@ fn render_live_monitor(
         "NO SQZ"
     };
     let wave = if m.wave_side > 0 {
-        if m.wave_used {
+        if m.reentry_armed {
+            "LONG RE-ENTRY"
+        } else if m.wave_used {
             "LONG USED"
         } else {
             "LONG READY"
         }
     } else if m.wave_side < 0 {
-        if m.wave_used {
+        if m.reentry_armed {
+            "SHORT RE-ENTRY"
+        } else if m.wave_used {
             "SHORT USED"
         } else {
             "SHORT READY"
@@ -1016,6 +1035,8 @@ fn render_live_monitor(
         squeeze,
         wave,
         m.entry_ready,
+        m.reentry_armed,
+        m.reentries_used,
         m.strengthening_count,
         m.weakening_count,
         m.retracement_pct,

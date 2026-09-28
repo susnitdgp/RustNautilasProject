@@ -12,7 +12,7 @@ The strategy keeps the supplied TradingView Pine v2.28.3 structure, with the act
 - SELL / QLX: configured weakening persistence (2 bars) plus configured retracement toward zero (**active 45%**; supplied Pine baseline was 70%), or immediate zero cross
 - SHORT: SQZ momentum negative and strengthening downward for configured N bars
 - COVER / QSX: inverse weakening/retracement rule, or immediate zero cross
-- one trade per momentum wave; no RB/RS same-wave re-entry
+- one initial trade per momentum wave plus up to 1 configured rebuild re-entry after QLX/QSX
 - maximum one action per confirmed candle
 - no same-bar reversal
 - strategy state and BUY/SELL/SHORT/COVER actions are confirmed-bar only
@@ -39,6 +39,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
   "sqz_entry_deadband": 0.0,
   "sqz_dynamic_deadband_ema_length": 25,
   "sqz_dynamic_deadband_pct": 30.0,
+  "same_wave_reentry_limit": 1,
   "sqz_weak_bars_req": 2,
   "sqz_transition_pct": 45.0,
   "session_timezone": "Asia/Kolkata",
@@ -49,7 +50,7 @@ All active strategy/display inputs are JSON based under `squeeze_momentum`:
 }
 ```
 
-The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The active production profile uses a 45% transition exit and Dynamic Wave DB EMA25×30%. At each new SQZ sign-wave, the entry threshold freezes `max(fixed_deadband, prior EMA(|SQZ|) × dynamic_pct)` until SQZ crosses zero; the reference EMA is updated only after each confirmed bar. Fixed DB remains 0.0.
+The BB deviation intentionally uses `sqz_mult_kc`, matching the supplied Pine code. The active production profile uses a 45% transition exit and Dynamic Wave DB EMA25×30%. At each new SQZ sign-wave, the entry threshold freezes `max(fixed_deadband, prior EMA(|SQZ|) × dynamic_pct)` until SQZ crosses zero; the reference EMA is updated only after each confirmed bar. Fixed DB remains 0.0. After a QLX/QSX transition exit, `same_wave_reentry_limit=1` permits one same-direction re-entry only if the same sign-wave rebuilds through the same frozen DB and again satisfies the 2-bar strengthening rule. Zero-cross resets the allowance for the next wave.
 
 ## Build and verify
 

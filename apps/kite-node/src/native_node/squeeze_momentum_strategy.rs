@@ -32,6 +32,7 @@ pub struct Settings {
     pub sqz_entry_deadband: f64,
     pub sqz_dynamic_deadband_ema_length: usize,
     pub sqz_dynamic_deadband_pct: f64,
+    pub same_wave_reentry_limit: usize,
     pub sqz_weak_bars_req: usize,
     pub sqz_transition_pct: f64,
     pub session_timezone: String,
@@ -62,6 +63,10 @@ impl Settings {
             self.sqz_dynamic_deadband_pct.is_finite()
                 && (0.0..=100.0).contains(&self.sqz_dynamic_deadband_pct),
             "Dynamic SQZ Deadband % must be 0..100"
+        );
+        ensure!(
+            self.same_wave_reentry_limit <= 3,
+            "Same-wave re-entry limit must be 0..3"
         );
         ensure!(
             (1..=5).contains(&self.sqz_weak_bars_req),
@@ -184,6 +189,8 @@ pub struct Observation {
     pub momentum_state: MomentumState,
     pub wave_side: i8,
     pub wave_used: bool,
+    pub reentry_armed: bool,
+    pub reentries_used: usize,
     pub entry_ready: bool,
     pub strengthening_count: usize,
     pub weakening_count: usize,
@@ -202,6 +209,10 @@ pub struct Engine {
     indicator: IndicatorEngine,
     long_wave_used: bool,
     short_wave_used: bool,
+    long_reentry_armed: bool,
+    short_reentry_armed: bool,
+    long_reentries_used: usize,
+    short_reentries_used: usize,
     long_peak: Option<f64>,
     short_trough: Option<f64>,
     long_weak_bars: usize,
@@ -222,6 +233,10 @@ impl Engine {
             calendar,
             long_wave_used: false,
             short_wave_used: false,
+            long_reentry_armed: false,
+            short_reentry_armed: false,
+            long_reentries_used: 0,
+            short_reentries_used: 0,
             long_peak: None,
             short_trough: None,
             long_weak_bars: 0,
@@ -296,6 +311,30 @@ impl Engine {
         }
     }
 
+    fn same_wave_entry_allowed(&self, side: i8) -> bool {
+        match side {
+            1 => {
+                !self.long_wave_used
+                    || (self.long_reentry_armed
+                        && self.long_reentries_used < self.settings.same_wave_reentry_limit)
+            }
+            -1 => {
+                !self.short_wave_used
+                    || (self.short_reentry_armed
+                        && self.short_reentries_used < self.settings.same_wave_reentry_limit)
+            }
+            _ => false,
+        }
+    }
+
+    fn reentry_state(&self, side: i8) -> (bool, usize) {
+        match side {
+            1 => (self.long_reentry_armed, self.long_reentries_used),
+            -1 => (self.short_reentry_armed, self.short_reentries_used),
+            _ => (false, 0),
+        }
+    }
+
     fn update_dynamic_reference(&mut self, value: f64) {
         let x = value.abs();
         let alpha = 2.0 / (self.settings.sqz_dynamic_deadband_ema_length as f64 + 1.0);
@@ -365,6 +404,8 @@ impl Engine {
                 momentum_state: MomentumState::Warmup,
                 wave_side: 0,
                 wave_used: false,
+                reentry_armed: false,
+                reentries_used: 0,
                 entry_ready: false,
                 strengthening_count: 0,
                 weakening_count: 0,
@@ -442,10 +483,11 @@ impl Engine {
         } else {
             false
         };
+        let (reentry_armed, reentries_used) = self.reentry_state(wave_side);
         let entry_bar_ok = self.entry_allowed_on_bar(in_session, bar_close_ns);
         let entry_ready = position == 0
             && entry_bar_ok
-            && !wave_used
+            && self.same_wave_entry_allowed(wave_side)
             && self.strength_ready(values, wave_side)
             && self.deadband_ready(values, wave_side);
 
@@ -462,6 +504,8 @@ impl Engine {
             momentum_state: self.state_for(values),
             wave_side,
             wave_used,
+            reentry_armed,
+            reentries_used,
             entry_ready,
             strengthening_count: if wave_side > 0 {
                 long_strength_count
@@ -572,9 +616,13 @@ impl Engine {
         // Exact Pine wave reset: sign reaching/crossing zero re-arms that side.
         if values.value <= 0.0 {
             self.long_wave_used = false;
+            self.long_reentry_armed = false;
+            self.long_reentries_used = 0;
         }
         if values.value >= 0.0 {
             self.short_wave_used = false;
+            self.short_reentry_armed = false;
+            self.short_reentries_used = 0;
         }
 
         // Exact Pine confirmed-state tracking, before signal evaluation.
@@ -624,12 +672,12 @@ impl Engine {
         let entry_bar_ok = self.entry_allowed_on_bar(in_session, bar_close_ns);
         let long_entry = position == 0
             && entry_bar_ok
-            && !self.long_wave_used
+            && self.same_wave_entry_allowed(1)
             && self.strength_ready(values, 1)
             && self.deadband_ready(values, 1);
         let short_entry = position == 0
             && entry_bar_ok
-            && !self.short_wave_used
+            && self.same_wave_entry_allowed(-1)
             && self.strength_ready(values, -1)
             && self.deadband_ready(values, -1);
         let mut force_flat_event = false;
@@ -661,20 +709,36 @@ impl Engine {
 
         match action {
             Some(Action::Buy) => {
+                if self.long_wave_used {
+                    self.long_reentries_used += 1;
+                }
                 self.long_wave_used = true;
+                self.long_reentry_armed = false;
                 self.long_peak = Some(values.value);
                 self.long_weak_bars = 0;
             }
             Some(Action::Short) => {
+                if self.short_wave_used {
+                    self.short_reentries_used += 1;
+                }
                 self.short_wave_used = true;
+                self.short_reentry_armed = false;
                 self.short_trough = Some(values.value);
                 self.short_weak_bars = 0;
             }
             Some(Action::Sell) => {
+                self.long_reentry_armed = long_transition_exit
+                    && !long_zero_exit
+                    && values.value > 0.0
+                    && self.long_reentries_used < self.settings.same_wave_reentry_limit;
                 self.long_peak = None;
                 self.long_weak_bars = 0;
             }
             Some(Action::Cover) => {
+                self.short_reentry_armed = short_transition_exit
+                    && !short_zero_exit
+                    && values.value < 0.0
+                    && self.short_reentries_used < self.settings.same_wave_reentry_limit;
                 self.short_trough = None;
                 self.short_weak_bars = 0;
             }
@@ -693,6 +757,9 @@ impl Engine {
         observation.action = action;
         observation.force_flat_event = force_flat_event;
         observation.exit_zero_cross = exit_zero_cross;
+        let (reentry_armed, reentries_used) = self.reentry_state(observation.wave_side);
+        observation.reentry_armed = reentry_armed;
+        observation.reentries_used = reentries_used;
         // Dashboard should show post-dispatch wave state exactly like Pine.
         observation.wave_used = if values.value > 0.0 {
             self.long_wave_used
@@ -720,6 +787,7 @@ mod tests {
             "sqz_entry_deadband":0.0,
             "sqz_dynamic_deadband_ema_length":25,
             "sqz_dynamic_deadband_pct":0.0,
+            "same_wave_reentry_limit":0,
             "sqz_weak_bars_req":2,
             "sqz_transition_pct":70.0,
             "session_timezone":"Asia/Kolkata",
@@ -740,6 +808,7 @@ mod tests {
         assert_eq!(settings.sqz_entry_deadband, 0.0);
         assert_eq!(settings.sqz_dynamic_deadband_ema_length, 25);
         assert_eq!(settings.sqz_dynamic_deadband_pct, 0.0);
+        assert_eq!(settings.same_wave_reentry_limit, 0);
         assert_eq!(settings.sqz_weak_bars_req, 2);
         assert_eq!(settings.sqz_transition_pct, 70.0);
         assert!(settings.force_flat_at_session_end);
@@ -780,6 +849,28 @@ mod tests {
         assert!(engine.strength_ready(short_inside, -1));
         assert!(!engine.deadband_ready(short_inside, -1));
         assert!(engine.deadband_ready(short_edge, -1));
+    }
+
+    #[test]
+    fn one_same_wave_reentry_requires_arm_and_respects_limit() {
+        let mut settings = baseline_settings();
+        settings.same_wave_reentry_limit = 1;
+        let calendar = super::super::session_calendar::fixture();
+        let mut engine = Engine::new(settings, calendar).unwrap();
+
+        engine.long_wave_used = true;
+        assert!(!engine.same_wave_entry_allowed(1));
+        engine.long_reentry_armed = true;
+        assert!(engine.same_wave_entry_allowed(1));
+        engine.long_reentries_used = 1;
+        assert!(!engine.same_wave_entry_allowed(1));
+
+        engine.short_wave_used = true;
+        assert!(!engine.same_wave_entry_allowed(-1));
+        engine.short_reentry_armed = true;
+        assert!(engine.same_wave_entry_allowed(-1));
+        engine.short_reentries_used = 1;
+        assert!(!engine.same_wave_entry_allowed(-1));
     }
 
     #[test]

@@ -54,3 +54,8 @@ Historical fixture testing and the Sandbox execution audit both use the same Rus
 ## Dynamic Wave Deadband candidate
 
 The optional dynamic entry filter keeps exit logic unchanged. For each new SQZ sign-wave it computes `max(sqz_entry_deadband, EMA(abs(SQZ), length) * pct / 100)` from prior confirmed bars, freezes that threshold for the wave, and resets/recalculates only after SQZ reaches/crosses zero. `sqz_dynamic_deadband_pct=0.0` disables the feature. Active production uses EMA length 25 and 30%, fixed DB0, with the threshold frozen for each wave; exit decay is 45%.
+
+
+## Same-wave rebuild re-entry
+
+Production permits at most one same-direction rebuild re-entry per SQZ sign-wave (`same_wave_reentry_limit=1`). A QLX/QSX transition exit arms the allowance only while SQZ remains on the same side of zero. A fresh BUY/SHORT is allowed only after the same frozen Dynamic Wave DB is still satisfied and the configured 2-bar strengthening condition rebuilds. The re-entry is then consumed. A true zero-cross clears the arm/counter and starts a new wave. Day-end exits do not arm re-entry.
