@@ -741,6 +741,8 @@ fn render_historical_monitor(
         event,
         reason,
         p,
+        Some([m.open, m.high, m.low, m.close]),
+        area.width,
     );
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" SQZ STATE ")),
@@ -766,6 +768,8 @@ fn monitor_lines<'a>(
     event: &'a str,
     reason: &'a str,
     p: &MonitorParams,
+    ohlc: Option<[f64; 4]>,
+    area_width: u16,
 ) -> Vec<Line<'a>> {
     let deadband_label = if p.dynamic_deadband_pct > 0.0 {
         format!(
@@ -775,71 +779,69 @@ fn monitor_lines<'a>(
     } else {
         format!("{:.1}", p.entry_deadband)
     };
-    vec![
-        Line::from(format!(" State       {}", position_label(position))),
+    let bar_status = if confirmed { "CONFIRMED" } else { "FORMING" };
+    let sqz_text = if ready {
+        format!("{value:.1}")
+    } else {
+        "--".into()
+    };
+    let extreme_text = extreme.map_or_else(|| "-".into(), |v| format!("{v:.1}"));
+    let entry_text = if entry_ready { "YES" } else { "NO" };
+    let session_text = if in_session { "YES" } else { "NO" };
+    let entry_restriction = if p.allow_entries_only_in_session {
+        "ON"
+    } else {
+        "OFF"
+    };
+    let sqoff = if p.force_flat_at_session_end {
+        "ON"
+    } else {
+        "OFF"
+    };
+    let separator = "─".repeat(usize::from(area_width.saturating_sub(4).clamp(8, 48)));
+
+    let mut lines = vec![
         Line::from(format!(
-            " Bar         {}",
-            if confirmed {
-                "CONFIRMED"
-            } else {
-                "LIVE / FORMING"
-            }
+            " State {} | Bar {bar_status}",
+            position_label(position)
+        )),
+        Line::from(format!(" SQZ {sqz_text} | {}", momentum.label())),
+        Line::from(format!(" Squeeze {squeeze} | Wave {wave}")),
+        Line::from(format!(
+            " Entry {entry_text} Str {strength_count}/{} | Weak {weak_count}/{}",
+            p.entry_strength_bars, p.weak_bars
         )),
         Line::from(format!(
-            " SQZ         {}",
-            if ready {
-                format!("{value:.1}")
-            } else {
-                "--".into()
-            }
-        )),
-        Line::from(format!(" Direction   {}", momentum.label())),
-        Line::from(format!(" Squeeze     {squeeze}")),
-        Line::from(format!(" Wave        {wave}")),
-        Line::from(format!(
-            " Entry       {} | Str {strength_count}/{}",
-            if entry_ready { "YES" } else { "NO" },
-            p.entry_strength_bars
-        )),
-        Line::from(format!(" Weak        {weak_count}/{}", p.weak_bars)),
-        Line::from(format!(
-            " Decay       {retracement:.1}% / {:.0}%",
+            " Decay {retracement:.1}/{:.0}% | Extreme {extreme_text}",
             p.transition_pct
         )),
         Line::from(format!(
-            " Extreme     {}",
-            extreme.map_or_else(|| "-".into(), |v| format!("{v:.1}"))
+            " Session {session_text} Entries {entry_restriction} | SqOff {sqoff} {:02}:{:02}",
+            p.auto_sq_off_hour, p.auto_sq_off_minute
         )),
         Line::from(format!(
-            " Session     {} | Entries {}",
-            if in_session { "YES" } else { "NO" },
-            if p.allow_entries_only_in_session {
-                "ON"
-            } else {
-                "OFF"
-            }
-        )),
-        Line::from(format!(
-            " SqOff       {} {:02}:{:02}",
-            if p.force_flat_at_session_end {
-                "ON"
-            } else {
-                "OFF"
-            },
-            p.auto_sq_off_hour,
-            p.auto_sq_off_minute
-        )),
-        Line::from(format!(
-            " Inputs      B{} K{}x{:.1} TR{} DB{}",
+            " Inputs B{} K{}x{:.1} TR{} | DB {}",
             p.sqz_length,
             p.sqz_length_kc,
             p.sqz_mult_kc,
             if p.use_true_range { "ON" } else { "OFF" },
             deadband_label
         )),
-        Line::from(format!(" Event       {event}")),
-        Line::from(format!(" Reason      {reason}")),
-    ]
+        Line::from(format!(" Event {event}")),
+        Line::from(format!(" Reason {reason}")),
+        Line::from(format!(" {separator}")),
+    ];
+    if let Some([open, high, low, close]) = ohlc {
+        lines.extend([
+            Line::from(format!(" Open       {open:>10.0}")),
+            Line::from(format!(" High       {high:>10.0}")),
+            Line::from(format!(" Low        {low:>10.0}")),
+            Line::from(format!(" Close      {close:>10.0}")),
+        ]);
+    } else {
+        lines.push(Line::from(" OHLC       --"));
+    }
+    lines
 }
 
 fn position_label(position: i8) -> &'static str {
@@ -906,8 +908,8 @@ fn render_live(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5),
-            Constraint::Min(20),
-            Constraint::Length(5),
+            Constraint::Min(17),
+            Constraint::Length(1),
         ])
         .split(frame.area());
     let price = live_price(state);
@@ -951,7 +953,13 @@ fn render_live(
     render_trade_table(frame, &trades, main[0]);
     render_live_monitor(frame, state, params, main[1]);
     let open = state.trade_monitor.open_points(price).unwrap_or(0.0);
-    frame.render_widget(Paragraph::new(format!(" Open P&L: {open:+.0} pt / {:+.0} INR | Dashboard previews forming candle tick-by-tick; webhook/order actions remain confirmed-bar only",open*CONTRACT_MULTIPLIER)).block(Block::default().borders(Borders::ALL).title(" CURRENT TRADE ")),root[2]);
+    frame.render_widget(
+        Paragraph::new(format!(
+            " Open P&L {open:+.0} pt / {:+.0} INR | forming candle preview; actions close-only",
+            open * CONTRACT_MULTIPLIER
+        )),
+        root[2],
+    );
 }
 
 fn render_live_monitor(
@@ -1016,6 +1024,8 @@ fn render_live_monitor(
         event,
         reason,
         p,
+        state.latest_ohlc,
+        area.width,
     );
     frame.render_widget(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" SQZ STATE ")),

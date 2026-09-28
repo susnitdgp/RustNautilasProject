@@ -76,6 +76,7 @@ pub struct State {
     pub live_quotes: u64,
     pub last_accepted_quote: Option<QuoteTick>,
     pub latest_strategy: Option<Observation>,
+    pub latest_ohlc: Option<[f64; 4]>,
     pub trade_monitor: TradeMonitor,
     pub rejected_quotes: u64,
     pub rebuilds: Vec<serde_json::Value>,
@@ -90,6 +91,7 @@ pub struct State {
 #[derive(Debug, Clone, Copy)]
 struct LiveCandle {
     open_ns: u64,
+    open: f64,
     high: f64,
     low: f64,
     close: f64,
@@ -99,6 +101,7 @@ impl LiveCandle {
     fn new(open_ns: u64, price: f64) -> Self {
         Self {
             open_ns,
+            open: price,
             high: price,
             low: price,
             close: price,
@@ -387,7 +390,16 @@ impl DataActor for BarStrategy {
         {
             self.live_candle = None;
         }
-        self.state.borrow_mut().latest_strategy = Some(observation);
+        {
+            let mut state = self.state.borrow_mut();
+            state.latest_strategy = Some(observation);
+            state.latest_ohlc = Some([
+                bar.open.as_f64(),
+                bar.high.as_f64(),
+                bar.low.as_f64(),
+                bar.close.as_f64(),
+            ]);
+        }
         self.state
             .borrow_mut()
             .indicators
@@ -463,7 +475,9 @@ impl DataActor for BarStrategy {
                 self.bar_ns,
                 side,
             )?;
-            self.state.borrow_mut().latest_strategy = Some(preview);
+            let mut state = self.state.borrow_mut();
+            state.latest_strategy = Some(preview);
+            state.latest_ohlc = Some([candle.open, candle.high, candle.low, candle.close]);
         }
 
         if let Some(control) = self.live.clone() {
@@ -482,6 +496,7 @@ impl DataActor for BarStrategy {
                     let mut state = self.state.borrow_mut();
                     state.indicators.clear();
                     state.latest_strategy = None;
+                    state.latest_ohlc = None;
                 }
                 for bar in bars {
                     self.on_bar(&bar)?;
