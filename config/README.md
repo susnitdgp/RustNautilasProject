@@ -3,6 +3,7 @@
 The active strategy is **MCX Crude PURE Squeeze Momentum v2.28.3**.
 
 - `production-squeeze-momentum.json` — authoritative instrument, session, Pure SQZ strategy inputs and display settings.
+- `candidate-squeeze-momentum-opt45.json` — optimization candidate; identical to production except SQZ transition is 45% instead of 70%. It is not the production config.
 - `kite-production.json` — local/private Kite production settings.
 - `kite-sandbox.toml` — local sandbox settings.
 

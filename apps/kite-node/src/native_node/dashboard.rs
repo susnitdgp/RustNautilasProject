@@ -395,7 +395,7 @@ fn event_view(event: &StrategyEvent) -> EventView {
     }
 }
 
-fn trade_rows(events: &[EventView], current_price: f64) -> Vec<TradeRow> {
+fn trade_rows(events: &[EventView], current_price: f64, transition_pct: f64) -> Vec<TradeRow> {
     struct OpenTrade {
         side: &'static str,
         time: String,
@@ -435,7 +435,7 @@ fn trade_rows(events: &[EventView], current_price: f64) -> Vec<TradeRow> {
                         entry_price: entry.price,
                         exit_time: Some(short_time(&event.timestamp)),
                         exit_price: Some(event.price),
-                        exit_reason: Some(exit_label(&event.action, &event.reason)),
+                        exit_reason: Some(exit_label(&event.action, &event.reason, transition_pct)),
                         points,
                         closed: true,
                     });
@@ -464,17 +464,16 @@ fn trade_rows(events: &[EventView], current_price: f64) -> Vec<TradeRow> {
     rows
 }
 
-fn exit_label(action: &str, reason: &str) -> String {
+fn exit_label(action: &str, reason: &str, transition_pct: f64) -> String {
     if reason == "session_force_flat" {
         return "SQOFF".into();
     }
     let marker = if action == "SELL" { "QLX" } else { "QSX" };
-    let detail = if reason == "zero_cross" {
-        "ZERO"
+    if reason == "zero_cross" {
+        format!("{marker}/ZERO")
     } else {
-        "70%"
-    };
-    format!("{marker}/{detail}")
+        format!("{marker}/{transition_pct:.0}%")
+    }
 }
 
 fn short_time(timestamp: &str) -> String {
@@ -557,7 +556,11 @@ fn render_snapshot(app: &mut ReplayApp) -> Result<()> {
         }
         println!("{}", line.trim_end());
     }
-    let rows = trade_rows(&app.current().events_so_far, app.current().close);
+    let rows = trade_rows(
+        &app.current().events_so_far,
+        app.current().close,
+        app.params.transition_pct,
+    );
     let realized: f64 = rows.iter().filter(|r| r.closed).map(|r| r.points).sum();
     println!(
         "\nSQZ_DASHBOARD_REPLAY_COMPLETE date={} trades={} gross_points={:.1} gross_inr={:.0}",
@@ -580,7 +583,11 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
         ])
         .split(frame.area());
     let current = app.current();
-    let rows = trade_rows(&current.events_so_far, current.close);
+    let rows = trade_rows(
+        &current.events_so_far,
+        current.close,
+        app.params.transition_pct,
+    );
     let realized: f64 = rows.iter().filter(|r| r.closed).map(|r| r.points).sum();
     let header = vec![
         Line::from(vec![
@@ -935,7 +942,7 @@ fn render_live(
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(root[1]);
-    let trades = live_trade_rows(state, price);
+    let trades = live_trade_rows(state, price, params.transition_pct);
     render_trade_table(frame, &trades, main[0]);
     render_live_monitor(frame, state, params, main[1]);
     let open = state.trade_monitor.open_points(price).unwrap_or(0.0);
@@ -1014,6 +1021,7 @@ fn render_live_monitor(
 fn live_trade_rows(
     state: &super::squeeze_momentum_actor::State,
     current_price: f64,
+    transition_pct: f64,
 ) -> Vec<TradeRow> {
     struct Open {
         side: &'static str,
@@ -1073,7 +1081,7 @@ fn live_trade_rows(
                         entry_price: e.price,
                         exit_time: Some(time),
                         exit_price: Some(price),
-                        exit_reason: Some(exit_label(intent, reason)),
+                        exit_reason: Some(exit_label(intent, reason, transition_pct)),
                         points,
                         closed: true,
                     });
@@ -1122,8 +1130,8 @@ mod tests {
     use super::*;
     #[test]
     fn exit_labels_are_sqz_specific() {
-        assert_eq!(exit_label("SELL", "zero_cross"), "QLX/ZERO");
-        assert_eq!(exit_label("COVER", "sqz_transition"), "QSX/70%");
-        assert_eq!(exit_label("SELL", "session_force_flat"), "SQOFF");
+        assert_eq!(exit_label("SELL", "zero_cross", 45.0), "QLX/ZERO");
+        assert_eq!(exit_label("COVER", "sqz_transition", 45.0), "QSX/45%");
+        assert_eq!(exit_label("SELL", "session_force_flat", 45.0), "SQOFF");
     }
 }
