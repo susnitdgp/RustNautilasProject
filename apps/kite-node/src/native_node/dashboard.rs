@@ -571,14 +571,17 @@ fn render_snapshot(app: &mut ReplayApp) -> Result<()> {
 }
 
 fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
+    let area = frame.area();
+    let show_header = area.height >= 14;
+    let show_footer = area.height >= 15;
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Min(13),
-            Constraint::Length(1),
+            Constraint::Length(u16::from(show_header)),
+            Constraint::Min(12),
+            Constraint::Length(u16::from(show_footer)),
         ])
-        .split(frame.area());
+        .split(area);
     let current = app.current();
     let rows = trade_rows(
         &current.events_so_far,
@@ -600,7 +603,9 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
             realized * CONTRACT_MULTIPLIER
         )),
     ])];
-    frame.render_widget(Paragraph::new(header), root[0]);
+    if show_header {
+        frame.render_widget(Paragraph::new(header), root[0]);
+    }
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
@@ -614,14 +619,16 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
         &current.events_so_far,
         main[1],
     );
-    frame.render_widget(
-        Paragraph::new(format!(
-            " Closed {} | Net {realized:+.0} pt / {:+.0} INR | q quit | space play/pause | ←/→ step",
-            rows.iter().filter(|r| r.closed).count(),
-            realized * CONTRACT_MULTIPLIER
-        )),
-        root[2],
-    );
+    if show_footer {
+        frame.render_widget(
+            Paragraph::new(format!(
+                " Closed {} | Net {realized:+.0} pt / {:+.0} INR | q quit | space play/pause | ←/→ step",
+                rows.iter().filter(|r| r.closed).count(),
+                realized * CONTRACT_MULTIPLIER
+            )),
+            root[2],
+        );
+    }
 }
 
 fn render_trade_table(frame: &mut ratatui::Frame<'_>, rows: &[TradeRow], area: Rect) {
@@ -761,7 +768,7 @@ fn monitor_lines<'a>(
 ) -> Vec<Line<'a>> {
     let deadband_label = if p.dynamic_deadband_pct > 0.0 {
         format!(
-            "DYN EMA{} x {:.0}%",
+            "EMA{}x{:.0}%",
             p.dynamic_deadband_ema_length, p.dynamic_deadband_pct
         )
     } else {
@@ -777,34 +784,40 @@ fn monitor_lines<'a>(
     let _in_session = in_session;
     let separator = "─".repeat(usize::from(area_width.saturating_sub(4).clamp(8, 48)));
 
+    let momentum_short = match momentum {
+        MomentumState::Warmup => "WARMUP",
+        MomentumState::PositiveRising => "POS/RISING",
+        MomentumState::PositiveFalling => "POS/FALLING",
+        MomentumState::NegativeFalling => "NEG/FALLING",
+        MomentumState::NegativeRising => "NEG/RISING",
+        MomentumState::Zero => "ZERO",
+    };
     let mut lines = vec![
         Line::from(format!(
-            " {} {} | SQZ {sqz_text} {}",
+            " {} {} | SQZ {sqz_text}",
             position_label(position),
-            if confirmed { "CONF" } else { "FORM" },
-            momentum.label()
+            if confirmed { "CONF" } else { "FORM" }
         )),
-        Line::from(format!(" Sqz {squeeze} | Wave {wave}")),
+        Line::from(format!(" {momentum_short} | Sqz {squeeze} | {wave}")),
         Line::from(format!(
-            " Entry {entry_text} S{strength_count}/{} | ReEntry {} {reentries_used}/{} | W {weak_count}/{}",
+            " Entry {entry_text} S{strength_count}/{} | ReEntry {} {reentries_used}/{} | W{weak_count}/{}",
             p.entry_strength_bars,
             if reentry_armed { "ARM" } else { "-" },
             p.same_wave_reentry_limit,
             p.weak_bars
         )),
         Line::from(format!(
-            " Dec {retracement:.1}/{:.0}% Ext {extreme_text} | SqOff {} {:02}:{:02} | DB {}",
-            p.transition_pct,
-            if p.force_flat_at_session_end {
-                "ON"
-            } else {
-                "OFF"
-            },
-            p.auto_sq_off_hour,
-            p.auto_sq_off_minute,
-            deadband_label
+            " Dec {retracement:.1}/{:.0}% Ext {extreme_text} | DB {deadband_label}",
+            p.transition_pct
         )),
-        Line::from(format!(" Event {event} | Reason {reason}")),
+        Line::from(format!(
+            " SO{}|E:{event}|Reason:{reason}",
+            if p.force_flat_at_session_end {
+                format!("{:02}:{:02}", p.auto_sq_off_hour, p.auto_sq_off_minute)
+            } else {
+                "OFF".into()
+            }
+        )),
         Line::from(format!(" {separator}")),
     ];
     if let Some([open, high, low, close]) = ohlc {
