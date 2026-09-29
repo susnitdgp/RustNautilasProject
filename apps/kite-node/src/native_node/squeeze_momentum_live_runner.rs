@@ -83,6 +83,7 @@ pub fn run_with_execution(config: &str, seconds: u64, sim: bool, kite_mock: bool
 }
 pub fn run_broker(config: &str, settings: &str) -> Result<()> {
     let selection = super::production::Selection::load(config)?;
+    let dashboard = selection.squeeze_momentum.display.show_dashboard;
     let settings = selection.broker_settings(settings)?;
     run_backend(
         config,
@@ -92,7 +93,7 @@ pub fn run_broker(config: &str, settings: &str) -> Result<()> {
         Some(settings),
         RunFlags {
             recovery_fixture: false,
-            dashboard: false,
+            dashboard,
         },
     )
 }
