@@ -290,3 +290,30 @@ fn market_open_waits_for_first_real_candle_finalization() {
         );
     }
 }
+
+#[test]
+fn provisional_bar_wait_reschedules_to_finalization_deadline_not_api_spin() {
+    let interval = Interval::FiveMinute;
+    let (rows, mut history, date, start) = fixture(interval);
+    let step = interval.nanoseconds();
+    let close = start + 101 * step;
+    let mut stability = TailStability::default();
+    let requested = close + timing::COMPLETION_GRACE_NS;
+    assert!(
+        prepare_update(
+            &mut history,
+            &mut stability,
+            rows[..101].to_vec(),
+            requested,
+            date,
+            interval,
+        )
+        .unwrap()
+        .is_none()
+    );
+    let calendar = super::super::session_calendar::fixture();
+    assert_eq!(
+        next_live_poll(requested, history.latest_close(), step, date, &calendar).unwrap(),
+        close + timing::FINALIZATION_DELAY_NS
+    );
+}

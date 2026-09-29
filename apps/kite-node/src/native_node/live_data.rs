@@ -386,7 +386,13 @@ impl Client {
                                 .lock()
                                 .expect("bar feed stats")
                                 .publication_waits += 1;
-                            next_fetch = received_at.saturating_add(timing::PUBLICATION_RETRY_NS);
+                            next_fetch = next_live_poll(
+                                received_at,
+                                history.latest_close(),
+                                step,
+                                c.date,
+                                &c.calendar,
+                            )?;
                             continue;
                         }
                         Err(e) => {
