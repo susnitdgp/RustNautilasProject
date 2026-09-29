@@ -197,7 +197,7 @@ fn run_backend_inner(
             kite_adapter::http::historical::fetch_window_for(token, date, 7, selection.interval),
         )?;
         (
-            bars::completed_for(raw, data::now(), selection.interval)?,
+            bars::broker_finalized_for(raw, data::now(), selection.interval)?,
             Vec::new(),
         )
     };
@@ -207,7 +207,7 @@ fn run_backend_inner(
         "Insufficient Squeeze Momentum indicator warmup"
     );
     if !sim {
-        bars::validate_warmup_for(
+        bars::validate_broker_finalized_warmup_for(
             &warmup,
             date,
             data::now(),

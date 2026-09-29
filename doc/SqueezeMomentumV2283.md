@@ -59,3 +59,8 @@ The optional dynamic entry filter keeps exit logic unchanged. For each new SQZ s
 ## Same-wave rebuild re-entry
 
 Production permits at most one same-direction rebuild re-entry per SQZ sign-wave (`same_wave_reentry_limit=1`). A QLX/QSX transition exit arms the allowance only while SQZ remains on the same side of zero. A fresh BUY/SHORT is allowed only after the same frozen Dynamic Wave DB is still satisfied and the configured 2-bar strengthening condition rebuilds. The re-entry is then consumed. A true zero-cross clears the arm/counter and starts a new wave. Day-end exits do not arm re-entry.
+
+
+## Broker-finalized live bars
+
+`confirmed` in live production means broker-finalized, not merely clock-closed. Kite may revise the OHLC of a just-published historical candle after the boundary. Production therefore waits at least 45 seconds after the candle close and requires two identical broker OHLC reads separated by at least 2 seconds before the bar can drive BUY/SELL/SHORT/COVER. A later price revision of an admitted bar is fail-closed and requires review. A feed recovery that crosses a full strategy bar is also fail-closed; the engine never emits catch-up orders for missed historical bars.

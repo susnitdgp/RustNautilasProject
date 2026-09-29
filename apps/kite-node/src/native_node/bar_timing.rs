@@ -2,9 +2,11 @@
 use serde::Serialize;
 
 pub const COMPLETION_GRACE_NS: u64 = 2_000_000_000;
+pub const FINALIZATION_DELAY_NS: u64 = 45_000_000_000;
+pub const STABILITY_CONFIRM_NS: u64 = 2_000_000_000;
 pub const AUDIT_INTERVAL_NS: u64 = 10_000_000_000;
-pub const PUBLICATION_RETRY_NS: u64 = 500_000_000;
-const PUBLICATION_WAIT_NS: u64 = 15_000_000_000;
+pub const PUBLICATION_RETRY_NS: u64 = 1_000_000_000;
+const PUBLICATION_WAIT_NS: u64 = 75_000_000_000;
 
 pub fn eligible_close(now: u64, step: u64) -> u64 {
     now.saturating_sub(COMPLETION_GRACE_NS) / step * step
@@ -15,7 +17,12 @@ pub fn eligible_close(now: u64, step: u64) -> u64 {
 pub fn next_poll(now: u64, latest: u64, step: u64) -> u64 {
     let eligible = eligible_close(now, step);
     if latest < eligible {
-        return now.saturating_add(PUBLICATION_RETRY_NS);
+        let finalized_at = eligible.saturating_add(FINALIZATION_DELAY_NS);
+        return if now < finalized_at {
+            finalized_at
+        } else {
+            now.saturating_add(PUBLICATION_RETRY_NS)
+        };
     }
     let boundary = eligible
         .saturating_add(step)
@@ -73,21 +80,22 @@ mod tests {
     const SECOND: u64 = 1_000_000_000;
 
     #[test]
-    fn both_intervals_poll_at_close_plus_grace_not_ten_seconds_later() {
+    fn both_intervals_wait_for_broker_finalization_before_polling_new_close() {
         for step in [180 * SECOND, 300 * SECOND] {
             let close = 100 * step;
-            for seconds_before in 0..=9 {
-                let now = close - seconds_before * SECOND;
-                assert_eq!(
-                    next_poll(now, close - step, step),
-                    close + COMPLETION_GRACE_NS
-                );
-            }
             assert_eq!(
                 eligible_close(close + COMPLETION_GRACE_NS - 1, step),
                 close - step
             );
             assert_eq!(eligible_close(close + COMPLETION_GRACE_NS, step), close);
+            assert_eq!(
+                next_poll(close + COMPLETION_GRACE_NS, close - step, step),
+                close + FINALIZATION_DELAY_NS
+            );
+            assert_eq!(
+                next_poll(close + FINALIZATION_DELAY_NS, close - step, step),
+                close + FINALIZATION_DELAY_NS + PUBLICATION_RETRY_NS
+            );
         }
     }
 
@@ -101,13 +109,13 @@ mod tests {
         );
         assert_eq!(
             next_poll(close + 2 * SECOND, close - step, step),
-            close + 2 * SECOND + PUBLICATION_RETRY_NS
+            close + FINALIZATION_DELAY_NS
         );
         assert!(publication_pending(close - step, close + 2 * SECOND, step));
-        assert!(publication_pending(close - step, close + 16 * SECOND, step));
+        assert!(publication_pending(close - step, close + 70 * SECOND, step));
         assert!(!publication_pending(
             close - step,
-            close + 17 * SECOND,
+            close + 78 * SECOND,
             step
         ));
         assert!(!publication_pending(

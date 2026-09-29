@@ -501,6 +501,10 @@ impl DataActor for BarStrategy {
                 for bar in bars {
                     self.on_bar(&bar)?;
                 }
+                // A history rebuild may reconstruct indicators, but historical actions
+                // must never leak into the next live quote as an executable target.
+                self.target = self.position_side();
+                self.target_reason = None;
                 self.state.borrow_mut().rebuilds.push(serde_json::json!({
                     "epoch":epoch,
                     "previous_bar":previous,

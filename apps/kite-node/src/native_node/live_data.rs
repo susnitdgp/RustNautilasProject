@@ -27,6 +27,57 @@ use std::{any::Any, cell::RefCell, rc::Rc, sync::atomic::Ordering};
 use tokio::task::JoinHandle;
 /// Select against a single request-start cutoff, not a later response time.
 /// No history mutation occurs until every expected completed candle validates.
+
+#[derive(Debug, Default)]
+struct TailStability {
+    close_ns: u64,
+    ohlc_bits: Option<[u64; 4]>,
+    unchanged_since_ns: u64,
+}
+
+impl TailStability {
+    fn observe(&mut self, candle: &Candle, close_ns: u64, requested_at: u64) -> bool {
+        if requested_at < close_ns.saturating_add(timing::FINALIZATION_DELAY_NS) {
+            return false;
+        }
+        let bits = [
+            candle.open.to_bits(),
+            candle.high.to_bits(),
+            candle.low.to_bits(),
+            candle.close.to_bits(),
+        ];
+        if self.close_ns != close_ns || self.ohlc_bits != Some(bits) {
+            self.close_ns = close_ns;
+            self.ohlc_bits = Some(bits);
+            self.unchanged_since_ns = requested_at;
+            return false;
+        }
+        requested_at.saturating_sub(self.unchanged_since_ns) >= timing::STABILITY_CONFIRM_NS
+    }
+
+    fn admitted(&mut self, close_ns: u64) {
+        if self.close_ns <= close_ns {
+            *self = Self::default();
+        }
+    }
+}
+
+fn validate_live_update(update: &super::history_revision::Update, was_paused: bool) -> Result<()> {
+    ensure!(
+        update.price_revised == 0,
+        "Previously admitted broker candle changed OHLC; live trading requires review"
+    );
+    ensure!(
+        !(was_paused && !update.new.is_empty()),
+        "Data recovery crossed a completed strategy bar; catch-up trading is disabled"
+    );
+    ensure!(
+        update.new.len() <= 1,
+        "More than one completed strategy bar arrived at once; catch-up trading is disabled"
+    );
+    Ok(())
+}
+
 async fn wait_for_simulated_order(control: &Control) {
     loop {
         if control.stopping.load(Ordering::Acquire) {
@@ -42,17 +93,54 @@ async fn wait_for_simulated_order(control: &Control) {
 
 fn prepare_update(
     history: &mut super::history_revision::History,
+    stability: &mut TailStability,
     candles: Vec<Candle>,
     requested_at: u64,
     date: chrono::NaiveDate,
     interval: Interval,
 ) -> Result<Option<super::history_revision::Update>> {
     let completed = bars::completed_for(candles, requested_at, interval)?;
-    let latest = bars::close_for(completed.last().expect("completed bars"), interval)?;
+    let latest_candle = completed.last().expect("completed bars");
+    let latest = bars::close_for(latest_candle, interval)?;
     if timing::publication_pending(latest, requested_at, interval.nanoseconds()) {
         return Ok(None);
     }
-    history.update(completed, date, requested_at).map(Some)
+    let known = history.latest_close();
+    let pending_new = completed
+        .iter()
+        .map(|c| bars::close_for(c, interval))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|close| *close > known)
+        .count();
+    ensure!(
+        pending_new <= 1,
+        "More than one completed strategy bar is pending; live catch-up is unsafe"
+    );
+    if latest > known && !stability.observe(latest_candle, latest, requested_at) {
+        return Ok(None);
+    }
+    let update = history.update(completed, date, requested_at)?;
+    if let Some(last) = update.new.last() {
+        stability.admitted(bars::close_for(last, interval)?);
+    }
+    Ok(Some(update))
+}
+
+fn next_live_poll(
+    now_ns: u64,
+    latest_close: u64,
+    step: u64,
+    date: chrono::NaiveDate,
+    calendar: &super::session_calendar::Calendar,
+) -> Result<u64> {
+    let (session_start, _) = calendar.bounds(date)?;
+    let first_close = session_start.saturating_add(step);
+    let first_finalized = first_close.saturating_add(timing::FINALIZATION_DELAY_NS);
+    if latest_close < first_close && now_ns < first_finalized {
+        return Ok(first_finalized);
+    }
+    Ok(timing::next_poll(now_ns, latest_close, step))
 }
 
 #[derive(Debug, Clone)]
@@ -238,11 +326,12 @@ impl Client {
                     &c.warmup,
                     c.calendar.clone(),
                     c.interval,
-                )?
-                .with_volume_sensitive(c.volume_sensitive);
+                )?;
                 let step = c.interval.nanoseconds();
+                let mut stability = TailStability::default();
                 let mut reader = historical::Reader::default();
-                let mut next_fetch = timing::next_poll(now(), history.latest_close(), step);
+                let mut next_fetch =
+                    next_live_poll(now(), history.latest_close(), step, c.date, &c.calendar)?;
                 {
                     let mut stats = c.control.bar_feed.lock().expect("bar feed stats");
                     stats.last_candle_close_ns = history.latest_close();
@@ -277,7 +366,14 @@ impl Client {
                         break;
                     }
                     let update = fetched.and_then(|candles| {
-                        prepare_update(&mut history, candles, requested_at, c.date, c.interval)
+                        prepare_update(
+                            &mut history,
+                            &mut stability,
+                            candles,
+                            requested_at,
+                            c.date,
+                            c.interval,
+                        )
                     });
                     let update = match update {
                         Ok(Some(v)) => {
@@ -306,7 +402,8 @@ impl Client {
                             continue;
                         }
                     };
-                    next_fetch = timing::next_poll(now(), history.latest_close(), step);
+                    next_fetch =
+                        next_live_poll(now(), history.latest_close(), step, c.date, &c.calendar)?;
                     {
                         let mut stats = c.control.bar_feed.lock().expect("bar feed stats");
                         stats.price_revisions += update.price_revised as u64;
@@ -323,30 +420,20 @@ impl Client {
                         next_fetch = now().saturating_add(timing::PUBLICATION_RETRY_NS);
                         continue;
                     }
-                    if update.revised > 0 || c.control.paused.load(Ordering::Acquire) {
+                    let was_paused = c.control.paused.load(Ordering::Acquire);
+                    if let Err(error) = validate_live_update(&update, was_paused) {
                         {
                             let mut stats = c.control.bar_feed.lock().expect("bar feed stats");
-                            stats.rebuild_requests += 1;
-                            stats.last_rebuild_reason = if update.revised > 0 {
-                                format!(
-                                    "history correction: {} price / {} volume-only",
-                                    update.price_revised, update.volume_only_revised
-                                )
-                            } else {
-                                "feed recovery after pause".into()
-                            };
+                            stats.last_rebuild_reason = error.to_string();
                         }
-                        let epoch = c.control.pause();
-                        let rebuilt = update
-                            .all
-                            .iter()
-                            .map(|b| bars::bar_for(b, bt, received_at, c.interval))
-                            .collect::<Result<Vec<_>>>()?;
-                        *c.control.rebuild.lock().expect("rebuild lock") = Some((epoch, rebuilt));
-                    } else {
-                        for bar in update.new {
-                            emit(Data::Bar(bars::bar_for(&bar, bt, received_at, c.interval)?))?;
-                        }
+                        c.control.fail(&format!("Bar finalization: {error}"));
+                        return Err(error);
+                    }
+                    if was_paused {
+                        c.control.paused.store(false, Ordering::Release);
+                    }
+                    for bar in update.new {
+                        emit(Data::Bar(bars::bar_for(&bar, bt, received_at, c.interval)?))?;
                     }
                 }
                 Ok(())

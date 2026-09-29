@@ -35,6 +35,23 @@ pub fn completed_for(candles: Vec<Candle>, now: u64, interval: Interval) -> Resu
     ensure!(!out.is_empty(), "No completed candles");
     Ok(out)
 }
+pub fn broker_finalized_for(
+    candles: Vec<Candle>,
+    now: u64,
+    interval: Interval,
+) -> Result<Vec<Candle>> {
+    kite_adapter::http::historical::validate_for(&candles, interval)?;
+    let mut out = Vec::new();
+    for c in candles {
+        if close_for(&c, interval)? <= now.saturating_sub(super::bar_timing::FINALIZATION_DELAY_NS)
+        {
+            out.push(c);
+        }
+    }
+    ensure!(!out.is_empty(), "No broker-finalized candles");
+    Ok(out)
+}
+
 pub fn bar_for(c: &Candle, bt: BarType, received: u64, interval: Interval) -> Result<Bar> {
     Ok(Bar::new(
         bt,
@@ -127,6 +144,41 @@ pub fn validate_warmup_for(
     calendar: &super::session_calendar::Calendar,
     interval: Interval,
 ) -> Result<()> {
+    validate_warmup_with_lag(
+        candles,
+        date,
+        now,
+        calendar,
+        interval,
+        super::bar_timing::COMPLETION_GRACE_NS,
+    )
+}
+
+pub fn validate_broker_finalized_warmup_for(
+    candles: &[Candle],
+    date: chrono::NaiveDate,
+    now: u64,
+    calendar: &super::session_calendar::Calendar,
+    interval: Interval,
+) -> Result<()> {
+    validate_warmup_with_lag(
+        candles,
+        date,
+        now,
+        calendar,
+        interval,
+        super::bar_timing::FINALIZATION_DELAY_NS,
+    )
+}
+
+fn validate_warmup_with_lag(
+    candles: &[Candle],
+    date: chrono::NaiveDate,
+    now: u64,
+    calendar: &super::session_calendar::Calendar,
+    interval: Interval,
+    lag_ns: u64,
+) -> Result<()> {
     let first = candles
         .first()
         .ok_or_else(|| anyhow::anyhow!("No warmup"))?
@@ -136,8 +188,7 @@ pub fn validate_warmup_for(
     for day in calendar.range(first, date)? {
         let (start, end) = calendar.bounds(day)?;
         let cutoff = if day == date {
-            now.saturating_sub(super::bar_timing::COMPLETION_GRACE_NS)
-                .min(end)
+            now.saturating_sub(lag_ns).min(end)
         } else {
             end
         };
@@ -216,4 +267,42 @@ fn three_minute_completed_bars_and_warmup_use_json_interval_step() {
         start + interval.nanoseconds()
     );
     assert!(validate_warmup_for(&candles, date, now, &calendar, interval).is_ok());
+}
+
+#[test]
+fn broker_finalized_warmup_excludes_recent_clock_closed_tail() {
+    let date = chrono::NaiveDate::from_ymd_opt(2026, 9, 16).unwrap();
+    let calendar = super::session_calendar::fixture();
+    let (start, _) = calendar.bounds(date).unwrap();
+    let interval = Interval::FiveMinute;
+    let mut candles = Vec::new();
+    for ts in (start..start + 3 * interval.nanoseconds()).step_by(interval.nanoseconds() as usize) {
+        candles.push(Candle {
+            timestamp: chrono::DateTime::from_timestamp_nanos(ts as i64)
+                .with_timezone(&chrono::FixedOffset::east_opt(19800).unwrap())
+                .to_rfc3339(),
+            open: 100.,
+            high: 101.,
+            low: 99.,
+            close: 100.,
+            volume: 10,
+            oi: 10,
+        });
+    }
+    let third_close = start + 3 * interval.nanoseconds();
+    let at_30s =
+        broker_finalized_for(candles.clone(), third_close + 30_000_000_000, interval).unwrap();
+    assert_eq!(at_30s.len(), 2);
+    assert!(
+        validate_broker_finalized_warmup_for(
+            &at_30s,
+            date,
+            third_close + 30_000_000_000,
+            &calendar,
+            interval,
+        )
+        .is_ok()
+    );
+    let at_50s = broker_finalized_for(candles, third_close + 50_000_000_000, interval).unwrap();
+    assert_eq!(at_50s.len(), 3);
 }

@@ -117,7 +117,7 @@ Launch manually with:
 bash deploy/run-squeeze-momentum-live.sh
 ```
 
-The committed `production-squeeze-momentum.json` keeps `live_orders_enabled=false`; real execution therefore remains gated until deliberately enabled and broker preflight/reconciliation passes.
+The committed production strategy gate and the private broker gate are both enabled for the current live profile. Real execution still starts only through the explicit production launcher and only after broker preflight/reconciliation succeeds.
 
 ## Kite authentication
 
@@ -140,3 +140,8 @@ config/production-squeeze-momentum.json                       active JSON source
 deploy/verify-squeeze-momentum-v2283.sh                       validation
 doc/SqueezeMomentumV2283.md                                   strategy notes
 ```
+
+
+## Broker candle finalization
+
+Real Kite production does not trade the first historical OHLC published immediately after a 3/5-minute boundary. A newly closed broker candle must be at least 45 seconds old and match on two reads separated by at least 2 seconds before it is admitted to the strategy. This protects confirmed-bar decisions from Kite OHLC revisions observed shortly after close. If an already-admitted candle later changes price, or recovery spans a complete strategy bar, live trading fails closed for review instead of rebuilding and firing catch-up orders. Volume-only corrections remain audit-only because SQZ is price based.
