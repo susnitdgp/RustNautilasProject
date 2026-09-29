@@ -63,10 +63,6 @@ struct TradeRow {
 
 #[derive(Clone)]
 struct MonitorParams {
-    sqz_length: usize,
-    sqz_length_kc: usize,
-    sqz_mult_kc: f64,
-    use_true_range: bool,
     entry_strength_bars: usize,
     entry_deadband: f64,
     dynamic_deadband_ema_length: usize,
@@ -74,7 +70,6 @@ struct MonitorParams {
     same_wave_reentry_limit: usize,
     weak_bars: usize,
     transition_pct: f64,
-    allow_entries_only_in_session: bool,
     force_flat_at_session_end: bool,
     auto_sq_off_hour: u32,
     auto_sq_off_minute: u32,
@@ -85,10 +80,6 @@ impl MonitorParams {
     fn from_selection(selection: &super::production::Selection) -> Self {
         let s = &selection.squeeze_momentum;
         Self {
-            sqz_length: s.sqz_length,
-            sqz_length_kc: s.sqz_length_kc,
-            sqz_mult_kc: s.sqz_mult_kc,
-            use_true_range: s.sqz_use_true_range,
             entry_strength_bars: s.entry_strength_bars,
             entry_deadband: s.sqz_entry_deadband,
             dynamic_deadband_ema_length: s.sqz_dynamic_deadband_ema_length,
@@ -96,7 +87,6 @@ impl MonitorParams {
             same_wave_reentry_limit: s.same_wave_reentry_limit,
             weak_bars: s.sqz_weak_bars_req,
             transition_pct: s.sqz_transition_pct,
-            allow_entries_only_in_session: s.allow_entries_only_in_session,
             force_flat_at_session_end: s.force_flat_at_session_end,
             auto_sq_off_hour: s.auto_sq_off_hour,
             auto_sq_off_minute: s.auto_sq_off_minute,
@@ -584,8 +574,8 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Min(15),
+            Constraint::Length(1),
+            Constraint::Min(13),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -596,29 +586,21 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
         app.params.transition_pct,
     );
     let realized: f64 = rows.iter().filter(|r| r.closed).map(|r| r.points).sum();
-    let header = vec![
-        Line::from(vec![
-            Span::styled(" MCX PURE SQZ ", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(
-                "{} | {} {} | 5m | {}/{} | LTP {:.0}",
-                app.instrument,
-                app.date,
-                short_time(&current.timestamp),
-                app.index + 1,
-                app.frames.len(),
-                current.close
-            )),
-        ]),
-        Line::from(format!(
-            " Pos {} | Realized {realized:+.0} pt / {:+.0} INR | confirmed-close actions",
+    let header = vec![Line::from(vec![
+        Span::styled(" MCX SQZ ", Style::default().fg(Color::Yellow)),
+        Span::raw(format!(
+            "{} | {} {} | {}/{} | LTP {:.0} | {} | {realized:+.0}pt/{:+.0}",
+            app.instrument,
+            app.date,
+            short_time(&current.timestamp),
+            app.index + 1,
+            app.frames.len(),
+            current.close,
             position_label(current.monitor.position),
             realized * CONTRACT_MULTIPLIER
         )),
-    ];
-    frame.render_widget(
-        Paragraph::new(header).block(Block::default().borders(Borders::ALL)),
-        root[0],
-    );
+    ])];
+    frame.render_widget(Paragraph::new(header), root[0]);
 
     let main = Layout::default()
         .direction(Direction::Horizontal)
@@ -792,48 +774,34 @@ fn monitor_lines<'a>(
     };
     let extreme_text = extreme.map_or_else(|| "-".into(), |v| format!("{v:.1}"));
     let entry_text = if entry_ready { "YES" } else { "NO" };
-    let session_text = if in_session { "YES" } else { "NO" };
-    let entry_restriction = if p.allow_entries_only_in_session {
-        "ON"
-    } else {
-        "OFF"
-    };
+    let _in_session = in_session;
     let separator = "─".repeat(usize::from(area_width.saturating_sub(4).clamp(8, 48)));
 
     let mut lines = vec![
         Line::from(format!(
-            " State {} | Bar {}",
+            " {} {} | SQZ {sqz_text} {}",
             position_label(position),
-            if confirmed { "CONF" } else { "FORM" }
+            if confirmed { "CONF" } else { "FORM" },
+            momentum.label()
         )),
-        Line::from(format!(" SQZ {sqz_text} | {}", momentum.label())),
-        Line::from(format!(" Squeeze {squeeze} | Wave {wave}")),
+        Line::from(format!(" Sqz {squeeze} | Wave {wave}")),
         Line::from(format!(
-            " Entry {entry_text} S{strength_count}/{} | ReEntry {} {reentries_used}/{}",
+            " Entry {entry_text} S{strength_count}/{} | ReEntry {} {reentries_used}/{} | W {weak_count}/{}",
             p.entry_strength_bars,
             if reentry_armed { "ARM" } else { "-" },
-            p.same_wave_reentry_limit
+            p.same_wave_reentry_limit,
+            p.weak_bars
         )),
         Line::from(format!(
-            " Weak {weak_count}/{} | Decay {retracement:.1}/{:.0}% | Ext {extreme_text}",
-            p.weak_bars, p.transition_pct
-        )),
-        Line::from(format!(
-            " Sess {session_text} | SqOff {} {:02}:{:02} | Entry {entry_restriction}",
+            " Dec {retracement:.1}/{:.0}% Ext {extreme_text} | SqOff {} {:02}:{:02} | DB {}",
+            p.transition_pct,
             if p.force_flat_at_session_end {
                 "ON"
             } else {
                 "OFF"
             },
             p.auto_sq_off_hour,
-            p.auto_sq_off_minute
-        )),
-        Line::from(format!(
-            " B{} K{}x{:.1} TR{} | DB {}",
-            p.sqz_length,
-            p.sqz_length_kc,
-            p.sqz_mult_kc,
-            if p.use_true_range { "ON" } else { "OFF" },
+            p.auto_sq_off_minute,
             deadband_label
         )),
         Line::from(format!(" Event {event} | Reason {reason}")),
@@ -909,14 +877,14 @@ fn render_live(
     control: &super::live_control::Control,
     instrument: &str,
     params: &MonitorParams,
-    elapsed: u64,
-    remaining: u64,
+    _elapsed: u64,
+    _remaining: u64,
 ) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Min(15),
+            Constraint::Length(1),
+            Constraint::Min(13),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -930,25 +898,17 @@ fn render_live(
     } else {
         "MONITORING"
     };
-    let header = vec![
-        Line::from(vec![
-            Span::styled(" MCX PURE SQZ ", Style::default().fg(Color::Yellow)),
-            Span::raw(format!(
-                "{instrument} | {phase} | LTP {price:.0} | {elapsed}s/{remaining}s | REAL {}",
-                if control.real { "ON" } else { "OFF" }
-            )),
-        ]),
-        Line::from(format!(
-            " Pos {} | Signals {} | Fills {} | forming preview; actions confirmed-close only",
+    let header = vec![Line::from(vec![
+        Span::styled(" MCX SQZ ", Style::default().fg(Color::Yellow)),
+        Span::raw(format!(
+            "{instrument} | {phase} | LTP {price:.0} | {} | Sig {} Fill {} | REAL {}",
             position_label(state.trade_monitor.side),
             state.signals.len(),
-            state.fills.len()
+            state.fills.len(),
+            if control.real { "ON" } else { "OFF" }
         )),
-    ];
-    frame.render_widget(
-        Paragraph::new(header).block(Block::default().borders(Borders::ALL)),
-        root[0],
-    );
+    ])];
+    frame.render_widget(Paragraph::new(header), root[0]);
     let main = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
