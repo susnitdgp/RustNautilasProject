@@ -584,8 +584,8 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Min(17),
+            Constraint::Length(4),
+            Constraint::Min(15),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -598,23 +598,19 @@ fn render_history(frame: &mut ratatui::Frame<'_>, app: &ReplayApp) {
     let realized: f64 = rows.iter().filter(|r| r.closed).map(|r| r.points).sum();
     let header = vec![
         Line::from(vec![
-            Span::styled(
-                " MCX CRUDE PURE SQZ v2.28.3 ",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" CONFIRMED-BAR STRATEGY"),
+            Span::styled(" MCX PURE SQZ ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(
+                "{} | {} {} | 5m | {}/{} | LTP {:.0}",
+                app.instrument,
+                app.date,
+                short_time(&current.timestamp),
+                app.index + 1,
+                app.frames.len(),
+                current.close
+            )),
         ]),
         Line::from(format!(
-            " {} | {} | {} | 5m | Bar {}/{} | LTP {:.0}",
-            app.instrument,
-            app.date,
-            short_time(&current.timestamp),
-            app.index + 1,
-            app.frames.len(),
-            current.close
-        )),
-        Line::from(format!(
-            " Position: {} | Realized: {realized:+.0} pt / {:+.0} INR | Actions: confirmed close only",
+            " Pos {} | Realized {realized:+.0} pt / {:+.0} INR | confirmed-close actions",
             position_label(current.monitor.position),
             realized * CONTRACT_MULTIPLIER
         )),
@@ -789,7 +785,6 @@ fn monitor_lines<'a>(
     } else {
         format!("{:.1}", p.entry_deadband)
     };
-    let bar_status = if confirmed { "CONFIRMED" } else { "FORMING" };
     let sqz_text = if ready {
         format!("{value:.1}")
     } else {
@@ -803,47 +798,45 @@ fn monitor_lines<'a>(
     } else {
         "OFF"
     };
-    let sqoff = if p.force_flat_at_session_end {
-        "ON"
-    } else {
-        "OFF"
-    };
     let separator = "─".repeat(usize::from(area_width.saturating_sub(4).clamp(8, 48)));
 
     let mut lines = vec![
         Line::from(format!(
-            " State {} | Bar {bar_status}",
-            position_label(position)
+            " State {} | Bar {}",
+            position_label(position),
+            if confirmed { "CONF" } else { "FORM" }
         )),
         Line::from(format!(" SQZ {sqz_text} | {}", momentum.label())),
         Line::from(format!(" Squeeze {squeeze} | Wave {wave}")),
         Line::from(format!(
-            " Entry {entry_text} Str {strength_count}/{} | Weak {weak_count}/{}",
-            p.entry_strength_bars, p.weak_bars
-        )),
-        Line::from(format!(
-            " ReEntry {} {reentries_used}/{}",
-            if reentry_armed { "ARMED" } else { "-" },
+            " Entry {entry_text} S{strength_count}/{} | ReEntry {} {reentries_used}/{}",
+            p.entry_strength_bars,
+            if reentry_armed { "ARM" } else { "-" },
             p.same_wave_reentry_limit
         )),
         Line::from(format!(
-            " Decay {retracement:.1}/{:.0}% | Extreme {extreme_text}",
-            p.transition_pct
+            " Weak {weak_count}/{} | Decay {retracement:.1}/{:.0}% | Ext {extreme_text}",
+            p.weak_bars, p.transition_pct
         )),
         Line::from(format!(
-            " Session {session_text} Entries {entry_restriction} | SqOff {sqoff} {:02}:{:02}",
-            p.auto_sq_off_hour, p.auto_sq_off_minute
+            " Sess {session_text} | SqOff {} {:02}:{:02} | Entry {entry_restriction}",
+            if p.force_flat_at_session_end {
+                "ON"
+            } else {
+                "OFF"
+            },
+            p.auto_sq_off_hour,
+            p.auto_sq_off_minute
         )),
         Line::from(format!(
-            " Inputs B{} K{}x{:.1} TR{} | DB {}",
+            " B{} K{}x{:.1} TR{} | DB {}",
             p.sqz_length,
             p.sqz_length_kc,
             p.sqz_mult_kc,
             if p.use_true_range { "ON" } else { "OFF" },
             deadband_label
         )),
-        Line::from(format!(" Event {event}")),
-        Line::from(format!(" Reason {reason}")),
+        Line::from(format!(" Event {event} | Reason {reason}")),
         Line::from(format!(" {separator}")),
     ];
     if let Some([open, high, low, close]) = ohlc {
@@ -922,8 +915,8 @@ fn render_live(
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Min(17),
+            Constraint::Length(4),
+            Constraint::Min(15),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -939,21 +932,17 @@ fn render_live(
     };
     let header = vec![
         Line::from(vec![
-            Span::styled(
-                " MCX CRUDE PURE SQZ v2.28.3 ",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" TICK DASHBOARD / CLOSE-ONLY ACTIONS"),
+            Span::styled(" MCX PURE SQZ ", Style::default().fg(Color::Yellow)),
+            Span::raw(format!(
+                "{instrument} | {phase} | LTP {price:.0} | {elapsed}s/{remaining}s | REAL {}",
+                if control.real { "ON" } else { "OFF" }
+            )),
         ]),
         Line::from(format!(
-            " {instrument} | {phase} | LTP {price:.0} | elapsed {elapsed}s / remaining {remaining}s"
-        )),
-        Line::from(format!(
-            " Position: {} | Signals: {} | Fills: {} | REAL ORDERS: {}",
+            " Pos {} | Signals {} | Fills {} | forming preview; actions confirmed-close only",
             position_label(state.trade_monitor.side),
             state.signals.len(),
-            state.fills.len(),
-            if control.real { "ENABLED" } else { "OFF" }
+            state.fills.len()
         )),
     ];
     frame.render_widget(
