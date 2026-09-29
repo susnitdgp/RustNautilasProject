@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, stdout},
     sync::atomic::Ordering,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use super::{
@@ -898,10 +898,11 @@ fn render_live(
     } else {
         "MONITORING"
     };
+    let bar_close_remaining = live_bar_close_remaining(state);
     let header = vec![Line::from(vec![
         Span::styled(" MCX SQZ ", Style::default().fg(Color::Yellow)),
         Span::raw(format!(
-            "{instrument} | {phase} | LTP {price:.0} | {} | Sig {} Fill {} | REAL {}",
+            "{instrument} | {phase} | LTP {price:.0} | {} | BarClose {bar_close_remaining} | Sig {} Fill {} | REAL {}",
             position_label(state.trade_monitor.side),
             state.signals.len(),
             state.fills.len(),
@@ -1095,6 +1096,26 @@ fn live_trade_rows(
     rows
 }
 
+fn format_bar_close_remaining(bar_close_ns: u64, now_ns: u64, confirmed: bool) -> String {
+    if confirmed || bar_close_ns <= now_ns {
+        return "--:--".into();
+    }
+    let remaining_ns = bar_close_ns - now_ns;
+    let seconds = remaining_ns.div_ceil(1_000_000_000);
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn live_bar_close_remaining(state: &super::squeeze_momentum_actor::State) -> String {
+    let Some(observation) = state.latest_strategy else {
+        return "--:--".into();
+    };
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+    format_bar_close_remaining(observation.bar_close_ns, now_ns, observation.confirmed)
+}
+
 fn live_price(state: &super::squeeze_momentum_actor::State) -> f64 {
     state
         .last_accepted_quote
@@ -1118,5 +1139,19 @@ mod tests {
         assert_eq!(exit_label("SELL", "zero_cross", 45.0), "QLX/ZERO");
         assert_eq!(exit_label("COVER", "sqz_transition", 45.0), "QSX/45%");
         assert_eq!(exit_label("SELL", "session_force_flat", 45.0), "SQOFF");
+    }
+
+    #[test]
+    fn bar_close_countdown_formats_forming_bar_only() {
+        let now = 1_000_000_000_000_u64;
+        assert_eq!(
+            format_bar_close_remaining(now + 277_100_000_000, now, false),
+            "04:38"
+        );
+        assert_eq!(format_bar_close_remaining(now, now, false), "--:--");
+        assert_eq!(
+            format_bar_close_remaining(now + 60_000_000_000, now, true),
+            "--:--"
+        );
     }
 }
