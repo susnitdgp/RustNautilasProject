@@ -131,7 +131,7 @@ mod tests {
         serde_json::from_str(r#"{
             "version":1,"broker_config":"config/kite.json","redis_prefix":"kite-dev",
             "instances":[
-                {"id":"crude-ilrc","enabled":true,"strategy":"ilrc","instrument":"CRUDEOIL26OCTFUT.MCX","instrument_token":123,"strategy_config":"config/crude.json","live_orders_enabled":false},
+                {"id":"crudeoil26oct-ilrc","enabled":true,"strategy":"ilrc","instrument":"CRUDEOIL26OCTFUT.MCX","instrument_token":123,"strategy_config":"config/crude.json","live_orders_enabled":false},
                 {"id":"gold-trend","enabled":true,"strategy":"trend","instrument":"GOLD26DEC.MCX","instrument_token":456,"strategy_config":"config/gold.json","live_orders_enabled":false}
             ]}"#).unwrap()
     }
@@ -141,14 +141,14 @@ mod tests {
         p.validate().unwrap();
         assert_eq!(p.tokens(), vec![123, 456]);
         assert_ne!(
-            p.key("crude-ilrc", "journal").unwrap(),
+            p.key("crudeoil26oct-ilrc", "journal").unwrap(),
             p.key("gold-trend", "journal").unwrap()
         );
     }
     #[test]
     fn fails_closed_on_duplicates_and_live_orders() {
         let mut p = sample();
-        p.instances[1].id = "crude-ilrc".into();
+        p.instances[1].id = "crudeoil26oct-ilrc".into();
         assert!(p.validate().is_err());
         p.instances[1].id = "gold-trend".into();
         p.instances[1].live_orders_enabled = true;

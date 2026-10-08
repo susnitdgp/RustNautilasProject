@@ -17,3 +17,7 @@ cargo run --locked -p kite-node -- native-portfolio-validate config/portfolio-de
 - Existing single-instrument ILRC live commands, private live credentials, and Redis journals are unchanged.
 
 **Not implemented yet:** WebSocket multi-token frame routing into per-instrument candle aggregators, independently supervised Nautilus strategy actors, account-wide risk reservation and cross-strategy order coordination, per-instance real broker execution/reconciliation, and portfolio dashboard. Until these are implemented and tested, use the existing single-instrument runner only as separately authorized.
+
+### Active research asset: standard CRUDEOIL October 2026
+
+The development portfolio selects `CRUDEOIL26OCTFUT.MCX` (Kite token `145894407`) using ID `crudeoil26oct-ilrc` and existing `config/production-ilrc.json`. Its *planned* Redis keys are `kite-dev:v1:{crudeoil26oct-ilrc}:journal` and `kite-dev:v1:{crudeoil26oct-ilrc}:owner`. These are independent from the legacy execution journal/ownership keys; this configuration validator does not create or migrate any Redis keys or run a Nautilus strategy. All portfolio live order gates remain false. Contract changes/rollovers require a new verified token and deliberate handling of old state.

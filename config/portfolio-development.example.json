@@ -13,7 +13,7 @@
       "live_orders_enabled": false
     },
     {
-      "id": "crude-ilrc",
+      "id": "crudeoil26oct-ilrc",
       "enabled": true,
       "strategy": "institutional_liquidity_reversal_continuation_v1",
       "instrument": "CRUDEOIL26OCTFUT.MCX",
