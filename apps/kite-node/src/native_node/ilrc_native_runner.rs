@@ -263,6 +263,7 @@ pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result
     )?;
     let run_id = UUID4::new();
     let market_price = Arc::new(AtomicI64::new(0));
+    let dashboard = super::ilrc_live_dashboard::shared();
     let mut control = Control::new(false).with_bar_ns(selection.interval.nanoseconds());
     control.real = true;
     let credentials = Arc::new(kite_adapter::credentials::redis::load_from_env()?);
@@ -296,7 +297,18 @@ pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result
             .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+10,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials)}))?;
         let mut node=builder.add_exec_client(Some("MCX".into()),Box::new(kite_adapter::execution::native_client::production::Factory),Box::new(kite_adapter::execution::native_client::production::LiveConfig{settings,instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),namespace:run_id.to_string(),stop_signal:control.done.clone()}))?.build()?;
         let bar_type:BarType=format!("{}-3-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
-        node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()))?;
+        node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()).with_dashboard(dashboard.clone()))?;
+        let dashboard_state=dashboard.clone();
+        let dashboard_instrument=instrument.id.to_string();
+        let refresh=tokio::spawn(async move {
+            let mut interval=tokio::time::interval(Duration::from_secs(2));
+            loop {
+                interval.tick().await;
+                if let Ok(state)=dashboard_state.lock(){
+                    super::ilrc_live_dashboard::render(&state,&dashboard_instrument,"REAL KITE",seconds);
+                }
+            }
+        });
         let handle=node.handle();
         let watcher_control=control.clone();
         let watcher=tokio::spawn(async move {
@@ -311,6 +323,7 @@ pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result
         println!("{}",serde_json::json!({"event":"ilrc_nautilus_live_started","namespace":run_id.to_string(),"instrument":instrument.id.to_string(),"live_orders_enabled":true,"execution":"Kite production client"}));
         let result=node.run_with_mode(NodeRunMode::Hosted).await;
         watcher.abort();
+        refresh.abort();
         result?;
         println!("{}",serde_json::json!({"event":"ilrc_nautilus_live_finished","namespace":run_id.to_string(),"execution":"Kite production client"}));
         Ok(())

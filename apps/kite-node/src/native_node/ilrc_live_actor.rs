@@ -4,7 +4,7 @@
 use super::{
     ilrc_backtest::{self, EntryEvent},
     ilrc_config::Selection,
-    ilrc_continuation_backtest,
+    ilrc_continuation_backtest, ilrc_live_dashboard,
     live_control::Control,
 };
 use anyhow::{Result, ensure};
@@ -60,6 +60,7 @@ pub struct IlrcActor {
     waiting_modify: bool,
     market_price: Arc<AtomicI64>,
     control: Option<Control>,
+    dashboard: Option<ilrc_live_dashboard::Shared>,
 }
 impl IlrcActor {
     pub fn new(
@@ -91,11 +92,28 @@ impl IlrcActor {
             waiting_modify: false,
             market_price,
             control: None,
+            dashboard: None,
         }
     }
     pub fn with_control(mut self, control: Control) -> Self {
         self.control = Some(control);
         self
+    }
+    pub fn with_dashboard(mut self, dashboard: ilrc_live_dashboard::Shared) -> Self {
+        self.dashboard = Some(dashboard);
+        self
+    }
+    fn dashboard_update(&self, event: &str) {
+        if let Some(shared) = &self.dashboard
+            && let Ok(mut d) = shared.lock()
+        {
+            d.position = self.position();
+            d.stop = self
+                .accepted_stop
+                .and(self.protection.as_ref().map(|p| p.stop));
+            d.target = self.protection.as_ref().map(|p| p.target);
+            d.event = event.to_owned();
+        }
     }
     fn position(&self) -> f64 {
         self.cache()
@@ -113,6 +131,12 @@ impl IlrcActor {
     fn fail_closed(&mut self, reason: &str) {
         eprintln!("ILRC EXECUTION HALTED: {reason}");
         self.awaiting_exit = true; // prevent further entries; broker exposure must be reconciled manually.
+        if let Some(shared) = &self.dashboard
+            && let Ok(mut d) = shared.lock()
+        {
+            d.fault = Some(reason.to_owned());
+            d.event = "HALTED".into();
+        }
     }
     fn signal(&self) -> Result<Option<EntryEvent>> {
         let selected = &self.selection;
@@ -140,6 +164,7 @@ impl IlrcActor {
             self.waiting_cancel_for_exit = false;
             self.awaiting_exit = false;
             self.protection = None;
+            self.dashboard_update("Exit filled");
             return Ok(());
         }
         ensure!(p.abs() == 1.0, "ILRC position exceeds one contract");
@@ -251,6 +276,12 @@ impl IlrcActor {
         if let Some(control) = &self.control {
             control.flat.store(false, Ordering::Release);
         }
+        if let Some(shared) = &self.dashboard
+            && let Ok(mut d) = shared.lock()
+        {
+            d.setup = format!("{} {}", signal.setup, signal.side);
+            d.event = "Entry order submitted".into();
+        }
         self.entry_signal = Some(signal);
         self.pending_entry = Some(id);
         self.submit_order(order, None, None, None)?;
@@ -319,6 +350,13 @@ impl DataActor for IlrcActor {
             .with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"));
         self.market_price
             .store(bar.close.as_f64().round() as i64, Ordering::Release);
+        if let Some(shared) = &self.dashboard
+            && let Ok(mut d) = shared.lock()
+        {
+            d.bars += 1;
+            d.last_price = bar.close.as_f64();
+            d.last_bar = dt.format("%d-%m %H:%M").to_string();
+        }
         self.candles.push(Candle {
             timestamp: dt.to_rfc3339(),
             open: bar.open.as_f64(),
@@ -376,6 +414,7 @@ nautilus_strategy!(IlrcActor, {
                 serde_json::json!({"event":"ilrc_native_stop_accepted","client_order_id":e.client_order_id.to_string()})
             );
             self.accepted_stop = self.pending_stop.take();
+            self.dashboard_update("Protective stop accepted");
         }
     }
     fn on_order_filled(&mut self, e: &OrderFilled) {
@@ -436,6 +475,7 @@ nautilus_strategy!(IlrcActor, {
             );
             let id = order.client_order_id();
             self.pending_stop = Some(id);
+            self.dashboard_update("Entry filled, protective stop pending");
             if self.submit_order(order, None, None, None).is_err() {
                 self.fail_closed("Protective stop submission failed");
             }
@@ -470,6 +510,7 @@ nautilus_strategy!(IlrcActor, {
                 p.be_sent = true;
                 p.stop = p.entry;
             }
+            self.dashboard_update("Stop moved to break-even");
         }
     }
     fn on_order_canceled(&mut self, e: &OrderCanceled) {
@@ -480,6 +521,7 @@ nautilus_strategy!(IlrcActor, {
             );
             self.accepted_stop = None;
             self.waiting_cancel_for_exit = false;
+            self.dashboard_update("Protective stop canceled; exit pending");
             if self.submit_exit().is_err() {
                 self.fail_closed("Exit after confirmed stop cancellation failed");
             }

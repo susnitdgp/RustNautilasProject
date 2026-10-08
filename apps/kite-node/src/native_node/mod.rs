@@ -24,6 +24,7 @@ mod ilrc_dashboard;
 mod ilrc_kite_adapter;
 #[allow(dead_code)]
 mod ilrc_live_actor;
+mod ilrc_live_dashboard;
 mod ilrc_live_readiness;
 mod ilrc_mock_execution;
 mod ilrc_native_runner;
