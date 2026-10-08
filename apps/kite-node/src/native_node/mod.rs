@@ -52,6 +52,7 @@ mod live_control;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 mod live_data;
+mod ws_candles;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 mod live_lease;

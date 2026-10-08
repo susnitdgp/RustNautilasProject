@@ -91,7 +91,7 @@ pub fn run_mock(config: &str, seconds: u64) -> Result<()> {
         cfg.risk_engine.max_notional_per_order.insert(instrument.id.to_string(),"2000000".into());
         let builder=LiveNodeBuilder::from_config(cfg)?.with_cache_database_factory(Box::new(super::redis_cache::Factory(redis)))
             .add_data_client(Some("STBARS".into()),Box::new(live_data::Factory),Box::new(feed))?
-            .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+10,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials)}))?;
+            .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+10,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials),live_bars:None}))?;
         let mut node=builder.add_exec_client(Some("MCX".into()),Box::new(kite_adapter::execution::native_client::mock::MockFactory),Box::new(kite_adapter::execution::native_client::mock::MockConfig{namespace:run_id.to_string(),account_id:account_id.clone(),stop_signal:control.done.clone(),product:"MIS".into(),instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),instrument_token:selection.instrument_token,market_price:Some(market_price.clone())}))?.build()?;
         let bar_type:BarType=format!("{}-3-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()))?;
@@ -269,6 +269,7 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         &selection.session_calendar,
         selection.interval,
     )?;
+    let start_ns = live_bars::close_for(warmup.last().expect("warmup"), selection.interval)?;
     println!("[PASS] Historical candle warmup");
     let run_id = UUID4::new();
     let market_price = Arc::new(AtomicI64::new(0));
@@ -276,19 +277,6 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
     let mut control = Control::new(false).with_bar_ns(selection.interval.nanoseconds());
     control.real = true;
     let credentials = Arc::new(kite_adapter::credentials::redis::load_from_env()?);
-    let feed = live_data::Config {
-        instrument: instrument.clone(),
-        token: selection.instrument_token,
-        date,
-        calendar: selection.session_calendar.clone(),
-        interval: selection.interval,
-        volume_sensitive: false,
-        synthetic_delay_ms: 60,
-        warmup,
-        simulated: Vec::new(),
-        control: control.clone(),
-        emit_intrabar_ticks: false,
-    };
     let redis = persistence::redis_config()?;
     ensure!(
         settings.instrument_token == selection.instrument_token,
@@ -303,8 +291,7 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         cfg.exec_engine.reconciliation=false;
         cfg.risk_engine.max_notional_per_order.insert(instrument.id.to_string(),"2000000".into());
         let builder=LiveNodeBuilder::from_config(cfg)?.with_cache_database_factory(Box::new(super::redis_cache::Factory(redis)))
-            .add_data_client(Some("STBARS".into()),Box::new(live_data::Factory),Box::new(feed))?
-            .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+120,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials)}))?;
+            .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+120,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials),live_bars:Some((warmup.clone(),start_ns,control.clone()))}))?;
         let mut node=builder.add_exec_client(Some("MCX".into()),Box::new(kite_adapter::execution::native_client::production::Factory),Box::new(kite_adapter::execution::native_client::production::LiveConfig{settings,instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),namespace:run_id.to_string(),stop_signal:control.done.clone()}))?.build()?;
         let bar_type:BarType=format!("{}-3-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()).with_dashboard(dashboard.clone()))?;

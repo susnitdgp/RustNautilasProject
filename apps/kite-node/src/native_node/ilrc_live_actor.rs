@@ -290,7 +290,18 @@ impl IlrcActor {
 }
 impl DataActor for IlrcActor {
     fn on_start(&mut self) -> Result<()> {
-        self.subscribe_bars(self.bar_type, Some("STBARS".into()), None);
+        self.subscribe_bars(
+            self.bar_type,
+            Some(
+                if self.control.as_ref().is_some_and(|c| c.real) {
+                    "KITE"
+                } else {
+                    "STBARS"
+                }
+                .into(),
+            ),
+            None,
+        );
         self.subscribe_quotes(self.bar_type.instrument_id(), Some("KITE".into()), None);
         if self.control.is_some() {
             self.clock().set_timer_ns(

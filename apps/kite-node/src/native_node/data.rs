@@ -19,7 +19,10 @@ use nautilus_common::{
     live::get_data_event_sender,
     messages::{
         DataEvent,
-        data::{SubscribeCustomData, SubscribeQuotes, UnsubscribeCustomData, UnsubscribeQuotes},
+        data::{
+            SubscribeBars, SubscribeCustomData, SubscribeQuotes, UnsubscribeBars,
+            UnsubscribeCustomData, UnsubscribeQuotes,
+        },
     },
 };
 use nautilus_model::{
@@ -41,6 +44,11 @@ pub struct Config {
     pub short_fixture: bool,
     pub sandbox_user: Option<String>,
     pub credentials: Option<Arc<KiteCredentials>>,
+    pub live_bars: Option<(
+        Vec<kite_adapter::http::historical::Candle>,
+        u64,
+        super::live_control::Control,
+    )>,
 }
 impl ClientConfig for Config {
     fn as_any(&self) -> &dyn Any {
@@ -136,11 +144,71 @@ impl Client {
         let socket = self.socket.take();
         let tx = get_data_event_sender();
         self.task = Some(tokio::spawn(async move {
+            let bar_type: Option<nautilus_model::data::BarType> = config
+                .live_bars
+                .as_ref()
+                .map(|_| format!("{}-3-MINUTE-LAST-EXTERNAL", config.instrument.id).parse())
+                .transpose()
+                .expect("bar type");
+            let mut candle_agg = config
+                .live_bars
+                .as_ref()
+                .map(|(_, last, _)| super::ws_candles::Aggregator::new(*last));
+            if let (Some((warmup, _, _)), Some(bt)) = (&config.live_bars, bar_type) {
+                for bar in warmup {
+                    match super::live_bars::bar_for(
+                        bar,
+                        bt,
+                        now(),
+                        kite_adapter::http::historical::Interval::ThreeMinute,
+                    ) {
+                        Ok(v) => {
+                            let _ = tx.send(DataEvent::Data(Data::Bar(v)));
+                        }
+                        Err(e) => {
+                            eprintln!("Warmup bar failed: {e}");
+                            return;
+                        }
+                    }
+                }
+            }
             if let Some(credentials) = config.credentials {
                 let on_event = |e| match e {
                     FeedEvent::Connected { generation } => status(&tx, "connected", generation),
-                    FeedEvent::Gap { generation } => status(&tx, "gap", generation),
-                    FeedEvent::Snapshot(s) => emit(&tx, *s, &config.instrument),
+                    FeedEvent::Gap { generation } => {
+                        if let Some((_, _, control)) = &config.live_bars {
+                            control.fail("WebSocket feed gap: manual review required");
+                        }
+                        status(&tx, "gap", generation)
+                    }
+                    FeedEvent::Snapshot(s) => {
+                        if let (Some(agg), Some(bt)) = (&mut candle_agg, bar_type) {
+                            match agg.observe(&s) {
+                                Ok(Some(c)) => match super::live_bars::bar_for(
+                                    &c,
+                                    bt,
+                                    now(),
+                                    kite_adapter::http::historical::Interval::ThreeMinute,
+                                ) {
+                                    Ok(b) => {
+                                        let _ = tx.send(DataEvent::Data(Data::Bar(b)));
+                                    }
+                                    Err(e) => {
+                                        if let Some((_, _, ctrl)) = &config.live_bars {
+                                            ctrl.fail(&format!("WebSocket bar conversion: {e}"));
+                                        }
+                                    }
+                                },
+                                Ok(None) => {}
+                                Err(e) => {
+                                    if let Some((_, _, ctrl)) = &config.live_bars {
+                                        ctrl.fail(&format!("WebSocket candle invalid: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                        emit(&tx, *s, &config.instrument)
+                    }
                 };
                 let socket = socket.expect("live socket connected");
                 let outcome = if let Some(user) = config.sandbox_user {
@@ -273,6 +341,19 @@ impl DataClient for Client {
         }
     }
     fn unsubscribe(&mut self, _: &UnsubscribeCustomData) -> Result<()> {
+        Ok(())
+    }
+    fn subscribe_bars(&mut self, cmd: SubscribeBars) -> Result<()> {
+        ensure!(
+            self.config.live_bars.is_some(),
+            "Live bar aggregation not configured"
+        );
+        let bt: nautilus_model::data::BarType =
+            format!("{}-3-MINUTE-LAST-EXTERNAL", self.config.instrument.id).parse()?;
+        ensure!(cmd.bar_type == bt, "Invalid live Kite bar subscription");
+        self.begin()
+    }
+    fn unsubscribe_bars(&mut self, _: &UnsubscribeBars) -> Result<()> {
         Ok(())
     }
     fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> Result<()> {
