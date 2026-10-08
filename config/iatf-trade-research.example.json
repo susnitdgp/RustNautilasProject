@@ -1,0 +1,10 @@
+{
+  "instrument_token": 145894663,
+  "quantity": 10.0,
+  "stop_points": 12.0,
+  "trail_points": 18.0,
+  "slippage_points_per_side": 1.0,
+  "fees_per_round_trip": 15.0,
+  "max_holding_minutes": 90,
+  "entry_cutoff_ist": "23:15"
+}

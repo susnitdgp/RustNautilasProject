@@ -20,7 +20,7 @@ fn efficiency(history: &[f64], lookback: usize) -> Option<f64> {
 fn aligned_date(c: &Candle) -> Result<NaiveDate> {
     Ok(c.time()?.date_naive())
 }
-async fn month(token: u32, interval: Interval) -> Result<Vec<Candle>> {
+pub(super) async fn month(token: u32, interval: Interval) -> Result<Vec<Candle>> {
     let mut reader = historical::Reader::default();
     let a = reader
         .fetch_window_for(
