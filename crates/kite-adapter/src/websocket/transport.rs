@@ -58,6 +58,20 @@ pub async fn subscribe(socket: &mut Socket, token: u32, deadline: Instant) -> Re
     Ok(())
 }
 
+/// Subscribe all configured tokens over the same authenticated WebSocket.
+pub async fn subscribe_many(socket: &mut Socket, tokens: &[u32], deadline: Instant) -> Result<()> {
+    for message in subscription::multi_messages(tokens)? {
+        timeout_at(
+            deadline.min(Instant::now() + Duration::from_secs(3)),
+            socket.send(Message::Text(message.into())),
+        )
+        .await
+        .map_err(|_| anyhow!("Kite multi-token subscription timed out"))?
+        .map_err(|_| anyhow!("Kite multi-token subscription send failed"))?;
+    }
+    Ok(())
+}
+
 pub async fn next(socket: &mut Socket, deadline: Instant) -> Result<Option<Message>> {
     timeout_at(deadline, socket.next())
         .await

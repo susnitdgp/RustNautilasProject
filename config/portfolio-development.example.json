@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "broker_config": "config/kite-ilrc-live.json",
+  "redis_prefix": "kite-dev",
+  "instances": [
+    {
+      "id": "crude-ilrc",
+      "strategy": "institutional_liquidity_reversal_continuation_v1",
+      "instrument": "CRUDEOIL26OCTFUT.MCX",
+      "instrument_token": 145894407,
+      "strategy_config": "config/production-ilrc.json",
+      "live_orders_enabled": false
+    }
+  ]
+}

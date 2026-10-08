@@ -6,6 +6,7 @@ mod bar_timing;
 #[allow(dead_code)]
 pub mod catalog;
 pub mod cli;
+mod portfolio;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 pub mod data;
