@@ -22,6 +22,7 @@ mod ilrc_causal_audit;
 mod ilrc_config;
 mod ilrc_continuation_backtest;
 mod ilrc_dashboard;
+mod ilrc_gate_audit;
 #[allow(dead_code)]
 mod ilrc_kite_adapter;
 #[allow(dead_code)]

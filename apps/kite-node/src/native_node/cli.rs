@@ -10,6 +10,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-ilrc-websocket-validate",[token,seconds])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|t|seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|v|super::ws_validation::run(t,v))),
         ("native-ilrc-research",[name,token,lot,is_crude,open,close])=>ilrc_research(name,token,lot,is_crude,open,close),
         ("native-ilrc-date",[name,token,lot,is_crude,open,close,date])=>ilrc_date(name,token,lot,is_crude,open,close,date),
+        ("native-ilrc-gate-audit",[token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(super::ilrc_gate_audit::run),
         ("native-ilrc-config-date",[config,date])=>super::ilrc_backtest::run_config_date(config,date),
         ("native-ilrc-production-check",[config,broker])=>super::ilrc_config::production_check(config,broker),
         ("native-ilrc-causal-audit",[config,file,date])=>super::ilrc_causal_audit::run(config,file,date),
