@@ -6,7 +6,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match(command,&args[1..]){
-        ("native-amd-export",[token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(super::amd_data::export),
+        ("native-amd-export",[token,minutes])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|t|minutes.parse::<u32>().map_err(anyhow::Error::from).and_then(|m|super::amd_data::export(t,m))),
         ("native-portfolio-validate",[config])=>super::portfolio::inspect(config),
         ("native-kite-auth",[])=>kite_adapter::auth::login::interactive().map(|r|println!("{}",serde_json::json!({"event":"kite_access_token_updated","user_id":r.user_id,"redis_key":"susanta:kite_access_token","access_token_printed":false}))),
         ("native-kite-auth-login-url",[])=>kite_adapter::auth::login::login_url().map(|url|println!("{url}")),

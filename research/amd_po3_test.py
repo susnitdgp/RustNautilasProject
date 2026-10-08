@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Research-only AMD Po3 15m approximation (not byte-for-byte TradingView execution)."""
+"""Research-only AMD Po3 adjustable timeframe approximation."""
 import json,datetime as D,math,collections,os
+MINUTES=int(os.environ.get("AMD_MINUTES",15))
+assert MINUTES in (3,5,15)
 SLIP=float(os.environ.get("AMD_SLIPPAGE",0.5))
 COST=float(os.environ.get("AMD_COST",2.0))
 assert 0<=SLIP<=10 and 0<=COST<=20
 from pathlib import Path
-raw=json.load(open('/tmp/amd_crudeoil_5m.json'))
+raw=json.load(open('/tmp/amd_crudeoil_5m.json' if MINUTES!=3 else '/tmp/amd_crudeoil_3m.json'))
 parse=lambda x:D.datetime.strptime(x['timestamp'][:19],'%Y-%m-%dT%H:%M:%S')
 groups=collections.OrderedDict()
 for x in raw:
- t=parse(x);key=(str(t.date()),(t.hour*60+t.minute-540)//15)
+ t=parse(x);key=(str(t.date()),(t.hour*60+t.minute-540)//MINUTES)
  groups.setdefault(key,[]).append(x)
 b=[]
+expected=3 if MINUTES==15 else 1
 for vals in groups.values():
- if len(vals)!=3:continue
- if any((parse(vals[k])-parse(vals[0])).total_seconds()!=300*k for k in range(3)):continue
+ if len(vals)!=expected:continue
+ if any((parse(vals[k])-parse(vals[0])).total_seconds()!=k*(MINUTES//expected)*60 for k in range(expected)):continue
  b.append(dict(t=parse(vals[0]),o=vals[0]['open'],h=max(v['high'] for v in vals),l=min(v['low'] for v in vals),c=vals[-1]['close']))
 assert len(b)>2000
 widths=[];atr=0;prev=None;ph=[];pl=[];state='idle';last_end=-99;R={};sw={};pos=None;trades=[];cnt=collections.Counter()
@@ -101,5 +104,5 @@ for month in ['2026-09','2026-10']:
  for day,v in sorted(pnl.items()):equity+=v;high=max(high,equity);dd=max(dd,high-equity)
  gp=sum(max(t['net'],0) for t in a);gl=-sum(min(t['net'],0) for t in a)
  months[month]={'trades':len(a),'wins':sum(t['net']>0 for t in a),'net_points':sum(t['net'] for t in a),'profit_factor':gp/gl if gl else None,'daily_drawdown':dd,'daily':dict(pnl)}
-result={'contract':'CRUDEOIL26OCTFUT.MCX','15m_bars':len(b),'events':dict(cnt),'months':months,'trades':trades,'model':f'AMD Po3 default-rule approximation; next 15m open entry; {SLIP} slippage per side; {COST} points round trip cost','limitations':'Not exact TradingView replay; approximated pivots, ATR reference and percentile rank; OHLC stop ordering and session closes not broker fills'}
+result={'contract':'CRUDEOIL26OCTFUT.MCX','bars':len(b),'timeframe_minutes':MINUTES,'events':dict(cnt),'months':months,'trades':trades,'model':f'AMD Po3 default-rule approximation; next candle open entry; {SLIP} slippage per side; {COST} points round trip cost','limitations':'Not exact TradingView replay; approximated pivots, ATR reference and percentile rank; OHLC stop ordering and session closes not broker fills'}
 print(json.dumps(result,indent=2))
