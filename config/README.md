@@ -1,22 +1,8 @@
-# Active configuration
+# ILRC production configurations
 
-The active strategy is **MCX Crude Smart Money Breakout Channels v1.7**.
+- `production-ilrc.json`: ILRC Combined 3-minute CRUDEOIL profile; live orders disabled.
+- `kite-production.json`: local broker configuration; `live_orders_enabled` must remain `false`. Never commit secrets.
+- `kite-production.example.json`: broker settings example with live orders disabled.
+- `ilrc-live-integration.json`: fail-closed mock integration readiness policy, **not** an authorization for live trading.
 
-- `production-smbc.json` — authoritative SMBC strategy profile and risk/trade parameters.
-- `kite-production.json` — private/local Kite broker settings.
-- `kite-production.example.json` — safe broker-settings template with live orders disabled.
-- `kite-sandbox.example.toml` — sandbox configuration template.
-
-The committed SMBC strategy gate is intentionally disabled while parity/paper verification is in progress.
-
-Verify:
-
-```bash
-./deploy/verify-smbc-v17.sh
-```
-
-Read-only Kite full-tick recording:
-
-```bash
-./deploy/record-smbc-ticks.sh 3600
-```
+Run `bash deploy/verify-ilrc-production.sh` for the manual shadow profile and `bash deploy/verify-ilrc-live-integration.sh` for mock readiness checks. See `doc/ILRCv1.md` for limitations.

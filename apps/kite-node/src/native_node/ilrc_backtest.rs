@@ -275,6 +275,17 @@ fn crude_leg_charges(price: f64, is_buy: bool) -> f64 {
     brokerage + transaction + sebi + ctt + stamp + gst
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EntryEvent {
+    pub setup: &'static str,
+    pub entry_time: String,
+    pub observed_at: String,
+    pub side: &'static str,
+    pub entry: f64,
+    pub stop: f64,
+    pub target: f64,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn simulate_with_quality(
     name: &str,
@@ -287,7 +298,36 @@ fn simulate_with_quality(
     p: Params,
     gates: QualityGates,
 ) -> Result<(Summary, Vec<Trade>)> {
-    ensure!(bars.len() > 100, "insufficient bars");
+    simulate_with_quality_events(
+        name,
+        bars,
+        minutes,
+        session_open,
+        session_close,
+        lot,
+        is_crude,
+        p,
+        gates,
+        &mut Vec::new(),
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn simulate_with_quality_events(
+    name: &str,
+    bars: &[Candle],
+    minutes: u64,
+    session_open: u32,
+    session_close: u32,
+    lot: u32,
+    is_crude: bool,
+    p: Params,
+    gates: QualityGates,
+    events: &mut Vec<EntryEvent>,
+    incremental: bool,
+) -> Result<(Summary, Vec<Trade>)> {
+    ensure!(incremental || bars.len() > 100, "insufficient bars");
     use chrono::Timelike;
     let mut trs = VecDeque::new();
     let mut bodies = VecDeque::new();
@@ -488,6 +528,16 @@ fn simulate_with_quality(
                             && risk <= a * p.max_stop_atr
                             && reward >= risk * p.min_rr
                         {
+                            events.push(EntryEvent {
+                                setup: "A",
+                                entry_time: t.to_rfc3339(),
+                                observed_at: (t + chrono::Duration::minutes(minutes as i64))
+                                    .to_rfc3339(),
+                                side: if q.side > 0 { "LONG" } else { "SHORT" },
+                                entry,
+                                stop: raw_sl,
+                                target: q.target_liquidity,
+                            });
                             position = Some((
                                 q.side,
                                 entry,
@@ -777,6 +827,27 @@ pub fn run_date(
         date,
         Params::default(),
     )
+}
+
+pub fn entry_events_config_candles(
+    selection: &super::ilrc_config::Selection,
+    candles: &[Candle],
+) -> Result<Vec<EntryEvent>> {
+    let mut events = Vec::new();
+    let _ = simulate_with_quality_events(
+        &selection.symbol,
+        candles,
+        3,
+        selection.session_open_minute,
+        selection.entry_cutoff_minute,
+        100,
+        true,
+        selection.ilrc,
+        QualityGates::default(),
+        &mut events,
+        true,
+    )?;
+    Ok(events)
 }
 
 pub fn evaluate_config_candles(

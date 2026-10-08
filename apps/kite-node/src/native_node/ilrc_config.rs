@@ -109,6 +109,10 @@ pub fn production_check(config: &str, broker: &str) -> Result<()> {
         .get("live_orders_enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    ensure!(
+        !broker_live,
+        "ILRC production-shadow deployment requires broker live_orders_enabled=false"
+    );
     println!(
         "{}",
         serde_json::json!({

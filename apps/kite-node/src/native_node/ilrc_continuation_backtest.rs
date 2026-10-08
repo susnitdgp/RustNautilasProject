@@ -140,8 +140,17 @@ fn crude_leg_charges(price: f64, is_buy: bool) -> f64 {
 }
 
 fn simulate(bars: &[Candle], target_r: f64) -> Result<Vec<Trade>> {
+    simulate_with_events(bars, target_r, &mut Vec::new(), false)
+}
+
+fn simulate_with_events(
+    bars: &[Candle],
+    target_r: f64,
+    events: &mut Vec<super::ilrc_backtest::EntryEvent>,
+    incremental: bool,
+) -> Result<Vec<Trade>> {
     use chrono::Timelike;
-    ensure!(bars.len() > 100, "insufficient bars");
+    ensure!(incremental || bars.len() > 100, "insufficient bars");
 
     const ATR_LEN: usize = 14;
     const BODY_LEN: usize = 20;
@@ -312,6 +321,15 @@ fn simulate(bars: &[Candle], target_r: f64) -> Result<Vec<Trade>> {
                         let risk = (entry - raw_stop) * q.side as f64;
                         if risk >= a * MIN_STOP_ATR && risk <= a * MAX_STOP_ATR {
                             let target = entry + q.side as f64 * risk * target_r;
+                            events.push(super::ilrc_backtest::EntryEvent {
+                                setup: "B",
+                                entry_time: t.to_rfc3339(),
+                                observed_at: (t + chrono::Duration::minutes(3)).to_rfc3339(),
+                                side: if q.side > 0 { "LONG" } else { "SHORT" },
+                                entry,
+                                stop: raw_stop,
+                                target,
+                            });
                             position = Some(Position {
                                 side: q.side,
                                 entry,
@@ -372,6 +390,15 @@ fn simulate(bars: &[Candle], target_r: f64) -> Result<Vec<Trade>> {
         }
     }
     Ok(trades)
+}
+
+pub fn entry_events_candles(
+    candles: &[Candle],
+    target_r: f64,
+) -> Result<Vec<super::ilrc_backtest::EntryEvent>> {
+    let mut events = Vec::new();
+    let _ = simulate_with_events(candles, target_r, &mut events, true)?;
+    Ok(events)
 }
 
 pub fn evaluate_candles(candles: &[Candle], target_r: f64, date: &str) -> Result<Vec<Trade>> {

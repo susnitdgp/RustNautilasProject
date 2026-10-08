@@ -1,0 +1,11 @@
+{
+  "mode": "integration_dry_run",
+  "live_orders_enabled": false,
+  "max_open_positions": 1,
+  "setup_a_priority_on_tie": true,
+  "require_broker_reconciliation": true,
+  "require_broker_protective_stop": true,
+  "require_duplicate_order_protection": true,
+  "require_kill_switch": true,
+  "require_causal_entry_signals": true
+}

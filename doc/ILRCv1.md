@@ -1,45 +1,55 @@
-# ILRC v1 — selected 3-minute research/paper profile
+# ILRC Combined — 3-minute CRUDEOIL
 
-Selected instrument: `CRUDEOIL26OCTFUT.MCX`  
-Timeframe: **3 minutes**  
-Contracts: **1**  
-Live orders: **disabled**
+**Status:** production-shadow and broker-free mock testing only. Real order submission is disabled; `live_execution_ready=false`. Selected instrument `CRUDEOIL26OCTFUT.MCX`, 1 contract, October 19, 2026 expiry. Review expiry/calendar before reuse.
 
-ILRC v1 is an objective liquidity-event strategy:
+## Strategy
 
-1. Sweep previous-day or confirmed 20-bar swing liquidity.
-2. Require displacement within three bars.
-3. Require internal structure break and VWAP-side confirmation.
-4. Enter only on a retracement within five bars.
-5. Place structural stop beyond the sweep with a 0.15 ATR buffer.
-6. Reject stops outside 0.5–1.5 ATR.
-7. Require at least 1.5R to the nearest opposing external liquidity.
-8. Force session flattening; no live broker-order path is authorized.
+**Setup A — liquidity sweep reversal:** previous-day or 20-bar swing liquidity sweep, displacement and VWAP/internal structure confirmation, five-bar retracement, structural stop with 0.15 ATR buffer, opposing-liquidity target, and stop moved to break-even after +1R (effective next bar). Stops outside 0.5–1.5 ATR and rewards below 1.5R are rejected.
 
-Current selected parameters live in `config/production-ilrc.json`.
+**Setup B — continuation:** 20-bar structure break, displacement with VWAP alignment, retracement entry, 3R target and break-even at +1R. Active A blocks B and vice versa; A has priority for equal entry timestamps. This is a shadow/backtest portfolio policy, not a completed broker-order arbiter.
 
-Research evidence so far is promising but statistically small. This profile is therefore selected for paper/research validation only. SMBC remains available as a separate fallback implementation.
+## Manual production-shadow use
 
+```bash
+cargo build --release --locked -p kite-node
+bash deploy/verify-ilrc-production.sh
+bash deploy/run-ilrc-production-shadow.sh
+```
 
-## Break-even protection
+Run in a terminal; stop with Ctrl+C. The launcher checks strategy and broker live-order gates. It loads no execution client and sends no broker orders. A systemd template exists for optional future use, but is not installed or started by the manual workflow. Its installer does not start or enable it.
 
-The selected production profile uses a conservative single-contract break-even rule:
+## Build and mock verification
 
-- After an open trade reaches **+1.0R** in favorable excursion, the stop moves to the entry price.
-- The move applies from the **next completed bar**; the trigger bar is still evaluated against the original stop.
-- The original opposing-liquidity target remains unchanged.
-- No partial profit-taking or trailing stop is used.
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+bash deploy/verify-ilrc-live-integration.sh
+cargo run --locked -p kite-node -- native-ilrc-mock-execution
+```
 
-This was adopted after cross-contract CRUDE research because it reduced failed follow-through losses without increasing trade frequency. Liquidity-pool strength, Mirage-style sweep scoring, displacement close-quality, and SATS efficiency-ratio filters remain research-only because they did not improve results consistently across the tested expiries.
+The live-readiness command is intentionally fail-closed. The mock does not connect to Kite order execution.
 
+## Historical replay commands
 
-## Combined production-shadow profile
+Create a read-only Kite historical fixture locally (fixture is not tracked in Git):
 
-The selected shadow profile evaluates two setup families under one-position-at-a-time arbitration:
+```bash
+cargo run --locked -p kite-node -- native-ilrc-causal-audit config/production-ilrc.json --fetch 2026-10-07
+```
 
-1. Setup A - ILRC reversal: liquidity sweep, displacement, retracement, opposing-liquidity target, break-even after +1R.
-2. Setup B - ILRC continuation: 20-bar external structure break, ILRC-strength displacement, VWAP-aligned retracement entry, 3R target, break-even after +1R.
+With `data/ilrc-test/real-2026-10-07.json` present:
 
-If both overlap, the active trade blocks later candidates. On identical entry timestamps Setup A has priority. Shadow history labels exits A_TP/A_SL/A_BE/A_EOD or B_TP/B_SL/B_BE/B_EOD.
+```bash
+cargo run --locked -p kite-node -- native-ilrc-causal-audit config/production-ilrc.json data/ilrc-test/real-2026-10-07.json 2026-10-07
+cargo run --locked -p kite-node -- native-ilrc-timed-mock config/production-ilrc.json data/ilrc-test/real-2026-10-07.json 2026-10-07
+cargo run --locked -p kite-node -- native-ilrc-timed-scenario config/production-ilrc.json data/ilrc-test/real-2026-10-07.json 2026-10-07 0.5 0
+```
 
-This remains a production-shadow profile only. Live order submission is disabled.
+The scenario's final two arguments are adverse slippage points per execution side and kill-switch bar index (`0` means no kill). The scenario simulates an on-disk checkpoint round-trip, restart equivalence and an in-process kill switch; it does **not** implement production Redis journals, external-order reconciliation or a broker liquidation kill switch.
+
+## October 7 findings and limitations
+
+The completed-trade backtest showed 5 trades and +68.93 gross points. The next-bar-open timed mock showed 5 fills, +5.80 gross points at zero slippage and about +0.80 gross points with 0.5 adverse points on entries and exits, **before transaction charges**. The entry-event audit verified historical prefix consistency, not executable intrabar fills. The timed mock does not model same-fill-candle exits, queue position, complete broker fees, partial fills, acknowledgments, downtime, or real broker position state. These simulations are not forecasts of achievable live P&L.
+
+**Live execution is not production-ready.** Real-time causal decision delivery, broker order lifecycle, persistent Redis order state, protective order reconciliation, crash recovery, and kill-switch behavior still require implementation and testing. Do not change `live_orders_enabled` to true; do not load an execution client as part of the shadow runner.

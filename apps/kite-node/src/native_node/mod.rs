@@ -1,39 +1,63 @@
 pub mod backtest_report;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod bar_timing;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 pub mod catalog;
 pub mod cli;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 pub mod data;
 mod execution_session;
 pub mod full_codec;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod history_revision;
 mod ilrc_backtest;
+mod ilrc_causal_audit;
 mod ilrc_config;
 mod ilrc_continuation_backtest;
 mod ilrc_dashboard;
+mod ilrc_live_readiness;
+mod ilrc_mock_execution;
 mod ilrc_shadow;
+mod ilrc_timed_mock;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 pub mod lifecycle;
-mod liquidity_pools_backtest;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod live_bars;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod live_control;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod live_data;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod live_lease;
-mod mirage_backtest;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod owner_monitor;
 pub mod persistence;
-mod production;
 pub mod recovery;
 pub mod redis_cache;
-mod sats_backtest;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod session_calendar;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod slack_alerts;
-pub mod smbc_actor;
-mod smbc_backtest;
-mod smbc_live_runner;
-mod smbc_recorder;
-mod smbc_strategy;
-mod smbc_terminal;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 pub mod status;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod strategy_session;
+// Legacy shared infrastructure kept for historical tooling and tests.
+#[allow(dead_code)]
 mod synthetic;
 #[cfg(test)]
 mod test_support;
