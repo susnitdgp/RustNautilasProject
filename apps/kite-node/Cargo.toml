@@ -16,6 +16,7 @@ crossterm.workspace = true
 kite-adapter = { path = "../../crates/kite-adapter" }
 serde_json.workspace = true
 reqwest.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 zeroize.workspace = true
 tokio.workspace = true
 

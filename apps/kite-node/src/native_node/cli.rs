@@ -6,6 +6,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match(command,&args[1..]){
+        ("native-ilrc-websocket-validate",[token,seconds])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|t|seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|v|super::ws_validation::run(t,v))),
         ("native-ilrc-research",[name,token,lot,is_crude,open,close])=>ilrc_research(name,token,lot,is_crude,open,close),
         ("native-ilrc-date",[name,token,lot,is_crude,open,close,date])=>ilrc_date(name,token,lot,is_crude,open,close,date),
         ("native-ilrc-config-date",[config,date])=>super::ilrc_backtest::run_config_date(config,date),

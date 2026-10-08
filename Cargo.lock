@@ -2570,6 +2570,7 @@ dependencies = [
  "ratatui",
  "redis 0.32.7",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
