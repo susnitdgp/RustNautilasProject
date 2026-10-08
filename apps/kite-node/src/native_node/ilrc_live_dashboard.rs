@@ -212,7 +212,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
     );
     pair(
         &mut out,
-        &line("Last bar", &state.last_bar),
+        &line("Bar start", &state.last_bar),
         &line("Data", format!("{} candles", state.bars)),
     );
     pair(
@@ -323,7 +323,26 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
     if is_tty {
         let _ = stdout.write_all(b"\x1b[?25l\x1b[H\x1b[2J");
     }
-    let _ = stdout.write_all(out.as_bytes());
+    if is_tty {
+        // Prevent a tall dashboard from scrolling its own header off a short terminal.
+        // Reserve the bottom line for the Ctrl+C instruction.
+        if let Ok((_cols, rows)) = crossterm::terminal::size() {
+            let usable = rows.saturating_sub(1) as usize;
+            let lines: Vec<&str> = out.lines().collect();
+            if lines.len() > usable && usable >= 5 {
+                let body = lines.iter().take(usable.saturating_sub(1));
+                let clipped = body.copied().collect::<Vec<_>>().join("\n");
+                let _ = stdout.write_all(clipped.as_bytes());
+                let _ = stdout.write_all(b"\nPress Ctrl+C to quit the running bot.\n");
+            } else {
+                let _ = stdout.write_all(out.as_bytes());
+            }
+        } else {
+            let _ = stdout.write_all(out.as_bytes());
+        }
+    } else {
+        let _ = stdout.write_all(out.as_bytes());
+    }
     let _ = stdout.flush();
 }
 #[cfg(test)]

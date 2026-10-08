@@ -315,12 +315,22 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         });
         let handle=node.handle();
         let watcher_control=control.clone();
+        let shutdown_dashboard=dashboard.clone();
         let watcher=tokio::spawn(async move {
-            tokio::select!{_ = tokio::signal::ctrl_c()=>{},_ = tokio::time::sleep(Duration::from_secs(seconds))=>{}}
+            let manual=tokio::select!{_ = tokio::signal::ctrl_c()=>true,_ = tokio::time::sleep(Duration::from_secs(seconds))=>false};
+            let message=if manual {"Ctrl+C RECEIVED - stopping ILRC; checking positions and orders..."}else{"Session cutoff reached - stopping ILRC; checking positions and orders..."};
+            eprintln!("\n{message}");
+            if let Ok(mut state)=shutdown_dashboard.lock(){
+                state.event=message.into();
+                state.updates.notify_one();
+            }
             watcher_control.stopping.store(true,std::sync::atomic::Ordering::Release);
             for _ in 0..120 {
                 if watcher_control.flat.load(std::sync::atomic::Ordering::Acquire){break;}
                 tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            if !watcher_control.flat.load(std::sync::atomic::Ordering::Acquire){
+                eprintln!("SHUTDOWN WARNING: Position/order state is not confirmed flat; verify Kite immediately.");
             }
             handle.stop();
         });
@@ -328,7 +338,11 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         let result=node.run_with_mode(NodeRunMode::Hosted).await;
         watcher.abort();
         refresh.abort();
-        result?;
+        if let Err(err)=result {
+            eprintln!("ILRC EXIT WARNING: {err:#}. Check positions and open orders in Kite.");
+            return Err(err);
+        }
+        println!("ILRC STOPPED: Nautilus exited. Confirm final broker positions and orders in Kite.");
         println!("{}",serde_json::json!({"event":"ilrc_nautilus_live_finished","namespace":run_id.to_string(),"execution":"Kite production client"}));
         Ok(())
     })
