@@ -109,7 +109,36 @@ pub fn run(token: u32) -> Result<()> {
         c.time()
             .is_ok_and(|t| t.year() == 2026 && (t.month() == 9 || t.month() == 10 && t.day() <= 8))
     });
-    println!("{}", serde_json::to_string_pretty(&audit(&candles)?)?);
+    let preliminary = audit(&candles)?;
+    let config = super::ilrc_config::Selection::load("config/production-ilrc.json")?;
+    ensure!(config.instrument_token == token, "Selection/token mismatch");
+    let a = super::ilrc_backtest::entry_events_config_candles(&config, &candles)?;
+    let b = super::ilrc_continuation_backtest::entry_events_candles(
+        &candles,
+        config.continuation.target_r,
+    )?;
+    let counts = |events: &[super::ilrc_backtest::EntryEvent]| {
+        let mut days = std::collections::BTreeMap::<String, usize>::new();
+        for event in events {
+            *days
+                .entry(event.entry_time.chars().take(10).collect())
+                .or_default() += 1;
+        }
+        serde_json::json!({"entry_events":events.len(),"days":days,
+            "first_events":events.iter().take(5).map(|e|serde_json::json!({
+                "setup":e.setup,"observed_at":e.observed_at,"entry_time":e.entry_time,
+                "side":e.side,"entry":e.entry,"stop":e.stop,"target":e.target
+            })).collect::<Vec<_>>()})
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "event":"ilrc_full_entry_audit","instrument":config.instrument,
+            "candles":candles.len(),"preliminary":preliminary,
+            "setup_a":counts(&a),"setup_b":counts(&b),
+            "warning":"Actual historical strategy entry-event functions; NOT final broker admissions, next-open fills or per-rejection transition counters."
+        }))?
+    );
     Ok(())
 }
 #[cfg(test)]
