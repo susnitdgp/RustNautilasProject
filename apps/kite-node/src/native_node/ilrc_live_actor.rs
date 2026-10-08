@@ -342,6 +342,9 @@ impl DataActor for IlrcActor {
             && let Ok(mut d) = shared.lock()
         {
             d.last_price = (quote.bid_price.as_f64() + quote.ask_price.as_f64()) / 2.0;
+            if d.tick_count == 0 {
+                eprintln!("[PASS] Kite market-data connection — first valid quote received");
+            }
             d.tick_count += 1;
             d.last_tick_epoch = Some(chrono::Utc::now().timestamp());
             d.updates.notify_one();

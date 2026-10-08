@@ -216,11 +216,13 @@ pub fn run_fixture(config: &str, fixture: &str, seconds: u64) -> Result<()> {
 }
 
 pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
+    println!("ILRC COMBINED — STARTUP\n");
     let selection = Selection::load_live(config)?;
     let settings: kite_adapter::execution::native_client::production::Settings =
         serde_json::from_slice(&std::fs::read(broker_config)?)?;
     settings.validate()?;
     selection.validate_live()?;
+    println!("[PASS] Configuration validation");
     let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"));
     let date = now.date_naive();
     let minute = chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now);
@@ -248,6 +250,8 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         "Live Kite instrument master does not match selected contract"
     );
     let instrument = kite_adapter::instruments::contract::build(&report, data::now().into())?;
+    println!("[PASS] Instrument verification");
+    println!("[....] Loading historical 3-minute candles...");
     let raw = tokio::runtime::Runtime::new()?.block_on(
         kite_adapter::http::historical::fetch_window_for(
             selection.instrument_token,
@@ -265,6 +269,7 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         &selection.session_calendar,
         selection.interval,
     )?;
+    println!("[PASS] Historical candle warmup");
     let run_id = UUID4::new();
     let market_price = Arc::new(AtomicI64::new(0));
     let dashboard = super::ilrc_live_dashboard::shared();
@@ -291,6 +296,7 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
     );
     let account_id = settings.expected_user_id.clone();
     kite_adapter::execution::native_client::coordination::check_startup(&account_id)?;
+    println!("[PASS] Redis initialization / startup ownership check");
     tokio::runtime::Runtime::new()?.block_on(async {
         let mut cfg=LiveNodeConfig{environment:Environment::Live,trader_id:"SUSANTA-001".into(),instance_id:Some(run_id),cache:Some(persistence::cache_config()),save_state:true,load_state:false,shutdown_on_error:true,delay_post_stop:Duration::from_secs(2),..Default::default()};
         cfg.logging=LoggerConfig{stdout_level:log::LevelFilter::Warn,is_colored:false,..Default::default()};
@@ -302,6 +308,10 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         let mut node=builder.add_exec_client(Some("MCX".into()),Box::new(kite_adapter::execution::native_client::production::Factory),Box::new(kite_adapter::execution::native_client::production::LiveConfig{settings,instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),namespace:run_id.to_string(),stop_signal:control.done.clone()}))?.build()?;
         let bar_type:BarType=format!("{}-3-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()).with_dashboard(dashboard.clone()))?;
+        println!("[PASS] Nautilus engine constructed");
+        println!("[WAIT] Kite market-data connection (await first valid quote)");
+        println!("[WAIT] Nautilus engine running (await first quote + candle)");
+        println!("STATUS: CONNECTING — awaiting verified live feed");
         let dashboard_notify=dashboard.lock().expect("dashboard mutex").updates.clone();
         let dashboard_state=dashboard.clone();
         let dashboard_instrument=instrument.id.to_string();
