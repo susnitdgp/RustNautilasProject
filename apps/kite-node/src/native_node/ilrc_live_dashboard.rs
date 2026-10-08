@@ -1,8 +1,26 @@
-//! Read-only terminal dashboard for ILRC Nautilus execution.
+//! Two-column read-only ILRC live terminal dashboard with broker-event trade history.
 use std::{
     io::{self, IsTerminal, Write},
     sync::{Arc, Mutex},
 };
+
+#[derive(Clone, Debug)]
+pub struct TradeRow {
+    pub time: String,
+    pub setup: String,
+    pub side: String,
+    pub entry: f64,
+    pub exit: f64,
+    pub reason: String,
+    pub points: f64,
+}
+#[derive(Clone, Debug)]
+pub struct OpenTrade {
+    pub time: String,
+    pub setup: String,
+    pub side: String,
+    pub entry: f64,
+}
 #[derive(Clone, Debug, Default)]
 pub struct State {
     pub bars: usize,
@@ -14,96 +32,196 @@ pub struct State {
     pub setup: String,
     pub event: String,
     pub fault: Option<String>,
+    pub open_trade: Option<OpenTrade>,
+    pub trades: Vec<TradeRow>,
 }
 pub type Shared = Arc<Mutex<State>>;
 pub fn shared() -> Shared {
     Arc::new(Mutex::new(State::default()))
 }
-pub fn render(state: &State, instrument: &str, mode: &str, session_seconds: u64) {
-    let tty = io::stdout().is_terminal();
-    if tty {
+fn clip(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        s.to_owned()
+    } else {
+        format!(
+            "{}…",
+            s.chars().take(width.saturating_sub(1)).collect::<String>()
+        )
+    }
+}
+fn pair(left: &str, right: &str) {
+    println!("│ {:<52} │ {:<52} │", clip(left, 52), clip(right, 52));
+}
+fn line(label: &str, value: impl std::fmt::Display) -> String {
+    format!("{label:<11} {value}")
+}
+fn trade_line(t: &TradeRow) {
+    println!(
+        "│ {:<14} {:<6} {:<6} {:>11.2} {:>11.2} {:<19} {:+10.2} {:<11} │",
+        clip(&t.time, 14),
+        clip(&t.setup, 6),
+        clip(&t.side, 6),
+        t.entry,
+        t.exit,
+        clip(&t.reason, 19),
+        t.points,
+        if t.points > 0.0 {
+            "WIN"
+        } else if t.points < 0.0 {
+            "LOSS"
+        } else {
+            "FLAT"
+        }
+    );
+}
+pub fn render(state: &State, instrument: &str, mode: &str, seconds: u64) {
+    if io::stdout().is_terminal() {
         print!("\x1b[2J\x1b[H");
     }
-    let side = if state.position > 0.0 {
+    let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"));
+    let position = if state.position > 0.0 {
         "LONG"
     } else if state.position < 0.0 {
         "SHORT"
     } else {
         "FLAT"
     };
-    println!("┌──────────────────────────────────────────────────────────────┐");
-    println!("│ ILRC COMBINED — NAUTILUS / KITE  {:<26}│", mode);
-    println!("├──────────────────────────────────────────────────────────────┤");
-    println!("  Instrument     {instrument}");
+    let points: f64 = state.trades.iter().map(|t| t.points).sum();
+    let wins = state.trades.iter().filter(|t| t.points > 0.0).count();
+    let losses = state.trades.iter().filter(|t| t.points < 0.0).count();
     println!(
-        "  Time (IST)     {}",
-        chrono::Utc::now()
-            .with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"))
-            .format("%d-%m-%Y %H:%M:%S")
+        "┌──────────────────────────────────────────────────────┬──────────────────────────────────────────────────────┐"
     );
-    println!("  Session        {session_seconds} seconds configured");
-    println!(
-        "  Last candle    {}     Bars {}",
-        if state.last_bar.is_empty() {
-            "waiting for first bar"
-        } else {
-            &state.last_bar
-        },
-        state.bars
+    pair(
+        "ILRC COMBINED · LIVE TRADING DASHBOARD",
+        &format!("NAUTILUS / KITE · {mode}"),
     );
     println!(
-        "  Market price   {}",
-        if state.bars > 0 {
-            format!("{:.2}", state.last_price)
-        } else {
-            "waiting".into()
-        }
+        "├──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┤"
+    );
+    pair(
+        &line("Instrument", instrument),
+        &line("Time IST", now.format("%d-%m-%Y %H:%M:%S")),
+    );
+    pair(
+        &line(
+            "Market",
+            if state.bars > 0 {
+                format!("{:.2}", state.last_price)
+            } else {
+                "waiting".into()
+            },
+        ),
+        &line("Session", format!("{seconds}s manual")),
+    );
+    pair(
+        &line(
+            "Last bar",
+            if state.last_bar.is_empty() {
+                "waiting"
+            } else {
+                &state.last_bar
+            },
+        ),
+        &line("Data", format!("{} candles", state.bars)),
+    );
+    pair(
+        &line(
+            "Setup",
+            if state.setup.is_empty() {
+                "SCANNING"
+            } else {
+                &state.setup
+            },
+        ),
+        &line(
+            "Position",
+            format!("{position} ({:.0} contract)", state.position.abs()),
+        ),
+    );
+    pair(
+        &line(
+            "Target",
+            state.target.map_or("n/a".into(), |v| format!("{v:.2}")),
+        ),
+        &line(
+            "Stop-loss",
+            state
+                .stop
+                .map_or("not confirmed".into(), |v| format!("{v:.2} (tracked)")),
+        ),
+    );
+    pair(
+        &line(
+            "Last event",
+            if state.event.is_empty() {
+                "waiting"
+            } else {
+                &state.event
+            },
+        ),
+        &line(
+            "Risk",
+            state.fault.as_deref().unwrap_or("No reported alert"),
+        ),
+    );
+    pair(
+        &line("Realized", format!("{points:+.2} gross points")),
+        &line(
+            "Today",
+            format!("{} trades · {wins} W / {losses} L", state.trades.len()),
+        ),
     );
     println!(
-        "  Position       {side} ({:.0} contract)",
-        state.position.abs()
+        "├──────────────────────────────────────────────────────┴──────────────────────────────────────────────────────┤"
     );
     println!(
-        "  Protective SL  {}",
-        state.stop.map_or("not confirmed".into(), |v| format!(
-            "{v:.2} (strategy tracked)"
-        ))
+        "│ TODAY'S BROKER-OBSERVED TRADE HISTORY                                                                       │"
     );
     println!(
-        "  Target         {}",
-        state.target.map_or("n/a".into(), |v| format!("{v:.2}"))
+        "├────────────────┬────────┬────────┬─────────────┬─────────────┬─────────────────────┬────────────┬─────────────┤"
     );
     println!(
-        "  Setup          {}",
-        if state.setup.is_empty() {
-            "scanning"
-        } else {
-            &state.setup
-        }
+        "│ Time           │ Setup  │ Side   │ Entry       │ Exit        │ Reason              │ Points     │ Result      │"
     );
     println!(
-        "  Last event     {}",
-        if state.event.is_empty() {
-            "waiting"
-        } else {
-            &state.event
-        }
+        "├────────────────┼────────┼────────┼─────────────┼─────────────┼─────────────────────┼────────────┼─────────────┤"
+    );
+    if state.trades.is_empty() {
+        println!(
+            "│ No completed broker-observed ILRC trades                                                                     │"
+        );
+    }
+    for t in state.trades.iter().rev().take(10).rev() {
+        trade_line(t);
+    }
+    if let Some(t) = &state.open_trade {
+        println!(
+            "│ OPEN {:<10} {:<6} {:<6} {:>11.2} {:>11} {:<19} {:>10} {:<11} │",
+            clip(&t.time, 10),
+            clip(&t.setup, 6),
+            clip(&t.side, 6),
+            t.entry,
+            "—",
+            "POSITION OPEN",
+            "—",
+            "OPEN"
+        );
+    }
+    println!(
+        "└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
     );
     println!(
-        "  Risk alert     {}",
-        state.fault.as_deref().unwrap_or("none reported")
+        "  Gross price points exclude brokerage, taxes and slippage. Confirm stop and positions directly in Kite."
     );
-    println!("└──────────────────────────────────────────────────────────────┘");
-    println!("  Dashboard displays strategy observations; verify actual broker orders in Kite.");
     let _ = io::stdout().flush();
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn initial_state_is_flat_and_not_protected() {
-        let s = State::default();
-        assert!(s.stop.is_none());
-        assert_eq!(s.position, 0.0);
+    fn initial_state_is_flat_and_empty() {
+        let x = State::default();
+        assert!(x.trades.is_empty() && x.open_trade.is_none() && x.stop.is_none());
     }
 }

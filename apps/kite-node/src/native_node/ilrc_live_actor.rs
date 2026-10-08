@@ -443,6 +443,19 @@ nautilus_strategy!(IlrcActor, {
                 "{}",
                 serde_json::json!({"event":"ilrc_native_entry_fill","price":entry,"stop":stop,"target":sig.target,"broker_client_order_id":e.client_order_id.to_string()})
             );
+            if let Some(shared) = &self.dashboard
+                && let Ok(mut dashboard) = shared.lock()
+            {
+                dashboard.open_trade = Some(ilrc_live_dashboard::OpenTrade {
+                    time: chrono::Utc::now()
+                        .with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"))
+                        .format("%d-%m %H:%M")
+                        .to_string(),
+                    setup: sig.setup.to_owned(),
+                    side: sig.side.to_owned(),
+                    entry,
+                });
+            }
             self.protection = Some(Protection {
                 side,
                 entry,
@@ -485,7 +498,39 @@ nautilus_strategy!(IlrcActor, {
             self.pending_stop = None;
             self.accepted_stop = None;
             self.protection = None;
+            if let Some(shared) = &self.dashboard
+                && let Ok(mut dashboard) = shared.lock()
+                && let Some(open) = dashboard.open_trade.take()
+            {
+                let exit = e.last_px.as_f64();
+                let points = (exit - open.entry) * if open.side == "LONG" { 1.0 } else { -1.0 };
+                dashboard.trades.push(ilrc_live_dashboard::TradeRow {
+                    time: open.time,
+                    setup: open.setup,
+                    side: open.side,
+                    entry: open.entry,
+                    exit,
+                    reason: "STOP-LOSS".into(),
+                    points,
+                });
+            }
         } else if self.awaiting_exit {
+            if let Some(shared) = &self.dashboard
+                && let Ok(mut dashboard) = shared.lock()
+                && let Some(open) = dashboard.open_trade.take()
+            {
+                let exit = e.last_px.as_f64();
+                let points = (exit - open.entry) * if open.side == "LONG" { 1.0 } else { -1.0 };
+                dashboard.trades.push(ilrc_live_dashboard::TradeRow {
+                    time: open.time,
+                    setup: open.setup,
+                    side: open.side,
+                    entry: open.entry,
+                    exit,
+                    reason: "TARGET / EOD / EXIT".into(),
+                    points,
+                });
+            }
             println!(
                 "{}",
                 serde_json::json!({"event":"ilrc_native_exit_filled","client_order_id":e.client_order_id.to_string(),"fill_price":e.last_px.as_f64()})
