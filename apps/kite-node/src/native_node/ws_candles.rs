@@ -11,6 +11,7 @@ pub struct Aggregator {
     last_volume: Option<u32>,
     generation: Option<u32>,
     last_exchange_ts: Option<i64>,
+    skip_partial: bool,
 }
 #[derive(Debug)]
 struct Current {
@@ -78,15 +79,15 @@ impl Aggregator {
         self.last_exchange_ts = Some(ts);
         let oi = u64::from(s.open_interest.unwrap_or(0));
         if self.current.is_none() {
-            // Never trade from an incomplete startup bar or bridge gaps with fabricated OHLC.
-            ensure!(
-                bucket == self.last_close,
-                "warmup-to-WebSocket gap: restart requires current completed warmup"
-            );
-            ensure!(
-                ts - bucket <= 1,
-                "startup mid-candle: first OHLC would be partial"
-            );
+            // Skip any startup interval that may contain unseen ticks.
+            ensure!(bucket >= self.last_close, "WebSocket tick predates warmup");
+            if bucket > self.last_close {
+                ensure!(
+                    bucket == self.last_close + STEP,
+                    "unreconciled completed candle between warmup and WebSocket"
+                );
+            }
+            self.skip_partial = ts > bucket;
             self.current = Some(Current {
                 start: bucket,
                 open: price,
@@ -106,6 +107,8 @@ impl Aggregator {
             );
             let prev = self.current.take().expect("current");
             self.last_close = prev.start + STEP;
+            let skipped = self.skip_partial;
+            self.skip_partial = false;
             self.current = Some(Current {
                 start: bucket,
                 open: price,
@@ -120,6 +123,9 @@ impl Aggregator {
                 .single()
                 .expect("valid timestamp")
                 .to_rfc3339();
+            if skipped {
+                return Ok(None);
+            }
             return Ok(Some(Candle {
                 timestamp,
                 open: prev.open,
@@ -182,18 +188,29 @@ mod tests {
         );
     }
     #[test]
-    fn refuses_partial_start_gaps_reconnect_and_volume_reset() {
+    fn skips_partial_start_and_refuses_gaps_reconnect_and_volume_reset() {
         let start = 1_800_000_000i64.div_euclid(180) * 180;
+        let mut partial = Aggregator::new((start as u64) * 1_000_000_000);
         assert!(
-            Aggregator::new((start as u64) * 1_000_000_000)
+            partial
                 .observe(&tick(start + 20, 100, 1000, 1))
-                .is_err()
+                .unwrap()
+                .is_none()
         );
         assert!(
-            Aggregator::new(((start - 180) as u64) * 1_000_000_000)
-                .observe(&tick(start, 100, 1000, 1))
-                .is_err()
+            partial
+                .observe(&tick(start + 180, 101, 1001, 1))
+                .unwrap()
+                .is_none()
         );
+        assert!(
+            partial
+                .observe(&tick(start + 360, 102, 1002, 1))
+                .unwrap()
+                .is_some()
+        );
+        let mut gap = Aggregator::new(((start - 360) as u64) * 1_000_000_000);
+        assert!(gap.observe(&tick(start, 100, 1000, 1)).is_err());
         let mut a = Aggregator::new((start as u64) * 1_000_000_000);
         a.observe(&tick(start, 100, 1000, 1)).unwrap();
         assert!(a.observe(&tick(start + 1, 101, 1001, 2)).is_err());

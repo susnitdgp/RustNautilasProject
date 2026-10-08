@@ -368,6 +368,15 @@ impl DataActor for IlrcActor {
             close > self.last_close_ns,
             "Repeated or out-of-order ILRC candle"
         );
+        if self.control.as_ref().is_some_and(|c| c.real)
+            && self.last_close_ns >= self.start_ns
+            && close > self.start_ns
+        {
+            ensure!(
+                close == self.last_close_ns + 180_000_000_000,
+                "Live WebSocket bar gap: missing completed interval; no trading"
+            );
+        }
         self.last_close_ns = close;
         let start = close
             .checked_sub(180_000_000_000)
