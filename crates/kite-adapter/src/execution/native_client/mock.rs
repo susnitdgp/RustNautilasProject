@@ -297,6 +297,62 @@ impl Broker for MockBroker {
                     order_id: order_id.clone(),
                 })
             }
+            Command::ProtectiveStopMarket {
+                symbol,
+                side,
+                product,
+                quantity,
+                trigger_price_rupees,
+                tag,
+                market_protection,
+            } => {
+                ensure!(product == &self.product, "Mock stop product mismatch");
+                let id = (s.orders.len() + 1).to_string();
+                let timestamp = Self::time();
+                s.orders.push(BrokerOrder {
+                    order_id: id.clone(),
+                    exchange: "MCX".into(),
+                    tradingsymbol: symbol.clone(),
+                    instrument_token: self.token,
+                    product: product.clone(),
+                    transaction_type: side.clone(),
+                    variety: "regular".into(),
+                    order_type: "SL-M".into(),
+                    market_protection: Some(Decimal::from(*market_protection)),
+                    validity: "DAY".into(),
+                    status: "TRIGGER PENDING".into(),
+                    quantity: *quantity,
+                    filled_quantity: 0,
+                    price: Decimal::from(*trigger_price_rupees),
+                    tag: Some(tag.clone()),
+                    exchange_timestamp: Some(timestamp.clone()),
+                    exchange_update_timestamp: Some(timestamp.clone()),
+                    order_timestamp: timestamp,
+                });
+                Ok(Outcome::Acknowledged { order_id: id })
+            }
+            Command::ModifyProtectiveStop {
+                order_id,
+                quantity,
+                trigger_price_rupees,
+                market_protection,
+            } => {
+                let o = s
+                    .orders
+                    .iter_mut()
+                    .find(|o| &o.order_id == order_id)
+                    .ok_or_else(|| anyhow!("Unknown mock protective stop"))?;
+                if o.order_type != "SL-M" || o.status != "TRIGGER PENDING" {
+                    return Ok(Outcome::Rejected);
+                }
+                o.quantity = *quantity;
+                o.price = Decimal::from(*trigger_price_rupees);
+                o.market_protection = Some(Decimal::from(*market_protection));
+                o.exchange_update_timestamp = Some(Self::time());
+                Ok(Outcome::Acknowledged {
+                    order_id: order_id.clone(),
+                })
+            }
             Command::Modify { .. } => anyhow::bail!("Native Kite mock modification unsupported"),
         }
     }
