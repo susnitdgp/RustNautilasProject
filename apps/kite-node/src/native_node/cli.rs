@@ -7,6 +7,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
     }
     Some(match(command,&args[1..]){
         ("native-iatf-september-baseline",[token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(super::iatf_september::run),
+        ("native-iatf-record",[config])=>super::iatf_recorder::run(config),
         ("native-iatf-replay",[config,data])=>super::iatf_replay::run(config,data),
         ("native-iatf-research-validate",[config])=>super::iatf_research::inspect(config),
         ("native-portfolio-validate",[config])=>super::portfolio::inspect(config),

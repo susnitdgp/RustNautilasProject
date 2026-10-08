@@ -1,0 +1,8 @@
+{
+  "symbol": "CRUDEOILM26OCTFUT",
+  "instrument_token": 145894663,
+  "expected_expiry": "2026-10-19",
+  "seconds": 600,
+  "output": "data/iatf-recordings/crudeoilm26oct-manual.jsonl",
+  "live_orders_enabled": false
+}

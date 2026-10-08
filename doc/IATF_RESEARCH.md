@@ -25,3 +25,11 @@ JSONL recording from a live WebSocket is **not yet connected**. Only replay from
 ## September 2026 historical candle baseline
 
 `./target/release/kite-node native-iatf-september-baseline 145894663` uses the existing read-only Kite historical 3-minute client. The Kite instrument master identifies the October futures as `CRUDEOILM26OCTFUT`, token `145894663`, expiry `2026-10-19`. The backtest command does not submit broker orders. Regime efficiency is evaluated separately within each trading day using previous completed closes, with candidate breakouts compared against previous eight closes. It does not reconstruct historical depth or calculate IATF trade P&L. Results are descriptive and cannot establish an order-flow edge.
+
+## Manual Kite depth recording
+
+To record real snapshots (no order execution), explicitly run:
+
+`./target/release/kite-node native-iatf-record config/iatf-recorder.example.json`
+
+The recorder validates CRUDEOILM26OCTFUT token 145894663 / expiry 2026-10-19 against Kite's public instrument master, reads the existing Redis credentials, and opens a **read-only**, bounded Kite WebSocket subscription. Output JSONL is created with `create_new` (never overwritten) under `data/iatf-recordings/` and is intentionally Git-ignored. Any gap or reconnect renders the capture unusable. Do not use the output for replay if capture reports failure. Historical September 2026 book snapshots cannot be recovered retroactively through Kite's candle endpoint. Its full-feed order updates are not used for trade execution.
