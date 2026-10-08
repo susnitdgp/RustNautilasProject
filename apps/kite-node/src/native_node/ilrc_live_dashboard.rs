@@ -23,7 +23,13 @@ pub struct OpenTrade {
 }
 #[derive(Clone, Debug, Default)]
 pub struct State {
+    pub updates: Arc<tokio::sync::Notify>,
+    pub tick_count: u64,
+    pub last_tick_epoch: Option<i64>,
+    pub trigger_a: String,
+    pub trigger_b: String,
     pub bars: usize,
+    pub last_bar_epoch: Option<i64>,
     pub last_bar: String,
     pub last_price: f64,
     pub position: f64,
@@ -90,6 +96,55 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
     } else {
         "OPEN · until 23:15 IST"
     };
+    let age = state.last_bar_epoch.map(|ts| (now.timestamp() - ts).max(0));
+    let feed = match age {
+        Some(s) if s <= 360 => format!("OK · bar {}s old", s),
+        Some(s) => format!("STALE · {}s old", s),
+        None => "WAITING · no candle".into(),
+    };
+    let status = if state.fault.is_some() {
+        "HALTED · MANUAL REVIEW"
+    } else if state.open_trade.is_some() && state.stop.is_none() {
+        "UNPROTECTED / STOP PENDING"
+    } else if state.open_trade.is_some() {
+        "IN POSITION · STOP TRACKED"
+    } else if state.event == "Entry order submitted" {
+        "ENTRY PENDING"
+    } else if age.is_none_or(|s| s > 360) {
+        "DATA NOT READY"
+    } else if !(540..1395).contains(&minute) {
+        "ENTRY WINDOW CLOSED"
+    } else {
+        "SCANNING · WAITING FOR A/B"
+    };
+    let reason = if state.fault.is_some() {
+        "Execution halted: inspect alert and Kite"
+    } else if state.open_trade.is_some() && state.stop.is_none() {
+        "Fill observed: confirm protective SL-M"
+    } else if state.open_trade.is_some() {
+        "Position open: monitoring stop / target"
+    } else if state.event == "Entry order submitted" {
+        "Entry submitted: awaiting broker fill"
+    } else if age.is_none_or(|s| s > 360) {
+        "No fresh completed 3-minute candle"
+    } else if !(540..1395).contains(&minute) {
+        "New entries disabled by session clock"
+    } else {
+        "No qualifying Setup A or B signal yet"
+    };
+    let next = if state.fault.is_some() {
+        "Check broker orders and positions"
+    } else if state.open_trade.is_some() && state.stop.is_none() {
+        "Await SL-M acceptance; verify in Kite"
+    } else if state.open_trade.is_some() {
+        "Watch target / BE / exit events"
+    } else if state.event == "Entry order submitted" {
+        "Await order accepted or fill event"
+    } else if age.is_none_or(|s| s > 360) {
+        "Wait for finalized candle; check feed"
+    } else {
+        "Evaluate next completed 3-minute bar"
+    };
     let position = if state.position > 0.0 {
         "LONG"
     } else if state.position < 0.0 {
@@ -106,6 +161,24 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
     pair(
         "ILRC COMBINED · LIVE TRADING DASHBOARD",
         &format!("NAUTILUS / KITE · {mode}"),
+    );
+    println!(
+        "├──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┤"
+    );
+    pair(&line("STATUS", status), &line("DATA FEED", &feed));
+    pair(&line("WHY", reason), &line("NEXT", next));
+    pair(
+        &line("SETUP A", &state.trigger_a),
+        &line("SETUP B", &state.trigger_b),
+    );
+    pair(
+        &line("Ticks", state.tick_count),
+        &line(
+            "Last tick",
+            state.last_tick_epoch.map_or("waiting".into(), |ts| {
+                format!("{}s ago", (now.timestamp() - ts).max(0))
+            }),
+        ),
     );
     println!(
         "├──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┤"
@@ -193,7 +266,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         "├──────────────────────────────────────────────────────┴──────────────────────────────────────────────────────┤"
     );
     println!(
-        "│ TODAY'S BROKER-OBSERVED TRADE HISTORY                                                                       │"
+        "│ CURRENT RUN · ORDER-FILL TRADE HISTORY (resets on restart)                                                   │"
     );
     println!(
         "├────────────────┬────────┬────────┬─────────────┬─────────────┬─────────────────────┬────────────┬─────────────┤"

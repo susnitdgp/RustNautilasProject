@@ -302,12 +302,12 @@ pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
         let mut node=builder.add_exec_client(Some("MCX".into()),Box::new(kite_adapter::execution::native_client::production::Factory),Box::new(kite_adapter::execution::native_client::production::LiveConfig{settings,instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),namespace:run_id.to_string(),stop_signal:control.done.clone()}))?.build()?;
         let bar_type:BarType=format!("{}-3-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()).with_dashboard(dashboard.clone()))?;
+        let dashboard_notify=dashboard.lock().expect("dashboard mutex").updates.clone();
         let dashboard_state=dashboard.clone();
         let dashboard_instrument=instrument.id.to_string();
         let refresh=tokio::spawn(async move {
-            let mut interval=tokio::time::interval(Duration::from_secs(2));
             loop {
-                interval.tick().await;
+                dashboard_notify.notified().await;
                 if let Ok(state)=dashboard_state.lock(){
                     super::ilrc_live_dashboard::render(&state,&dashboard_instrument,"REAL KITE");
                 }

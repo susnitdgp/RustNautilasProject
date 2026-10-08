@@ -13,7 +13,7 @@ use kite_adapter::http::historical::Candle;
 use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_core::DurationNanos;
 use nautilus_model::{
-    data::{Bar, BarType},
+    data::{Bar, BarType, QuoteTick},
     enums::{OrderSide, TimeInForce},
     events::{OrderAccepted, OrderCanceled, OrderDenied, OrderFilled, OrderRejected, OrderUpdated},
     identifiers::ClientOrderId,
@@ -291,6 +291,7 @@ impl IlrcActor {
 impl DataActor for IlrcActor {
     fn on_start(&mut self) -> Result<()> {
         self.subscribe_bars(self.bar_type, Some("STBARS".into()), None);
+        self.subscribe_quotes(self.bar_type.instrument_id(), Some("KITE".into()), None);
         if self.control.is_some() {
             self.clock().set_timer_ns(
                 "ilrc_exit_guard",
@@ -336,6 +337,17 @@ impl DataActor for IlrcActor {
         self.cancel_order(self.accepted_stop.expect("stop"), None, None)?;
         Ok(())
     }
+    fn on_quote(&mut self, quote: &QuoteTick) -> Result<()> {
+        if let Some(shared) = &self.dashboard
+            && let Ok(mut d) = shared.lock()
+        {
+            d.last_price = (quote.bid_price.as_f64() + quote.ask_price.as_f64()) / 2.0;
+            d.tick_count += 1;
+            d.last_tick_epoch = Some(chrono::Utc::now().timestamp());
+            d.updates.notify_one();
+        }
+        Ok(())
+    }
     fn on_bar(&mut self, bar: &Bar) -> Result<()> {
         let close = bar.ts_event.as_u64();
         ensure!(
@@ -356,6 +368,64 @@ impl DataActor for IlrcActor {
             d.bars += 1;
             d.last_price = bar.close.as_f64();
             d.last_bar = dt.format("%d-%m %H:%M").to_string();
+            d.last_bar_epoch = Some(dt.timestamp());
+            let p = self.selection.ilrc;
+            let prior = self
+                .candles
+                .iter()
+                .rev()
+                .take(p.swing_len)
+                .collect::<Vec<_>>();
+            if prior.len() == p.swing_len {
+                let lo = prior.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
+                let hi = prior
+                    .iter()
+                    .map(|c| c.high)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let c = bar.close.as_f64();
+                let long = bar.low.as_f64() < lo && c > lo;
+                let short = bar.high.as_f64() > hi && c < hi;
+                d.trigger_a = format!(
+                    "{} | lo {:.0} hi {:.0} sweep:{}",
+                    p.swing_len,
+                    lo,
+                    hi,
+                    if long {
+                        "L"
+                    } else if short {
+                        "S"
+                    } else {
+                        "NO"
+                    }
+                );
+                let bprior = self.candles.iter().rev().take(20).collect::<Vec<_>>();
+                let bhi = bprior
+                    .iter()
+                    .map(|v| v.high)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let blo = bprior.iter().map(|v| v.low).fold(f64::INFINITY, f64::min);
+                let bodies = self
+                    .candles
+                    .iter()
+                    .rev()
+                    .take(20)
+                    .map(|v| (v.close - v.open).abs())
+                    .collect::<Vec<_>>();
+                let avg = bodies.iter().sum::<f64>() / bodies.len() as f64;
+                let body = (c - bar.open.as_f64()).abs();
+                let bos = if c > bhi {
+                    "LONG"
+                } else if c < blo {
+                    "SHORT"
+                } else {
+                    "NO"
+                };
+                d.trigger_b = format!("BOS:{} body {:.0}/{:.0} (1.3x)", bos, body, avg * 1.3);
+            } else {
+                d.trigger_a = "WARMUP · insufficient swing bars".into();
+                d.trigger_b = "WARMUP · insufficient 20 bars".into();
+            }
+            d.updates.notify_one();
         }
         self.candles.push(Candle {
             timestamp: dt.to_rfc3339(),
