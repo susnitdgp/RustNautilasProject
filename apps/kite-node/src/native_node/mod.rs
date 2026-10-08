@@ -15,6 +15,7 @@ pub mod full_codec;
 #[allow(dead_code)]
 mod history_revision;
 mod ilrc_backtest;
+mod ilrc_broker_replay;
 mod ilrc_causal_audit;
 mod ilrc_config;
 mod ilrc_continuation_backtest;

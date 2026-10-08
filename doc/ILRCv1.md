@@ -69,3 +69,13 @@ The implementation still lacks atomic Redis state persistence at each ILRC trans
 `ilrc_kite_adapter.rs` provides a typed connection to the existing `KiteOrderTransport::execute` API, but it is not constructed or called by any ILRC CLI/runner. The transport itself refuses real orders unless the separately reviewed `live-orders` Cargo feature is enabled. The adapter rejects submissions without caller-asserted durable journaling, stop management and broker reconciliation, but these prerequisites are **not actually implemented or independently verified for ILRC**. These booleans are integration placeholders, not authorization gates. Do not instantiate this adapter with real credentials or bypass its guards. Any uncertain transport result latches the mock lifecycle kill switch and requires manual reconciliation; acknowledgement is not a fill.
 
 **Not yet complete:** a real ILRC reconciler, Redis-atomic command journal and account lock, confirmed protective stops before declaring a managed position, partial-fill stop resizing, crash-safe recovery, and broker-mock fault injection across the full lifecycle. No operational live trading command exists.
+
+## Integrated mock-broker replay (no live execution)
+
+`native-ilrc-mock-broker` exercises ILRC order-intent validation, an injected non-network gateway, acknowledgement, observed fill, duplicate-fill suppression, protective-stop state confirmation, position reconciliation, and a restart serialization round-trip. Unknown/rejected acknowledgement paths latch the mock kill switch. Run with:
+
+```bash
+cargo run --locked -p kite-node -- native-ilrc-mock-broker
+```
+
+**Scope:** This tests a synthetic broker lifecycle and does not invoke the production `kite-adapter` dispatcher, connect Redis, place a Kite protective order, or establish account reconciliation. The existing internal Nautilus dispatcher has separate Redis/fill/recovery tests but requires Nautilus `OrderAny` and a live runner with cache/clock/event sender, broker snapshots, and actual stop management. Wiring the ILRC order intents directly into the Kite HTTP transport would bypass those controls and is not authorized. The live-order path remains disconnected and all gates disabled.

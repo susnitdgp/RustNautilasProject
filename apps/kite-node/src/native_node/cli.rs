@@ -13,6 +13,7 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-ilrc-causal-audit",[config,file,date])=>super::ilrc_causal_audit::run(config,file,date),
         ("native-ilrc-timed-scenario",[config,fixture,date,slippage,kill])=>slippage.parse::<f64>().map_err(anyhow::Error::from).and_then(|v|kill.parse::<usize>().map_err(anyhow::Error::from).and_then(|k|super::ilrc_timed_mock::run_scenario(config,fixture,date,v,k))),
         ("native-ilrc-timed-mock",[config,fixture,date])=>super::ilrc_timed_mock::run(config,fixture,date),
+        ("native-ilrc-mock-broker",[])=>super::ilrc_broker_replay::run(),
         ("native-ilrc-mock-execution",[])=>super::ilrc_mock_execution::run(),
         ("native-ilrc-live-readiness",[strategy,broker,policy])=>super::ilrc_live_readiness::check(strategy,broker,policy),
         ("native-ilrc-shadow",[config,seconds])=>seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|seconds|super::ilrc_shadow::run(config,seconds)),
