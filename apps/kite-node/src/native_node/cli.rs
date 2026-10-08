@@ -6,12 +6,6 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match(command,&args[1..]){
-        ("native-iatf-trade-research",[config])=>super::iatf_trade_research::run(config),
-        ("native-iatf-multitimeframe-september",[token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(super::iatf_multitimeframe::run),
-        ("native-iatf-september-baseline",[token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(super::iatf_september::run),
-        ("native-iatf-record",[config])=>super::iatf_recorder::run(config),
-        ("native-iatf-replay",[config,data])=>super::iatf_replay::run(config,data),
-        ("native-iatf-research-validate",[config])=>super::iatf_research::inspect(config),
         ("native-portfolio-validate",[config])=>super::portfolio::inspect(config),
         ("native-ilrc-websocket-validate",[token,seconds])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|t|seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|v|super::ws_validation::run(t,v))),
         ("native-ilrc-research",[name,token,lot,is_crude,open,close])=>ilrc_research(name,token,lot,is_crude,open,close),

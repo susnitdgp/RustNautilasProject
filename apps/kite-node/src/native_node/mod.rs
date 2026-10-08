@@ -15,14 +15,7 @@ pub mod full_codec;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 mod history_revision;
-mod iatf_multitimeframe;
-mod iatf_recorder;
 #[allow(dead_code)]
-mod iatf_replay;
-#[allow(dead_code)]
-mod iatf_research;
-mod iatf_september;
-mod iatf_trade_research;
 mod ilrc_backtest;
 mod ilrc_broker_replay;
 mod ilrc_causal_audit;
