@@ -526,6 +526,12 @@ impl DataActor for IlrcActor {
             volume: bar.volume.as_f64() as u64,
             oi: 0,
         });
+        if self.control.as_ref().is_some_and(|c| {
+            c.real
+                && (c.stopping.load(Ordering::Acquire) || c.fault.lock().is_ok_and(|f| f.is_some()))
+        }) {
+            return Ok(());
+        }
         if close <= self.start_ns || self.candles.len() <= 100 {
             return Ok(());
         }

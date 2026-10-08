@@ -182,6 +182,17 @@ impl Client {
                         status(&tx, "gap", generation)
                     }
                     FeedEvent::Snapshot(s) => {
+                        if config.live_bars.as_ref().is_some_and(|(_, _, control)| {
+                            control.stopping.load(std::sync::atomic::Ordering::Acquire)
+                        }) {
+                            return;
+                        }
+                        if quotes::map(&s, &config.instrument).ok().flatten().is_none() {
+                            if let Some((_, _, control)) = &config.live_bars {
+                                control.fail("Invalid WebSocket quote: bar source not trustworthy");
+                            }
+                            return;
+                        }
                         if let (Some(agg), Some(bt)) = (&mut candle_agg, bar_type) {
                             match agg.observe(&s) {
                                 Ok(Some(c)) => match super::live_bars::bar_for(
@@ -204,6 +215,7 @@ impl Client {
                                     if let Some((_, _, ctrl)) = &config.live_bars {
                                         ctrl.fail(&format!("WebSocket candle invalid: {e}"));
                                     }
+                                    return;
                                 }
                             }
                         }

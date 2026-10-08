@@ -10,6 +10,7 @@ pub struct Aggregator {
     last_close: i64,
     last_volume: Option<u32>,
     generation: Option<u32>,
+    last_exchange_ts: Option<i64>,
 }
 #[derive(Debug)]
 struct Current {
@@ -35,6 +36,9 @@ impl Aggregator {
                 .ok_or_else(|| anyhow::anyhow!("missing exchange timestamp"))?,
         );
         let received = s.received_at_utc.timestamp();
+        if let Some(prev) = self.last_exchange_ts {
+            ensure!(ts >= prev, "out-of-order exchange timestamp");
+        }
         ensure!(
             (-2..=10).contains(&(received - ts)),
             "stale/future exchange timestamp"
@@ -71,6 +75,7 @@ impl Aggregator {
             None => 0,
         };
         self.last_volume = Some(cumulative);
+        self.last_exchange_ts = Some(ts);
         let oi = u64::from(s.open_interest.unwrap_or(0));
         if self.current.is_none() {
             // Never trade from an incomplete startup bar or bridge gaps with fabricated OHLC.
@@ -198,5 +203,9 @@ mod tests {
         let mut c = Aggregator::new((start as u64) * 1_000_000_000);
         c.observe(&tick(start, 100, 1000, 1)).unwrap();
         assert!(c.observe(&tick(start + 360, 101, 1001, 1)).is_err());
+        let mut d = Aggregator::new((start as u64) * 1_000_000_000);
+        d.observe(&tick(start, 100, 1000, 1)).unwrap();
+        d.observe(&tick(start + 60, 110, 1001, 1)).unwrap();
+        assert!(d.observe(&tick(start + 59, 109, 1002, 1)).is_err());
     }
 }
