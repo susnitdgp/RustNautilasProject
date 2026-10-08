@@ -124,7 +124,15 @@ pub fn run(token: u32) -> Result<()> {
                 .entry(event.entry_time.chars().take(10).collect())
                 .or_default() += 1;
         }
-        serde_json::json!({"entry_events":events.len(),"days":days,
+        let post_launch = events
+            .iter()
+            .filter(|e| {
+                e.observed_at.starts_with("2026-10-08")
+                    && e.observed_at.as_str() > "2026-10-08T15:33:00"
+                    && e.observed_at.as_str() < "2026-10-08T23:15:00"
+            })
+            .count();
+        serde_json::json!({"entry_events":events.len(),"days":days,"oct8_after_launch_and_anchor":post_launch,
             "oct8_events":events.iter().filter(|e|e.observed_at.starts_with("2026-10-08")).map(|e|serde_json::json!({
                 "setup":e.setup,"observed_at":e.observed_at,"entry_time":e.entry_time,
                 "side":e.side,"entry":e.entry,"stop":e.stop,"target":e.target
