@@ -55,38 +55,56 @@ fn clip(s: &str, width: usize) -> String {
         )
     }
 }
-fn pair(left: &str, right: &str) {
-    let left = clip(left, 52);
-    let right = clip(right, 52);
-    println!("│ {left:<52} │ {right:<52} │");
+const COL: usize = 43;
+const WIDTH: usize = COL * 2 + 7;
+fn pair(out: &mut String, left: &str, right: &str) {
+    out.push_str(&format!(
+        "│ {:<COL$} │ {:<COL$} │\n",
+        clip(left, COL),
+        clip(right, COL)
+    ));
+}
+fn whole(out: &mut String, message: &str) {
+    out.push_str(&format!(
+        "│ {:<w$} │\n",
+        clip(message, WIDTH - 4),
+        w = WIDTH - 4
+    ));
+}
+fn border(out: &mut String, left: char, middle: char, right: char, fill: char) {
+    out.push_str(&format!(
+        "{left}{}{middle}{}{right}\n",
+        fill.to_string().repeat(COL + 2),
+        fill.to_string().repeat(COL + 2)
+    ));
+}
+fn full_border(out: &mut String, left: char, right: char, fill: char) {
+    out.push_str(&format!(
+        "{left}{}{right}\n",
+        fill.to_string().repeat(WIDTH - 2)
+    ));
 }
 fn line(label: &str, value: impl std::fmt::Display) -> String {
     format!("{label:<11} {value}")
 }
-fn trade_line(t: &TradeRow) {
-    let result = if t.points > 0.0 {
-        "WIN"
-    } else if t.points < 0.0 {
-        "LOSS"
-    } else {
-        "FLAT"
-    };
-    println!(
-        "│ {:<14} │ {:<6} │ {:<6} │ {:>11.2} │ {:>11.2} │ {:<19} │ {:+10.2} │ {:<11} │",
-        clip(&t.time, 14),
-        clip(&t.setup, 6),
-        clip(&t.side, 6),
-        t.entry,
-        t.exit,
-        clip(&t.reason, 19),
-        t.points,
-        result
+fn trade_line(out: &mut String, trade: &TradeRow) {
+    whole(
+        out,
+        &format!(
+            "{}  {:<2} {:<5}  {:.2} -> {:.2}  {:+.2}pt  {}",
+            trade.time,
+            trade.setup,
+            trade.side,
+            trade.entry,
+            trade.exit,
+            trade.points,
+            trade.reason
+        ),
     );
 }
 pub fn render(state: &State, instrument: &str, mode: &str) {
-    if io::stdout().is_terminal() {
-        print!("\x1b[2J\x1b[H");
-    }
+    let mut out = String::new();
+    let is_tty = io::stdout().is_terminal();
     let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"));
     let minute = chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now);
     let session = if minute < 540 {
@@ -155,23 +173,22 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
     let points: f64 = state.trades.iter().map(|t| t.points).sum();
     let wins = state.trades.iter().filter(|t| t.points > 0.0).count();
     let losses = state.trades.iter().filter(|t| t.points < 0.0).count();
-    println!(
-        "┌──────────────────────────────────────────────────────┬──────────────────────────────────────────────────────┐"
-    );
+    border(&mut out, '┌', '┬', '┐', '─');
     pair(
-        "ILRC COMBINED · LIVE TRADING DASHBOARD",
-        &format!("NAUTILUS / KITE · {mode}"),
+        &mut out,
+        "ILRC COMBINED | OPERATIONS",
+        &format!("NAUTILUS / KITE | {mode}"),
     );
-    println!(
-        "├──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┤"
-    );
-    pair(&line("STATUS", status), &line("DATA FEED", &feed));
-    pair(&line("WHY", reason), &line("NEXT", next));
+    border(&mut out, '├', '┼', '┤', '─');
+    pair(&mut out, &line("STATUS", status), &line("FEED", &feed));
+    pair(&mut out, &line("WHY", reason), &line("NEXT", next));
     pair(
+        &mut out,
         &line("SETUP A", &state.trigger_a),
         &line("SETUP B", &state.trigger_b),
     );
     pair(
+        &mut out,
         &line("Ticks", state.tick_count),
         &line(
             "Last tick",
@@ -180,36 +197,24 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
             }),
         ),
     );
-    println!(
-        "├──────────────────────────────────────────────────────┼──────────────────────────────────────────────────────┤"
-    );
+    border(&mut out, '├', '┼', '┤', '─');
     pair(
+        &mut out,
         &line("Instrument", instrument),
         &line("Time IST", now.format("%d-%m-%Y %H:%M:%S")),
     );
     pair(
-        &line(
-            "Market",
-            if state.bars > 0 {
-                format!("{:.2}", state.last_price)
-            } else {
-                "waiting".into()
-            },
-        ),
+        &mut out,
+        &line("Market", format!("{:.2}", state.last_price)),
         &line("Session", session),
     );
     pair(
-        &line(
-            "Last bar",
-            if state.last_bar.is_empty() {
-                "waiting"
-            } else {
-                &state.last_bar
-            },
-        ),
+        &mut out,
+        &line("Last bar", &state.last_bar),
         &line("Data", format!("{} candles", state.bars)),
     );
     pair(
+        &mut out,
         &line(
             "Setup",
             if state.setup.is_empty() {
@@ -220,10 +225,11 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         ),
         &line(
             "Position",
-            format!("{position} ({:.0} contract)", state.position.abs()),
+            format!("{position} ({:.0})", state.position.abs()),
         ),
     );
     pair(
+        &mut out,
         &line(
             "Target",
             state.target.map_or("n/a".into(), |v| format!("{v:.2}")),
@@ -232,10 +238,11 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
             "Stop-loss",
             state
                 .stop
-                .map_or("not confirmed".into(), |v| format!("{v:.2} (tracked)")),
+                .map_or("not confirmed".into(), |v| format!("{v:.2} tracked")),
         ),
     );
     pair(
+        &mut out,
         &line(
             "Last event",
             if state.event.is_empty() {
@@ -250,6 +257,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         ),
     );
     pair(
+        &mut out,
         &line(
             "Realized",
             format!(
@@ -259,52 +267,39 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         ),
         &line(
             "Today",
-            format!("{} trades · {wins} W / {losses} L", state.trades.len()),
+            format!("{} trades | {wins}W {losses}L", state.trades.len()),
         ),
     );
-    println!(
-        "├──────────────────────────────────────────────────────┴──────────────────────────────────────────────────────┤"
+    full_border(&mut out, '├', '┤', '─');
+    whole(
+        &mut out,
+        "TRADE HISTORY | Current run (not broker account history)",
     );
-    println!(
-        "│ CURRENT RUN · ORDER-FILL TRADE HISTORY (resets on restart)                                                   │"
-    );
-    println!(
-        "├────────────────┬────────┬────────┬─────────────┬─────────────┬─────────────────────┬────────────┬─────────────┤"
-    );
-    println!(
-        "│ Time           │ Setup  │ Side   │ Entry       │ Exit        │ Reason              │ Points     │ Result      │"
-    );
-    println!(
-        "├────────────────┼────────┼────────┼─────────────┼─────────────┼─────────────────────┼────────────┼─────────────┤"
-    );
+    full_border(&mut out, '├', '┤', '─');
     if state.trades.is_empty() {
-        println!(
-            "│ No completed broker-observed ILRC trades                                                                     │"
-        );
+        whole(&mut out, "No completed order-fill trades this run");
     }
-    for t in state.trades.iter().rev().take(10).rev() {
-        trade_line(t);
+    for trade in state.trades.iter().rev().take(10).rev() {
+        trade_line(&mut out, trade);
     }
     if let Some(t) = &state.open_trade {
-        println!(
-            "│ OPEN {:<10} {:<6} {:<6} {:>11.2} {:>11} {:<19} {:>10} {:<11} │",
-            clip(&t.time, 10),
-            clip(&t.setup, 6),
-            clip(&t.side, 6),
-            t.entry,
-            "—",
-            "POSITION OPEN",
-            "—",
-            "OPEN"
+        whole(
+            &mut out,
+            &format!(
+                "OPEN {} {} {} entry {:.2}",
+                t.time, t.setup, t.side, t.entry
+            ),
         );
     }
-    println!(
-        "└─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-    );
-    println!(
-        "  Gross price points exclude brokerage, taxes and slippage. Confirm stop and positions directly in Kite."
-    );
-    let _ = io::stdout().flush();
+    full_border(&mut out, '└', '┘', '─');
+    out.push_str("Quote updates drive screen; strategy entries use completed 3-minute candles.\n");
+    out.push_str("Broker orderbook is authoritative for orders/stops.\n");
+    let mut stdout = io::stdout().lock();
+    if is_tty {
+        let _ = stdout.write_all(b"\x1b[?25l\x1b[H\x1b[2J");
+    }
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
 }
 #[cfg(test)]
 mod tests {
