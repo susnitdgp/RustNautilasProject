@@ -50,6 +50,7 @@ pub struct IlrcActor {
     seen: BTreeSet<String>,
     start_ns: u64,
     last_close_ns: u64,
+    live_anchor_established: bool,
     pending_entry: Option<ClientOrderId>,
     pending_stop: Option<ClientOrderId>,
     accepted_stop: Option<ClientOrderId>,
@@ -82,6 +83,7 @@ impl IlrcActor {
             seen: BTreeSet::new(),
             start_ns,
             last_close_ns: 0,
+            live_anchor_established: false,
             pending_entry: None,
             pending_stop: None,
             accepted_stop: None,
@@ -369,7 +371,7 @@ impl DataActor for IlrcActor {
             "Repeated or out-of-order ILRC candle"
         );
         if self.control.as_ref().is_some_and(|c| c.real)
-            && self.last_close_ns >= self.start_ns
+            && self.live_anchor_established
             && close > self.start_ns
         {
             ensure!(
@@ -378,6 +380,13 @@ impl DataActor for IlrcActor {
             );
         }
         self.last_close_ns = close;
+        if self.control.as_ref().is_some_and(|c| c.real) && close > self.start_ns {
+            if !self.live_anchor_established {
+                self.live_anchor_established = true;
+                // Never trade retrospectively on the first newly anchored bar.
+                self.start_ns = close;
+            }
+        }
         let start = close
             .checked_sub(180_000_000_000)
             .ok_or_else(|| anyhow::anyhow!("Invalid ILRC bar timestamp"))?;

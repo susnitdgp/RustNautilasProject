@@ -81,12 +81,8 @@ impl Aggregator {
         if self.current.is_none() {
             // Skip any startup interval that may contain unseen ticks.
             ensure!(bucket >= self.last_close, "WebSocket tick predates warmup");
-            if bucket > self.last_close {
-                ensure!(
-                    bucket == self.last_close + STEP,
-                    "unreconciled completed candle between warmup and WebSocket"
-                );
-            }
+            // The historical-to-stream gap is never replayed as an entry.
+            // The first complete stream bar provides the new live anchor.
             self.skip_partial = ts > bucket;
             self.current = Some(Current {
                 start: bucket,
@@ -103,7 +99,7 @@ impl Aggregator {
         if bucket != old_start {
             ensure!(
                 bucket == old_start + STEP,
-                "WebSocket candle gap; refusing catch-up execution"
+                "WebSocket candle gap after subscription"
             );
             let prev = self.current.take().expect("current");
             self.last_close = prev.start + STEP;
@@ -210,7 +206,12 @@ mod tests {
                 .is_some()
         );
         let mut gap = Aggregator::new(((start - 360) as u64) * 1_000_000_000);
-        assert!(gap.observe(&tick(start, 100, 1000, 1)).is_err());
+        assert!(gap.observe(&tick(start, 100, 1000, 1)).unwrap().is_none());
+        assert!(
+            gap.observe(&tick(start + 180, 101, 1001, 1))
+                .unwrap()
+                .is_some()
+        );
         let mut a = Aggregator::new((start as u64) * 1_000_000_000);
         a.observe(&tick(start, 100, 1000, 1)).unwrap();
         assert!(a.observe(&tick(start + 1, 101, 1001, 2)).is_err());
