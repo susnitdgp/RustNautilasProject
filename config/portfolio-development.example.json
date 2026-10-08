@@ -4,11 +4,39 @@
   "redis_prefix": "kite-dev",
   "instances": [
     {
+      "id": "nifty-fut",
+      "enabled": false,
+      "strategy": "unassigned",
+      "instrument": "NIFTY_FUT_CONTRACT.NFO",
+      "instrument_token": 0,
+      "strategy_config": "config/nifty-fut.json",
+      "live_orders_enabled": false
+    },
+    {
       "id": "crude-ilrc",
+      "enabled": true,
       "strategy": "institutional_liquidity_reversal_continuation_v1",
       "instrument": "CRUDEOIL26OCTFUT.MCX",
       "instrument_token": 145894407,
       "strategy_config": "config/production-ilrc.json",
+      "live_orders_enabled": false
+    },
+    {
+      "id": "gold-fut",
+      "enabled": false,
+      "strategy": "unassigned",
+      "instrument": "GOLD_FUT_CONTRACT.MCX",
+      "instrument_token": 0,
+      "strategy_config": "config/gold-fut.json",
+      "live_orders_enabled": false
+    },
+    {
+      "id": "banknifty-fut",
+      "enabled": false,
+      "strategy": "unassigned",
+      "instrument": "BANKNIFTY_FUT_CONTRACT.NFO",
+      "instrument_token": 0,
+      "strategy_config": "config/banknifty-fut.json",
       "live_orders_enabled": false
     }
   ]

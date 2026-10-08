@@ -16,6 +16,7 @@ pub struct Portfolio {
 #[serde(deny_unknown_fields)]
 pub struct Instance {
     pub id: String,
+    pub enabled: bool,
     pub strategy: String,
     pub instrument: String,
     pub instrument_token: u32,
@@ -43,6 +44,7 @@ impl Portfolio {
         );
         let mut ids = HashSet::new();
         let mut bindings = HashSet::new();
+        let mut token_instruments = std::collections::HashMap::new();
         for instance in &self.instances {
             ensure!(segment(&instance.id), "Unsafe instance ID");
             ensure!(ids.insert(&instance.id), "Duplicate instance ID");
@@ -50,7 +52,24 @@ impl Portfolio {
                 !instance.strategy.trim().is_empty() && !instance.instrument.trim().is_empty(),
                 "Missing strategy or instrument"
             );
-            ensure!(instance.instrument_token != 0, "Zero instrument token");
+            ensure!(
+                instance.instrument.ends_with(".MCX") || instance.instrument.ends_with(".NFO"),
+                "Portfolio requires an NFO or MCX instrument"
+            );
+            if instance.enabled {
+                ensure!(
+                    instance.instrument_token != 0,
+                    "Enabled instance needs a verified instrument token"
+                );
+                if let Some(previous) =
+                    token_instruments.insert(instance.instrument_token, &instance.instrument)
+                {
+                    ensure!(
+                        previous == &instance.instrument,
+                        "Instrument token assigned to different instruments"
+                    );
+                }
+            }
             ensure!(
                 !instance.strategy_config.trim().is_empty(),
                 "Missing strategy config path"
@@ -67,7 +86,12 @@ impl Portfolio {
         Ok(())
     }
     pub fn tokens(&self) -> Vec<u32> {
-        let mut tokens: Vec<_> = self.instances.iter().map(|v| v.instrument_token).collect();
+        let mut tokens: Vec<_> = self
+            .instances
+            .iter()
+            .filter(|v| v.enabled)
+            .map(|v| v.instrument_token)
+            .collect();
         tokens.sort_unstable();
         tokens.dedup();
         tokens
@@ -91,7 +115,7 @@ pub fn inspect(path: &str) -> Result<()> {
             "broker_config": portfolio.broker_config,
             "tokens": portfolio.tokens(),
             "instances": portfolio.instances.iter().map(|v| serde_json::json!({
-                "id": v.id, "strategy": v.strategy, "instrument": v.instrument,
+                "id": v.id, "enabled": v.enabled, "strategy": v.strategy, "instrument": v.instrument,
                 "token": v.instrument_token, "strategy_config": v.strategy_config,
                 "redis_journal": portfolio.key(&v.id, "journal").expect("validated"),
                 "redis_owner": portfolio.key(&v.id, "owner").expect("validated")
@@ -107,8 +131,8 @@ mod tests {
         serde_json::from_str(r#"{
             "version":1,"broker_config":"config/kite.json","redis_prefix":"kite-dev",
             "instances":[
-                {"id":"crude-ilrc","strategy":"ilrc","instrument":"CRUDEOIL26OCTFUT.MCX","instrument_token":123,"strategy_config":"config/crude.json","live_orders_enabled":false},
-                {"id":"gold-trend","strategy":"trend","instrument":"GOLD26DEC.MCX","instrument_token":456,"strategy_config":"config/gold.json","live_orders_enabled":false}
+                {"id":"crude-ilrc","enabled":true,"strategy":"ilrc","instrument":"CRUDEOIL26OCTFUT.MCX","instrument_token":123,"strategy_config":"config/crude.json","live_orders_enabled":false},
+                {"id":"gold-trend","enabled":true,"strategy":"trend","instrument":"GOLD26DEC.MCX","instrument_token":456,"strategy_config":"config/gold.json","live_orders_enabled":false}
             ]}"#).unwrap()
     }
     #[test]
@@ -131,8 +155,28 @@ mod tests {
         assert!(p.validate().is_err());
         p.instances[1].live_orders_enabled = false;
         p.instances[1].instrument_token = 123;
-        p.validate().unwrap(); // Distinct strategies may share one subscription.
+        p.instances[1].instrument = p.instances[0].instrument.clone();
+        p.validate().unwrap(); // Distinct strategies may share the same instrument.
         assert_eq!(p.tokens(), vec![123]);
+    }
+    #[test]
+    fn disabled_placeholder_is_excluded_and_can_be_enabled_with_token() {
+        let mut p = sample();
+        p.instances[1].enabled = false;
+        p.instances[1].instrument_token = 0;
+        p.validate().unwrap();
+        assert_eq!(p.tokens(), vec![123]);
+        p.instances[1].enabled = true;
+        assert!(p.validate().is_err());
+        p.instances[1].instrument_token = 456;
+        p.validate().unwrap();
+        assert_eq!(p.tokens(), vec![123, 456]);
+    }
+    #[test]
+    fn token_collision_across_instruments_is_rejected() {
+        let mut p = sample();
+        p.instances[1].instrument_token = 123;
+        assert!(p.validate().is_err());
     }
     #[test]
     fn rejects_key_injection() {

@@ -8,7 +8,9 @@ cargo run --locked -p kite-node -- native-portfolio-validate config/portfolio-de
 ```
 
 - One shared `broker_config` path identifies the account credentials; the portfolio validator never opens that file.
-- Add up to four `instances`, each with an immutable `id`, strategy name, instrument, token and independent `strategy_config` JSON file.
+- Add up to four `instances`, each with an immutable `id`, JSON `enabled` flag, strategy name, instrument, token and independent `strategy_config` JSON file.
+- This example reserves NIFTY futures, CRUDEOIL futures, GOLD futures and BANKNIFTY futures. CRUDEOIL is enabled for *manifest inspection only*; the other three are disabled with explicit contract placeholders and token `0`.
+- `enabled: false` instances do not enter the token subscription set. To enable one, first set the correct current contract symbol, verified token, strategy name and strategy JSON configuration, then switch `enabled: true`. Enabling an entry does not start trading or any background process.
 - Multiple instances can use the same instrument token; subscription tokens are deduplicated before forming a shared-socket Kite subscribe/full-mode request.
 - Redis names are `<redis_prefix>:v1:{<instance-id>}:<kind>`. Braces group instance keys in a Redis hash slot.
 - `live_orders_enabled` MUST be false for every portfolio entry. **This initial foundation is non-executing.**
