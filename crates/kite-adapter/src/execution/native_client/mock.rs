@@ -15,12 +15,15 @@ use async_trait::async_trait;
 use nautilus_common::{
     cache::CacheView,
     clients::ExecutionClient,
+    clock::Clock,
     factories::{ClientConfig, ExecutionClientFactory},
 };
 use nautilus_model::identifiers::TraderId;
 use rust_decimal::Decimal;
 use std::{
     any::Any,
+    cell::RefCell,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 #[derive(Debug)]
@@ -52,6 +55,7 @@ impl ExecutionClientFactory for MockFactory {
         name: &str,
         config: &dyn ClientConfig,
         cache: CacheView,
+        _clock: Rc<RefCell<dyn Clock>>,
     ) -> Result<Box<dyn ExecutionClient>> {
         let cfg = config
             .as_any()

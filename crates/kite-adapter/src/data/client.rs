@@ -347,11 +347,6 @@ impl DataClient for KiteDataClient {
             "Unsupported Kite data capability: request_funding_rates"
         ))
     }
-    fn request_forward_prices(&self, _request: RequestForwardPrices) -> Result<()> {
-        Err(anyhow!(
-            "Unsupported Kite data capability: request_forward_prices"
-        ))
-    }
     fn request_bars(&self, _request: RequestBars) -> Result<()> {
         Err(anyhow!("Unsupported Kite data capability: request_bars"))
     }

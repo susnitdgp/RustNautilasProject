@@ -1,0 +1,67 @@
+{
+  "strategy": "smart_money_breakout_channels_v17",
+  "instrument": "CRUDEOIL26OCTFUT.MCX",
+  "symbol": "CRUDEOIL26OCTFUT",
+  "instrument_token": 145894407,
+  "interval": "minute",
+  "contracts": 1,
+  "live_orders_enabled": false,
+  "expected_expiry": "2026-10-19",
+  "session_calendar": {
+    "timezone": "Asia/Kolkata",
+    "valid_from": "2026-08-17",
+    "valid_through": "2026-10-19",
+    "regular": {
+      "open": "09:00:00",
+      "close": "23:30:00"
+    },
+    "overrides": {
+      "2026-09-14": {
+        "open": "17:00:00",
+        "close": "23:30:00"
+      },
+      "2026-10-02": null
+    }
+  },
+  "smbc": {
+    "overlap": false,
+    "strong_closes_only": true,
+    "normalization_length": 100,
+    "box_detection_length": 10,
+    "enable_longs": true,
+    "enable_shorts": true,
+    "opposite_breakout": "Reverse",
+    "intrabar_exit": true,
+    "stop_mode": "Wick + ATR Buffer",
+    "atr_length": 14,
+    "sl_atr_mult": 1.0,
+    "wick_lookback": 2,
+    "wick_atr_buffer": 0.1,
+    "min_stop_points": 8.0,
+    "max_stop_points": 18.0,
+    "target_mode": "R:R",
+    "reward_risk": 1.5,
+    "tp_atr_mult": 2.0,
+    "max_target_points": 20.0,
+    "breakeven_r": 0.75,
+    "trail_mode": "ATR Trail",
+    "trail_atr_mult": 1.2,
+    "trail_lookback": 5,
+    "trail_activate_r": 0.75,
+    "session_timezone": "Asia/Kolkata",
+    "allow_entries_only_in_session": true,
+    "force_flat_at_session_end": true,
+    "auto_sq_off_hour": 23,
+    "auto_sq_off_minute": 15,
+    "session": {
+      "start": "09:00:00",
+      "end": "23:15:00",
+      "days": "23456",
+      "reset_daily": false
+    },
+    "display": {
+      "show_dashboard": false
+    },
+    "entry_cooldown_bars": 5
+  }
+}

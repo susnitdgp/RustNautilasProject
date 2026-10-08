@@ -1,0 +1,41 @@
+{
+  "strategy": "institutional_liquidity_reversal_continuation_v1",
+  "instrument": "CRUDEOIL26OCTFUT.MCX",
+  "symbol": "CRUDEOIL26OCTFUT",
+  "instrument_token": 145894407,
+  "interval": "3minute",
+  "contracts": 1,
+  "live_orders_enabled": false,
+  "expected_expiry": "2026-10-19",
+  "session_calendar": {
+    "timezone": "Asia/Kolkata",
+    "valid_from": "2026-08-17",
+    "valid_through": "2026-10-19",
+    "regular": {
+      "open": "09:00:00",
+      "close": "23:30:00"
+    },
+    "overrides": {
+      "2026-09-14": {
+        "open": "17:00:00",
+        "close": "23:30:00"
+      },
+      "2026-10-02": null
+    }
+  },
+  "session_open_minute": 540,
+  "entry_cutoff_minute": 1395,
+  "ilrc": {
+    "atr_len": 14,
+    "avg_body_len": 20,
+    "swing_len": 20,
+    "internal_len": 5,
+    "displacement_body_mult": 1.3,
+    "displacement_atr_mult": 0.8,
+    "sweep_buffer_atr": 0.15,
+    "min_stop_atr": 0.5,
+    "max_stop_atr": 1.5,
+    "min_rr": 1.5,
+    "retrace_bars": 5
+  }
+}

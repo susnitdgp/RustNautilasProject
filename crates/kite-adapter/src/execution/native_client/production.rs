@@ -4,13 +4,16 @@ use anyhow::{Result, anyhow, ensure};
 use nautilus_common::{
     cache::CacheView,
     clients::ExecutionClient,
+    clock::Clock,
     factories::{ClientConfig, ExecutionClientFactory},
 };
 use nautilus_model::identifiers::TraderId;
 use serde::Deserialize;
 use std::{
     any::Any,
+    cell::RefCell,
     collections::BTreeMap,
+    rc::Rc,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -97,6 +100,7 @@ impl ExecutionClientFactory for Factory {
         name: &str,
         config: &dyn ClientConfig,
         cache: CacheView,
+        _clock: Rc<RefCell<dyn Clock>>,
     ) -> Result<Box<dyn ExecutionClient>> {
         let c = config
             .as_any()

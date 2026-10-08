@@ -1,45 +1,35 @@
 pub mod backtest_report;
+mod bar_timing;
 pub mod catalog;
 pub mod cli;
-mod dashboard;
 pub mod data;
+mod execution_session;
 pub mod full_codec;
+mod history_revision;
+mod ilrc_backtest;
+mod ilrc_config;
+mod ilrc_dashboard;
+mod ilrc_shadow;
 pub mod lifecycle;
-pub mod persistence;
-pub mod recovery;
-pub mod redis_cache;
-pub mod squeeze_momentum_actor;
-pub mod status;
-mod synthetic;
-
-mod production;
-
-mod bar_timing;
 mod live_bars;
 mod live_control;
 mod live_data;
 mod live_lease;
-mod squeeze_momentum_live_runner;
-
-mod squeeze_momentum_terminal;
-
-mod history_revision;
-
-mod execution_session;
-
 mod owner_monitor;
-
-mod slack_alerts;
-
+pub mod persistence;
+mod production;
+pub mod recovery;
+pub mod redis_cache;
 mod session_calendar;
-
+mod slack_alerts;
+pub mod smbc_actor;
+mod smbc_backtest;
+mod smbc_live_runner;
+mod smbc_recorder;
+mod smbc_strategy;
+mod smbc_terminal;
+pub mod status;
 mod strategy_session;
-
-mod squeeze_momentum_recorder;
-
+mod synthetic;
 #[cfg(test)]
 mod test_support;
-
-mod squeeze_momentum_backtest;
-mod squeeze_momentum_indicator;
-mod squeeze_momentum_strategy;

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum Interval {
+    #[serde(rename = "minute")]
+    OneMinute,
     #[serde(rename = "3minute")]
     ThreeMinute,
     #[serde(rename = "5minute")]
@@ -13,12 +15,14 @@ pub enum Interval {
 impl Interval {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::OneMinute => "minute",
             Self::ThreeMinute => "3minute",
             Self::FiveMinute => "5minute",
         }
     }
     pub const fn minutes(self) -> u64 {
         match self {
+            Self::OneMinute => 1,
             Self::ThreeMinute => 3,
             Self::FiveMinute => 5,
         }
@@ -149,8 +153,8 @@ pub fn validate_for(candles: &[Candle], interval: Interval) -> Result<()> {
         ensure!(
             [c.open, c.high, c.low, c.close]
                 .iter()
-                .all(|p| p.is_finite() && *p > 0.0 && p.fract() == 0.0),
-            "Invalid CRUDEOIL price/tick size"
+                .all(|p| p.is_finite() && *p > 0.0),
+            "Invalid historical price"
         );
         ensure!(
             c.low <= c.open.min(c.close) && c.high >= c.open.max(c.close) && c.low <= c.high,

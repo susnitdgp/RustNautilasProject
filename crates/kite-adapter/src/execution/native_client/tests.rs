@@ -259,14 +259,22 @@ async fn native_broker_order_queries_preserve_status_and_do_not_guess_client_own
 }
 #[test]
 fn registers_through_native_execution_factory_without_connecting_or_loading_credentials() {
-    use nautilus_common::{cache::Cache, factories::ExecutionClientFactoryRegistry};
+    use nautilus_common::{
+        cache::Cache, clock::TestClock, factories::ExecutionClientFactoryRegistry,
+    };
     let mut registry = ExecutionClientFactoryRegistry::new();
     registry.register("KITE".into(), Box::new(Factory)).unwrap();
     let cache = Rc::new(RefCell::new(Cache::default()));
     let c = registry
         .get("KITE")
         .unwrap()
-        .create("SUSANTA-001".into(), "KITE", &config(), cache.into())
+        .create(
+            "SUSANTA-001".into(),
+            "KITE",
+            &config(),
+            cache.into(),
+            Rc::new(RefCell::new(TestClock::new())),
+        )
         .unwrap();
     assert_eq!(c.account_id(), AccountId::from("KITE-TEST123"));
     assert!(!c.is_connected());

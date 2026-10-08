@@ -1,4 +1,4 @@
-//! Single Squeeze Momentum owner; an unclean run retains its Redis ownership.
+//! Single active strategy owner; an unclean run retains its Redis ownership.
 use anyhow::{Result, ensure};
 pub struct Lease {
     con: redis::Connection,
@@ -25,7 +25,7 @@ impl Lease {
             .query(&mut con)?;
         ensure!(
             set.is_some(),
-            "Squeeze Momentum owner exists; review prior run before restarting"
+            "Strategy owner exists; review prior run before restarting"
         );
         Ok(Self {
             con,

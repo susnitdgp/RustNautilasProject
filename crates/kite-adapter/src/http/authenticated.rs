@@ -102,7 +102,7 @@ impl ReadClient {
             "Historical reads require the market-data host"
         );
         ensure!(
-            matches!(interval, "3minute" | "5minute"),
+            matches!(interval, "minute" | "3minute" | "5minute"),
             "Unsupported historical interval"
         );
         let url = format!("{}/instruments/historical/{token}/{interval}", self.root);

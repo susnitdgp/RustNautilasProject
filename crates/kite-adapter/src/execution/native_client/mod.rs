@@ -1,3 +1,4 @@
+use std::rc::Rc;
 pub mod coordination;
 pub mod custom_sandbox;
 mod dispatch;
@@ -21,6 +22,7 @@ use async_trait::async_trait;
 use nautilus_common::{
     cache::CacheView,
     clients::ExecutionClient,
+    clock::Clock,
     factories::{ClientConfig, ExecutionClientFactory, OrderEventFactory},
     live::runner::try_get_exec_event_sender,
     messages::{ExecutionEvent, execution::*},
@@ -86,6 +88,7 @@ impl ExecutionClientFactory for Factory {
         name: &str,
         config: &dyn ClientConfig,
         _cache: CacheView,
+        _clock: Rc<RefCell<dyn Clock>>,
     ) -> Result<Box<dyn ExecutionClient>> {
         let config = config
             .as_any()
