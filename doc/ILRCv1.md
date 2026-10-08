@@ -79,3 +79,9 @@ cargo run --locked -p kite-node -- native-ilrc-mock-broker
 ```
 
 **Scope:** This tests a synthetic broker lifecycle and does not invoke the production `kite-adapter` dispatcher, connect Redis, place a Kite protective order, or establish account reconciliation. The existing internal Nautilus dispatcher has separate Redis/fill/recovery tests but requires Nautilus `OrderAny` and a live runner with cache/clock/event sender, broker snapshots, and actual stop management. Wiring the ILRC order intents directly into the Kite HTTP transport would bypass those controls and is not authorized. The live-order path remains disconnected and all gates disabled.
+
+## ILRC to Nautilus native order conversion
+
+`ilrc_nautilus_bridge.rs` maps post-candle ILRC entry decisions into Nautilus `OrderAny::Market` instructions (`DAY`, exactly one contract, non-reducing entry), which are compatible with `kite_adapter::execution::native::submit` and its market-protection requirement. Tests verify real type conversion and rejection of malformed risk levels, without broker connections. The bridge is not exposed as a CLI execution command.
+
+For **operational** integration, a distinct native live runner must own a Nautilus order factory/event bus, guarded production dispatcher, Redis account lease and journal, order stream, and broker reconciliation. It must verify protective stop orders and modifications, fill-by-fill quantities, session square-off and crash recovery. Those end-to-end activities have not been implemented for ILRC or verified, and `live_orders_enabled` must remain false. A type-correct Kite command is not evidence of safe live submission.

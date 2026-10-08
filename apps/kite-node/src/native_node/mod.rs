@@ -25,6 +25,8 @@ mod ilrc_kite_adapter;
 mod ilrc_live_readiness;
 mod ilrc_mock_execution;
 #[allow(dead_code)]
+mod ilrc_nautilus_bridge;
+#[allow(dead_code)]
 mod ilrc_order_intent;
 #[allow(dead_code)]
 mod ilrc_order_lifecycle;
