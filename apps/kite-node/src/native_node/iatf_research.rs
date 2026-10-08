@@ -107,7 +107,7 @@ pub struct Engine {
     config: Config,
     token: u32,
     closes: VecDeque<f64>,
-    last_ts: Option<u64>,
+    last_ts: Option<(u64, u64)>,
 }
 impl Engine {
     pub fn new(config: Config, token: u32) -> Result<Self> {
@@ -131,7 +131,9 @@ impl Engine {
             "Stale/future market data"
         );
         ensure!(
-            self.last_ts.is_none_or(|ts| q.exchange_ts_ms > ts),
+            self.last_ts
+                .is_none_or(|(exchange, received)| q.exchange_ts_ms > exchange
+                    || (q.exchange_ts_ms == exchange && q.received_ts_ms > received)),
             "Non-monotonic quote time"
         );
         ensure!(
@@ -148,7 +150,7 @@ impl Engine {
             (q.ask - q.bid) / q.last <= self.config.max_spread_fraction,
             "Spread too wide"
         );
-        self.last_ts = Some(q.exchange_ts_ms);
+        self.last_ts = Some((q.exchange_ts_ms, q.received_ts_ms));
         let imbalance = (q.bid_qty - q.ask_qty) / (q.bid_qty + q.ask_qty);
         let lookback = self.config.efficiency_lookback;
         let required = lookback.max(self.config.breakout_lookback) + 1;

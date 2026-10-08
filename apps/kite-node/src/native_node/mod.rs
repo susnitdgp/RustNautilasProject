@@ -19,6 +19,7 @@ mod history_revision;
 mod iatf_replay;
 #[allow(dead_code)]
 mod iatf_research;
+mod iatf_september;
 mod ilrc_backtest;
 mod ilrc_broker_replay;
 mod ilrc_causal_audit;
