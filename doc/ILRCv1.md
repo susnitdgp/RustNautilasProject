@@ -93,3 +93,7 @@ The shared Kite request protocol now supports validated regular `SL-M` stop-mark
 ## Broker-observed SL-M mock regression
 
 The `kite-adapter` mock now has a test that creates an ILRC-style `SL-M` order, reads its `TRIGGER PENDING` state and one-contract quantity back through the mock broker snapshot, then modifies the trigger and confirms the changed value from a fresh snapshot. A missing stop-order ID is explicitly rejected. No real Kite API or Redis call is made by this test. These checks do not replace required real-time fill/stop coordination, production Redis recovery, tick-size handling, or broker-confirmed live protection.
+
+## ILRC execution orchestration core (staged only)
+
+`ilrc_orchestrator.rs` composes order intent validation and the lifecycle state machine: flat/reconciled admission, single-entry reservation, asynchronous entry acknowledgement, trade-ID deduplication, protective `SL-M` order intent after a confirmed fill, explicit broker observation of that stop, reconciliation, and break-even stop-modification intent/observation. Unknown acknowledgements and mismatched stop observations fail closed. There is no live runner wired to this orchestrator; it has no network calls, Redis journaling, external account lock, or actual stop submission. It must not be used to claim production readiness. Stop ticks currently require integer trigger points in this staged module; production tick-size metadata requires separate verification.
