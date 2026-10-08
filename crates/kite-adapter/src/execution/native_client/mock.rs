@@ -357,3 +357,61 @@ impl Broker for MockBroker {
         }
     }
 }
+
+#[cfg(test)]
+mod ilrc_stop_flow_tests {
+    use super::*;
+    #[tokio::test]
+    async fn stop_placement_requires_broker_observation_then_modification() {
+        let broker = MockBroker::new(145894407, "MIS");
+        let create = Command::ProtectiveStopMarket {
+            symbol: "CRUDEOIL26OCTFUT".into(),
+            side: "SELL".into(),
+            product: "MIS".into(),
+            quantity: 1,
+            trigger_price_rupees: 8690,
+            tag: "ILRCSTOP001".into(),
+            market_protection: -1,
+        };
+        create.validate().unwrap();
+        let id = match broker.execute(&create).await.unwrap() {
+            Outcome::Acknowledged { order_id } => order_id,
+            _ => panic!("stop rejected"),
+        };
+        let observed = broker.snapshot().await.unwrap();
+        let stop = observed
+            .orders
+            .iter()
+            .find(|o| o.order_id == id)
+            .expect("broker stop observation");
+        assert_eq!(stop.order_type, "SL-M");
+        assert_eq!(stop.status, "TRIGGER PENDING");
+        assert_eq!(stop.quantity, 1);
+        let modify = Command::ModifyProtectiveStop {
+            order_id: id.clone(),
+            quantity: 1,
+            trigger_price_rupees: 8700,
+            market_protection: -1,
+        };
+        modify.validate().unwrap();
+        assert!(matches!(
+            broker.execute(&modify).await.unwrap(),
+            Outcome::Acknowledged { .. }
+        ));
+        let after = broker.snapshot().await.unwrap();
+        let updated = after.orders.iter().find(|o| o.order_id == id).unwrap();
+        assert_eq!(updated.price, Decimal::from(8700));
+        assert_eq!(updated.status, "TRIGGER PENDING");
+    }
+    #[tokio::test]
+    async fn unknown_protective_modification_cannot_claim_success() {
+        let broker = MockBroker::new(145894407, "MIS");
+        let cmd = Command::ModifyProtectiveStop {
+            order_id: "123456".into(),
+            quantity: 1,
+            trigger_price_rupees: 8700,
+            market_protection: -1,
+        };
+        assert!(broker.execute(&cmd).await.is_err());
+    }
+}

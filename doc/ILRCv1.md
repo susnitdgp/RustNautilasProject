@@ -89,3 +89,7 @@ For **operational** integration, a distinct native live runner must own a Nautil
 ## Protective Kite order transport support
 
 The shared Kite request protocol now supports validated regular `SL-M` stop-market placement (`ProtectiveStopMarket`) and trigger/quantity modification (`ModifyProtectiveStop`) with automatic market protection. Request encoding matches Kite Connect's documented `trigger_price` and `order_type=SL-M` parameters. The native mock broker models protective stop acknowledgements and edits. These commands are **not** registered in the ILRC live runner or native order dispatcher; a broker receipt is not proof that an exchange stop is active. Stop-order rejection, trigger handling, reduce-only exposure, persisted identity, correct tick size, and fill-by-fill reconciliation must be confirmed before actual deployment. No live trading gates are enabled.
+
+## Broker-observed SL-M mock regression
+
+The `kite-adapter` mock now has a test that creates an ILRC-style `SL-M` order, reads its `TRIGGER PENDING` state and one-contract quantity back through the mock broker snapshot, then modifies the trigger and confirms the changed value from a fresh snapshot. A missing stop-order ID is explicitly rejected. No real Kite API or Redis call is made by this test. These checks do not replace required real-time fill/stop coordination, production Redis recovery, tick-size handling, or broker-confirmed live protection.
