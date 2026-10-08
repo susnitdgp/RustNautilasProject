@@ -146,9 +146,31 @@ pub fn run(token: u32) -> Result<()> {
     let net_a = super::ilrc_timed_mock::research_session_net(&candles, &a, 0.5, 2.0)?;
     let net_b = super::ilrc_timed_mock::research_session_net(&candles, &b, 0.5, 2.0)?;
     let net_combined = super::ilrc_timed_mock::research_session_net(&candles, &combined, 0.5, 2.0)?;
+    let periods = |report: &serde_json::Value| {
+        let daily = report["daily"].as_array().expect("research daily array");
+        let period = |start: &str, end: &str| {
+            let selected: Vec<_> = daily
+                .iter()
+                .filter(|x| {
+                    let day = x["date"].as_str().unwrap_or("");
+                    day >= start && day <= end
+                })
+                .collect();
+            serde_json::json!({"sessions":selected.len(),
+                "completed":selected.iter().map(|x|x["exits"].as_u64().unwrap_or(0)).sum::<u64>(),
+                "net_points":selected.iter().map(|x|x["net_points"].as_f64().unwrap_or(0.0)).sum::<f64>(),
+                "profitable_days":selected.iter().filter(|x|x["net_points"].as_f64().unwrap_or(0.0)>0.0).count()})
+        };
+        serde_json::json!({"september":period("2026-09-01","2026-09-30"),
+            "october":period("2026-10-01","2026-10-08")})
+    };
+    let periods_a = periods(&net_a);
+    let periods_b = periods(&net_b);
+    let periods_combined = periods(&net_combined);
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
+            "period_split":{"setup_a":periods_a,"setup_b":periods_b,"combined":periods_combined},
             "event":"ilrc_full_entry_audit","instrument":config.instrument,
             "next_bar_mock":{"setup_a":mock_a,"setup_b":mock_b,"combined":mock_combined},
             "session_flat_net_research":{"setup_a":net_a,"setup_b":net_b,"combined":net_combined},
