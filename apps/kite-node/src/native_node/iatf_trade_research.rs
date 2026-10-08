@@ -15,10 +15,19 @@ struct Settings {
     fees_per_round_trip: f64,
     max_holding_minutes: usize,
     entry_cutoff_ist: String,
+    #[serde(default = "default_regime_minutes")]
+    regime_minutes: u64,
+}
+fn default_regime_minutes() -> u64 {
+    3
 }
 impl Settings {
     fn validate(&self) -> Result<()> {
         ensure!(self.instrument_token > 0, "Invalid token");
+        ensure!(
+            matches!(self.regime_minutes, 3 | 5),
+            "Regime candles must be 3 or 5 minutes"
+        );
         for v in [self.quantity, self.stop_points, self.trail_points] {
             ensure!(
                 v.is_finite() && v > 0.0,
@@ -129,7 +138,7 @@ fn research(minute: &[Candle], three: &[Candle], s: &Settings) -> Result<serde_j
         }
         while cursor < three.len() {
             let b = three[cursor].time()?;
-            if b.timestamp() + 180 > t.timestamp() + 60 {
+            if b.timestamp() + (s.regime_minutes as i64) * 60 > t.timestamp() + 60 {
                 break;
             }
             if b.date_naive() == day {
@@ -254,7 +263,7 @@ fn research(minute: &[Candle], three: &[Candle], s: &Settings) -> Result<serde_j
     }
     Ok(serde_json::json!({
         "event":"iatf_september_trade_research","instrument_token":s.instrument_token,
-        "input_1minute_bars":minute.len(),"input_3minute_bars":three.len(),
+        "input_1minute_bars":minute.len(),"regime_minutes":s.regime_minutes,"input_regime_bars":three.len(),
         "missing_minute_intervals":missing,"occupied_minutes":occupied,
         "all":results.all.json(),"entry_trend_regime":results.trend.json(),
         "entry_chop_regime":results.chop.json(),"entry_transition_regime":results.transition.json(),
@@ -272,7 +281,11 @@ pub fn run(path: &str) -> Result<()> {
     ))?;
     let three = rt.block_on(super::iatf_multitimeframe::month(
         s.instrument_token,
-        Interval::ThreeMinute,
+        if s.regime_minutes == 5 {
+            Interval::FiveMinute
+        } else {
+            Interval::ThreeMinute
+        },
     ))?;
     println!(
         "{}",
@@ -294,6 +307,7 @@ mod tests {
             fees_per_round_trip: 3.0,
             max_holding_minutes: 60,
             entry_cutoff_ist: "23:15".into(),
+            regime_minutes: 3,
         };
         s.validate().unwrap();
         s.slippage_points_per_side = -1.0;

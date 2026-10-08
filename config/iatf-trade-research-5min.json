@@ -7,5 +7,5 @@
   "fees_per_round_trip": 15.0,
   "max_holding_minutes": 90,
   "entry_cutoff_ist": "23:15",
-  "regime_minutes": 3
+  "regime_minutes": 5
 }
