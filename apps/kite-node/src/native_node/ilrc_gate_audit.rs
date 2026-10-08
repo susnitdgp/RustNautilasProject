@@ -138,10 +138,16 @@ pub fn run(token: u32) -> Result<()> {
                 "side":e.side,"entry":e.entry,"stop":e.stop,"target":e.target
             })).collect::<Vec<_>>()})
     };
+    let mut combined = a.clone();
+    combined.extend(b.clone());
+    let mock_a = super::ilrc_timed_mock::research_summary(&candles, &a, 0.5)?;
+    let mock_b = super::ilrc_timed_mock::research_summary(&candles, &b, 0.5)?;
+    let mock_combined = super::ilrc_timed_mock::research_summary(&candles, &combined, 0.5)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "event":"ilrc_full_entry_audit","instrument":config.instrument,
+            "next_bar_mock":{"setup_a":mock_a,"setup_b":mock_b,"combined":mock_combined},
             "candles":candles.len(),"preliminary":preliminary,
             "setup_a":counts(&a),"setup_b":counts(&b),
             "warning":"Actual historical strategy entry-event functions; NOT final broker admissions, next-open fills or per-rejection transition counters."

@@ -192,6 +192,24 @@ fn replay_with_state(
     }
     Ok(())
 }
+pub(super) fn research_summary(
+    bars: &[Candle],
+    events: &[EntryEvent],
+    slippage: f64,
+) -> Result<serde_json::Value> {
+    let mut state = ReplayState::new(events.len());
+    replay_with_state(bars, events, &mut state, slippage, None)?;
+    state.stats.unfilled += events.len() - state.next;
+    Ok(serde_json::json!({
+        "candidates":state.stats.candidates,"filled":state.stats.filled,
+        "completed":state.stats.completed_orders,"blocked":state.stats.blocked,
+        "unfilled":state.stats.unfilled,"stopped":state.stats.stopped,
+        "targeted":state.stats.targeted,"breakeven":state.stats.breakeven,
+        "gross_points_after_slippage_before_fees":state.stats.gross_points,
+        "unclosed_at_end":state.active.is_some(),"assumed_slippage_per_side_points":slippage,
+        "warning":"Next-available-3m-bar-open mock, no actual broker fills, no same-bar stop, no session-end forced liquidation, no full charges."
+    }))
+}
 fn replay(bars: &[Candle], events: &[EntryEvent]) -> Result<Stats> {
     let mut state = ReplayState::new(events.len());
     replay_with_state(bars, events, &mut state, 0.0, None)?;
