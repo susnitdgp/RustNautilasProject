@@ -221,6 +221,8 @@ pub(super) fn research_session_net(
     let (mut net, mut peak, mut drawdown) = (0.0_f64, 0.0_f64, 0.0_f64);
     let mut daily = Vec::new();
     let mut eod_exits = 0usize;
+    let mut eod_details = Vec::new();
+    let mut eod_net_points = 0.0_f64;
     for (date, day_bars) in &days {
         let day_events: Vec<_> = events
             .iter()
@@ -240,6 +242,16 @@ pub(super) fn research_session_net(
             };
             state.stats.slippage_points += slippage;
             state.stats.completed_orders += 1;
+            let trade_points = if open.long {
+                exit - open.entry
+            } else {
+                open.entry - exit
+            };
+            eod_net_points += trade_points - round_trip_cost_points;
+            eod_details.push(serde_json::json!({"date":date,"signal_id":open.id,
+                "entry":open.entry,"exit":exit,"last_candle":last.timestamp,
+                "side":if open.long {"LONG"} else {"SHORT"},
+                "net_points":trade_points-round_trip_cost_points}));
             eod_exits += 1;
         }
         let daily_net =
@@ -266,7 +278,10 @@ pub(super) fn research_session_net(
         "sessions":days.len(),"candidates":total.candidates,"filled":total.filled,
         "completed":total.completed_orders,"blocked":total.blocked,"unfilled":total.unfilled,
         "stopped":total.stopped,"targeted":total.targeted,"breakeven":total.breakeven,
-        "eod_exits":eod_exits,"gross_points_after_slippage":total.gross_points,
+        "eod_exits":eod_exits,"eod_details":eod_details,
+        "net_points_excluding_eod_trades":net-eod_net_points,
+        "eod_trade_net_points":eod_net_points,
+        "gross_points_after_slippage":total.gross_points,
         "cost_points":total.completed_orders as f64*round_trip_cost_points,
         "net_points":net,"daily_close_max_drawdown_points":drawdown,
         "assumed_slippage_per_side_points":slippage,
@@ -502,5 +517,17 @@ mod tests {
         let x = replay(&b, &[e("A", "2026-10-07T09:03:00+05:30")]).unwrap();
         assert_eq!(x.stopped, 1);
         assert_eq!(x.targeted, 0);
+    }
+    #[test]
+    fn session_research_rejects_invalid_costs_and_excludes_late_bars() {
+        let bars = vec![
+            bar("2026-10-07T23:12:00+05:30", 100., 101., 99.),
+            bar("2026-10-07T23:15:00+05:30", 100., 101., 99.),
+        ];
+        assert!(research_session_net(&bars, &[], 0.5, -2.0).is_err());
+        assert!(research_session_net(&bars, &[], f64::NAN, 2.0).is_err());
+        let report = research_session_net(&bars, &[], 0.5, 2.0).unwrap();
+        assert_eq!(report["sessions"], 1);
+        assert_eq!(report["completed"], 0);
     }
 }
