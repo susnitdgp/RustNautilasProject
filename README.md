@@ -67,7 +67,7 @@ The live-capable binary is compiled using `cargo build --release --locked -p kit
 The manual order-sending command (run only when explicitly accepting real-money order risk, during a verified MCX trading session) is:
 
 ```bash
-./target/release/kite-node native-ilrc-nautilus-live config/production-ilrc-live.json config/kite-ilrc-live.json 3600
+./target/release/kite-node native-ilrc-nautilus-live config/production-ilrc-live.json config/kite-ilrc-live.json
 ```
 
 Both live profiles are private local files ignored by Git. They must enable live orders, agree on the CRUDEOIL instrument token, identify the exact broker user, and use MIS / automatic market protection. These are **real-market orders**, not simulated orders. A clean startup requires a broker-flat account and no pending orders. Stop-loss placement follows the entry fill, so execution risk exists between those operations. The historical mock tests and read-only preflight are not proof of successful real-money order execution, protective stop acceptance or crash recovery. Review the broker orderbook/positions directly, ensure risk capital and margins are appropriate, and use Ctrl+C to request controlled shutdown. If there is unprotected exposure or an uncertain mutation, manual broker intervention may be necessary. The existing shadow command remains unchanged.

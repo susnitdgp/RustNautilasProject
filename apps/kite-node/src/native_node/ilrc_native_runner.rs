@@ -215,11 +215,7 @@ pub fn run_fixture(config: &str, fixture: &str, seconds: u64) -> Result<()> {
     })
 }
 
-pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result<()> {
-    ensure!(
-        (5..=86360).contains(&seconds),
-        "ILRC production duration out of range"
-    );
+pub fn run_production(config: &str, broker_config: &str) -> Result<()> {
     let selection = Selection::load_live(config)?;
     let settings: kite_adapter::execution::native_client::production::Settings =
         serde_json::from_slice(&std::fs::read(broker_config)?)?;
@@ -227,6 +223,14 @@ pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result
     selection.validate_live()?;
     let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"));
     let date = now.date_naive();
+    let minute = chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now);
+    ensure!(
+        minute >= selection.session_open_minute && minute < selection.entry_cutoff_minute,
+        "ILRC live start must be within 09:00–23:15 IST"
+    );
+    let seconds = (selection.entry_cutoff_minute - minute) as u64 * 60
+        - chrono::Timelike::second(&now) as u64;
+
     ensure!(
         selection.session_calendar.session(date)?.is_some(),
         "ILRC selected date is not a trading session"
@@ -294,7 +298,7 @@ pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result
         cfg.risk_engine.max_notional_per_order.insert(instrument.id.to_string(),"2000000".into());
         let builder=LiveNodeBuilder::from_config(cfg)?.with_cache_database_factory(Box::new(super::redis_cache::Factory(redis)))
             .add_data_client(Some("STBARS".into()),Box::new(live_data::Factory),Box::new(feed))?
-            .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+10,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials)}))?;
+            .add_data_client(Some("KITE".into()),Box::new(data::Factory),Box::new(data::Config{instrument:instrument.clone(),token:selection.instrument_token,seconds:seconds+120,synthetic_tick_ms:500,short_fixture:false,sandbox_user:None,credentials:Some(credentials)}))?;
         let mut node=builder.add_exec_client(Some("MCX".into()),Box::new(kite_adapter::execution::native_client::production::Factory),Box::new(kite_adapter::execution::native_client::production::LiveConfig{settings,instrument_id:selection.instrument.clone(),symbol:selection.symbol.clone(),namespace:run_id.to_string(),stop_signal:control.done.clone()}))?.build()?;
         let bar_type:BarType=format!("{}-3-MINUTE-LAST-EXTERNAL",instrument.id).parse()?;
         node.add_strategy(IlrcActor::new(bar_type,selection,data::now(),market_price).with_control(control.clone()).with_dashboard(dashboard.clone()))?;
@@ -305,7 +309,7 @@ pub fn run_production(config: &str, broker_config: &str, seconds: u64) -> Result
             loop {
                 interval.tick().await;
                 if let Ok(state)=dashboard_state.lock(){
-                    super::ilrc_live_dashboard::render(&state,&dashboard_instrument,"REAL KITE",seconds);
+                    super::ilrc_live_dashboard::render(&state,&dashboard_instrument,"REAL KITE");
                 }
             }
         });

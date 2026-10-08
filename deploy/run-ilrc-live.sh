@@ -6,9 +6,7 @@ cd /home/ubuntu/RustNautilasProject
 BIN="./target/release/kite-node"
 STRATEGY="config/production-ilrc-live.json"
 BROKER="config/kite-ilrc-live.json"
-DURATION="${1:-3600}"
 
-[[ "$DURATION" =~ ^[0-9]+$ ]] && (( DURATION >= 5 && DURATION <= 86360 )) || { echo 'Duration must be between 5 and 86360 seconds.' >&2; exit 2; }
 [[ -x "$BIN" ]] || { echo 'Release binary missing.' >&2; exit 1; }
 [[ -f "$STRATEGY" && -f "$BROKER" ]] || { echo 'Live configuration files missing.' >&2; exit 1; }
 
@@ -21,4 +19,4 @@ if [[ "$CONFIRM" != 'LIVE' ]]; then
     exit 1
 fi
 
-exec "$BIN" native-ilrc-nautilus-live "$STRATEGY" "$BROKER" "$DURATION"
+exec "$BIN" native-ilrc-nautilus-live "$STRATEGY" "$BROKER"

@@ -50,14 +50,23 @@ fn clip(s: &str, width: usize) -> String {
     }
 }
 fn pair(left: &str, right: &str) {
-    println!("│ {:<52} │ {:<52} │", clip(left, 52), clip(right, 52));
+    let left = clip(left, 52);
+    let right = clip(right, 52);
+    println!("│ {left:<52} │ {right:<52} │");
 }
 fn line(label: &str, value: impl std::fmt::Display) -> String {
     format!("{label:<11} {value}")
 }
 fn trade_line(t: &TradeRow) {
+    let result = if t.points > 0.0 {
+        "WIN"
+    } else if t.points < 0.0 {
+        "LOSS"
+    } else {
+        "FLAT"
+    };
     println!(
-        "│ {:<14} {:<6} {:<6} {:>11.2} {:>11.2} {:<19} {:+10.2} {:<11} │",
+        "│ {:<14} │ {:<6} │ {:<6} │ {:>11.2} │ {:>11.2} │ {:<19} │ {:+10.2} │ {:<11} │",
         clip(&t.time, 14),
         clip(&t.setup, 6),
         clip(&t.side, 6),
@@ -65,20 +74,22 @@ fn trade_line(t: &TradeRow) {
         t.exit,
         clip(&t.reason, 19),
         t.points,
-        if t.points > 0.0 {
-            "WIN"
-        } else if t.points < 0.0 {
-            "LOSS"
-        } else {
-            "FLAT"
-        }
+        result
     );
 }
-pub fn render(state: &State, instrument: &str, mode: &str, seconds: u64) {
+pub fn render(state: &State, instrument: &str, mode: &str) {
     if io::stdout().is_terminal() {
         print!("\x1b[2J\x1b[H");
     }
     let now = chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(19800).expect("IST"));
+    let minute = chrono::Timelike::hour(&now) * 60 + chrono::Timelike::minute(&now);
+    let session = if minute < 540 {
+        "PRE-OPEN · 09:00 IST"
+    } else if minute >= 1395 {
+        "ENTRY CLOSED · 23:15"
+    } else {
+        "OPEN · until 23:15 IST"
+    };
     let position = if state.position > 0.0 {
         "LONG"
     } else if state.position < 0.0 {
@@ -112,7 +123,7 @@ pub fn render(state: &State, instrument: &str, mode: &str, seconds: u64) {
                 "waiting".into()
             },
         ),
-        &line("Session", format!("{seconds}s manual")),
+        &line("Session", session),
     );
     pair(
         &line(
@@ -166,7 +177,13 @@ pub fn render(state: &State, instrument: &str, mode: &str, seconds: u64) {
         ),
     );
     pair(
-        &line("Realized", format!("{points:+.2} gross points")),
+        &line(
+            "Realized",
+            format!(
+                "{:.2} gross points",
+                if points == 0.0 { 0.0 } else { points }
+            ),
+        ),
         &line(
             "Today",
             format!("{} trades · {wins} W / {losses} L", state.trades.len()),
