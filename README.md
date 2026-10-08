@@ -55,3 +55,19 @@ bash deploy/verify-ilrc-live-integration.sh
 The repository includes Kite HTTP order transport, Nautilus native order translation, Redis ownership and a broker-observation dispatcher, plus a new ILRC `LiveNode` actor tested against native mock execution. **No ILRC production order-sending command is active**, and `live_orders_enabled` must remain `false` in both strategy and broker settings. A mock acceptance or broker-modeled protective stop must not be mistaken for a validated live Zerodha stop.
 
 See [ILRC strategy specification](doc/ILRCv1.md) and [Nautilus engineering architecture](doc/ILRC_ENGINEERING.md).
+
+## Manual real Kite execution (separate live profile)
+
+The live-capable binary is compiled using `cargo build --release --locked -p kite-node --features kite-adapter/live-orders`. Live execution uses the distinct `native-ilrc-nautilus-live` CLI and the **production** Kite execution client, never the native mock factory. The read-only preflight is:
+
+```bash
+./target/release/kite-node native-ilrc-live-preflight config/production-ilrc-live.json config/kite-ilrc-live.json
+```
+
+The manual order-sending command (run only when explicitly accepting real-money order risk, during a verified MCX trading session) is:
+
+```bash
+./target/release/kite-node native-ilrc-nautilus-live config/production-ilrc-live.json config/kite-ilrc-live.json 3600
+```
+
+Both live profiles are private local files ignored by Git. They must enable live orders, agree on the CRUDEOIL instrument token, identify the exact broker user, and use MIS / automatic market protection. These are **real-market orders**, not simulated orders. A clean startup requires a broker-flat account and no pending orders. Stop-loss placement follows the entry fill, so execution risk exists between those operations. The historical mock tests and read-only preflight are not proof of successful real-money order execution, protective stop acceptance or crash recovery. Review the broker orderbook/positions directly, ensure risk capital and margins are appropriate, and use Ctrl+C to request controlled shutdown. If there is unprotected exposure or an uncertain mutation, manual broker intervention may be necessary. The existing shadow command remains unchanged.

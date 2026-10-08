@@ -52,6 +52,19 @@ impl Selection {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.validate_mode(false)
+    }
+
+    pub fn load_live(path: &str) -> Result<Self> {
+        let value: Self = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        value.validate_live()?;
+        Ok(value)
+    }
+    pub fn validate_live(&self) -> Result<()> {
+        self.validate_mode(true)
+    }
+
+    fn validate_mode(&self, live: bool) -> Result<()> {
         self.session_calendar.validate()?;
         self.ilrc.validate()?;
         self.continuation.validate()?;
@@ -64,8 +77,8 @@ impl Selection {
             "ILRC v1 selected profile must use 3-minute bars"
         );
         ensure!(
-            !self.live_orders_enabled,
-            "ILRC v1 live order path is not authorized"
+            self.live_orders_enabled == live,
+            "ILRC strategy mode does not match configured live-order gate"
         );
         ensure!(
             self.contracts == 1,

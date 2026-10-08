@@ -35,3 +35,6 @@ target
 # Local Kite operational settings
 /config/kite-production.json
 /config/kite-sandbox.toml
+# Private/manual ILRC live execution profiles (keep local to broker server)
+/config/production-ilrc-live.json
+/config/kite-ilrc-live.json
