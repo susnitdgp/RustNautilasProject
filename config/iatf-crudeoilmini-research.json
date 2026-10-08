@@ -1,0 +1,13 @@
+{
+  "strategy": "iatf_v1_research",
+  "instrument": "CRUDEOILM_OCT_FUT_UNVERIFIED.MCX",
+  "enabled": false,
+  "live_orders_enabled": false,
+  "efficiency_lookback": 10,
+  "efficiency_threshold": 0.45,
+  "chop_threshold": 0.25,
+  "breakout_lookback": 8,
+  "min_book_imbalance": 0.20,
+  "max_spread_fraction": 0.002,
+  "max_tick_age_ms": 2000
+}
