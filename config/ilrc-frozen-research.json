@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "strategy_id": "crudeoil-ilrc",
+  "frozen_at_commit": "ac020ff",
+  "research_cutoff_date": "2026-10-08",
+  "timeframe_minutes": 3,
+  "execution_assumptions": {
+    "adverse_slippage_points_per_side": 0.5,
+    "round_trip_trading_cost_points": 2.0,
+    "one_position_at_a_time": true,
+    "session_flat_at_2315_ist": true
+  },
+  "sha256_files": {
+    "config/production-ilrc.json": "0f399e9b013ef107b4eb153b9da5d502de17bac4ad0d490f93469430ddf9520f",
+    "apps/kite-node/src/native_node/ilrc_backtest.rs": "85d641bf8af87860108411a47e148a9afea9c0c97c248d1e71bbc2c3fa8ee57b",
+    "apps/kite-node/src/native_node/ilrc_continuation_backtest.rs": "99ab1d7b76a57e03aa163de1a97a611881dcf0476bd0e58a67ff2d03d1e7cd69",
+    "apps/kite-node/src/native_node/ilrc_timed_mock.rs": "62a2c8aae1bce24999bc043b1f863c00ab5013fdf7b3683e3f7e056372828e9b"
+  },
+  "future_contract": null,
+  "research_only": true,
+  "live_orders_enabled": false
+}
