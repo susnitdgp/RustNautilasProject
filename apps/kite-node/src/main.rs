@@ -6,7 +6,7 @@ fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     native_node::cli::dispatch(&args).unwrap_or_else(|| {
         Err(anyhow::anyhow!(
-            "Unknown command. Run a native-ilrc-* or native-kite-* operational command."
+            "Unknown command. Run a native-portfolio-* or native-kite-* operational command."
         ))
     })
 }

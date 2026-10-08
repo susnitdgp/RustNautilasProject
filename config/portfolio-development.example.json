@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "broker_config": "config/kite-ilrc-live.json",
+  "broker_config": "config/kite-portfolio.json",
   "redis_prefix": "kite-dev",
   "instances": [
     {
@@ -13,15 +13,15 @@
       "live_orders_enabled": false
     },
     {
-      "id": "crudeoil-ilrc-202610",
-      "enabled": true,
-      "strategy": "institutional_liquidity_reversal_continuation_v1",
+      "id": "crudeoil-research-202610",
+      "enabled": false,
+      "strategy": "unassigned",
       "instrument": "CRUDEOIL26OCTFUT.MCX",
       "instrument_token": 145894407,
-      "strategy_config": "config/production-ilrc.json",
+      "strategy_config": "config/crudeoil-research.json",
       "live_orders_enabled": false,
       "rollover": {
-        "strategy_id": "crudeoil-ilrc",
+        "strategy_id": "crudeoil-research",
         "contract_month": "2026-10",
         "expected_expiry": "2026-10-19",
         "lot_size": 100,
