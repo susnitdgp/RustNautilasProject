@@ -15,6 +15,7 @@ pub mod full_codec;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 mod history_revision;
+mod iatf_multitimeframe;
 mod iatf_recorder;
 #[allow(dead_code)]
 mod iatf_replay;
