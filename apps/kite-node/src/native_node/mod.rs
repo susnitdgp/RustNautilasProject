@@ -19,10 +19,14 @@ mod ilrc_causal_audit;
 mod ilrc_config;
 mod ilrc_continuation_backtest;
 mod ilrc_dashboard;
+#[allow(dead_code)]
+mod ilrc_kite_adapter;
 mod ilrc_live_readiness;
 mod ilrc_mock_execution;
 #[allow(dead_code)]
 mod ilrc_order_intent;
+#[allow(dead_code)]
+mod ilrc_order_lifecycle;
 mod ilrc_shadow;
 mod ilrc_timed_mock;
 // Legacy shared infrastructure kept for historical tooling and tests.

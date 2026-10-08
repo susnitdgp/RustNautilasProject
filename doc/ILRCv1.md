@@ -57,3 +57,15 @@ The completed-trade backtest showed 5 trades and +68.93 gross points. The next-b
 ## ILRC-to-Kite staged order gateway
 
 The `ilrc_order_intent.rs` module now constructs validated Kite `ProtectedMarket` commands from ILRC entry events and passes them through an injected `KiteOrderGateway`. The only supplied implementation is `DryRunKiteGateway`, which validates commands without sending broker requests. Tests cover flat/reconciled-position preconditions, signal freshness, kill-switch rejection, stop/target direction and the mock submission path. There is deliberately **no live Kite gateway**, no live CLI command and no real order submission. Broker acknowledgements, protective order placement and verification, partial fills, reconciliation, Redis persistence and crash recovery remain required before implementing the real gateway.
+
+## Live order lifecycle development (NOT operational)
+
+`ilrc_order_lifecycle.rs` adds a pure, serializable, fail-closed state machine for entry reservations, broker acknowledgements, deduplicated fill observations, protective-stop confirmation, mismatch-triggered manual review and a latched kill switch. Unit tests cover unknown submission outcomes and checkpoint round-trips. **This does not create or send a Kite order.** The production execution dispatcher already has Redis journaling and broker snapshot functions, but ILRC has not been wired to it.
+
+The implementation still lacks atomic Redis state persistence at each ILRC transition, a real broker submission adapter, server-confirmed protective-stop place/modify/cancel operations, partial-fill stop-quantity adjustment, correct exchange-session cutoffs, order stream outage handling, cross-process lock/recovery and crash/fault injection against Kite mock responses. Therefore `live_execution_ready` stays false, all live order gates stay disabled, and the lifecycle module is deliberately not registered with a live CLI command.
+
+## Kite transport adapter (disabled; not live-ready)
+
+`ilrc_kite_adapter.rs` provides a typed connection to the existing `KiteOrderTransport::execute` API, but it is not constructed or called by any ILRC CLI/runner. The transport itself refuses real orders unless the separately reviewed `live-orders` Cargo feature is enabled. The adapter rejects submissions without caller-asserted durable journaling, stop management and broker reconciliation, but these prerequisites are **not actually implemented or independently verified for ILRC**. These booleans are integration placeholders, not authorization gates. Do not instantiate this adapter with real credentials or bypass its guards. Any uncertain transport result latches the mock lifecycle kill switch and requires manual reconciliation; acknowledgement is not a fill.
+
+**Not yet complete:** a real ILRC reconciler, Redis-atomic command journal and account lock, confirmed protective stops before declaring a managed position, partial-fill stop resizing, crash-safe recovery, and broker-mock fault injection across the full lifecycle. No operational live trading command exists.
