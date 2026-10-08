@@ -1,0 +1,10 @@
+{
+  "strategy_config": "config/iatf-crudeoilmini-research.json",
+  "instrument_token": 42,
+  "quantity": 10.0,
+  "slippage_points_per_side": 0.5,
+  "commission_per_side": 2.0,
+  "stop_distance_points": 6.0,
+  "reward_multiple": 3.0,
+  "max_holding_ticks": 50
+}

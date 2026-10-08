@@ -16,6 +16,8 @@ pub mod full_codec;
 #[allow(dead_code)]
 mod history_revision;
 #[allow(dead_code)]
+mod iatf_replay;
+#[allow(dead_code)]
 mod iatf_research;
 mod ilrc_backtest;
 mod ilrc_broker_replay;
