@@ -25,6 +25,11 @@
   },
   "session_open_minute": 540,
   "entry_cutoff_minute": 1395,
+  "continuation": {
+    "enabled": true,
+    "target_r": 3.0,
+    "break_even_r": 1.0
+  },
   "ilrc": {
     "atr_len": 14,
     "avg_body_len": 20,
@@ -36,6 +41,7 @@
     "min_stop_atr": 0.5,
     "max_stop_atr": 1.5,
     "min_rr": 1.5,
-    "retrace_bars": 5
+    "retrace_bars": 5,
+    "break_even_r": 1.0
   }
 }

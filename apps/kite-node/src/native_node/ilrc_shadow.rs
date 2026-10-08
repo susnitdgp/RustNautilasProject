@@ -28,7 +28,10 @@ pub fn run(config: &str, seconds: u64) -> Result<()> {
             "instrument_token":selection.instrument_token,
             "interval":selection.interval.as_str(),
             "live_orders_enabled":false,
-            "execution_client_loaded":false
+            "execution_client_loaded":false,
+            "continuation_enabled":selection.continuation.enabled,
+            "continuation_target_r":selection.continuation.target_r,
+            "continuation_break_even_r":selection.continuation.break_even_r
         })
     );
 
@@ -60,7 +63,8 @@ pub fn run(config: &str, seconds: u64) -> Result<()> {
         }
 
         let date_str = date.to_string();
-        let report = super::ilrc_backtest::evaluate_config_candles(&selection, &raw, &date_str)?;
+        let report =
+            super::ilrc_backtest::evaluate_combined_config_candles(&selection, &raw, &date_str)?;
         super::ilrc_dashboard::render(super::ilrc_dashboard::Snapshot {
             namespace: &id.to_string(),
             strategy: &selection.strategy,
@@ -69,6 +73,8 @@ pub fn run(config: &str, seconds: u64) -> Result<()> {
             now,
             session_open_minute: selection.session_open_minute,
             entry_cutoff_minute: selection.entry_cutoff_minute,
+            break_even_r: selection.ilrc.break_even_r,
+            continuation_target_r: selection.continuation.target_r,
             last_bar: raw.last(),
             bars_loaded: raw.len(),
             trades: &report,

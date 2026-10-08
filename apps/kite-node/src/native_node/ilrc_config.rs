@@ -6,6 +6,28 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ContinuationSelection {
+    pub enabled: bool,
+    pub target_r: f64,
+    pub break_even_r: f64,
+}
+
+impl ContinuationSelection {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.enabled,
+            "selected combined ILRC profile requires continuation enabled"
+        );
+        ensure!(
+            self.target_r == 3.0 && self.break_even_r == 1.0,
+            "selected continuation profile must use 3R target and 1R break-even"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Selection {
     pub strategy: String,
     pub instrument: String,
@@ -19,6 +41,7 @@ pub struct Selection {
     pub session_open_minute: u32,
     pub entry_cutoff_minute: u32,
     pub ilrc: Params,
+    pub continuation: ContinuationSelection,
 }
 
 impl Selection {
@@ -31,6 +54,7 @@ impl Selection {
     pub fn validate(&self) -> Result<()> {
         self.session_calendar.validate()?;
         self.ilrc.validate()?;
+        self.continuation.validate()?;
         ensure!(
             self.strategy == "institutional_liquidity_reversal_continuation_v1",
             "Only ILRC v1 is supported by this selection"
@@ -98,7 +122,10 @@ pub fn production_check(config: &str, broker: &str) -> Result<()> {
             "strategy_live_orders_enabled":s.live_orders_enabled,
             "broker_live_orders_enabled":broker_live,
             "broker_orders_sent":false,
-            "execution_path_enabled":false
+            "execution_path_enabled":false,
+            "continuation_enabled":s.continuation.enabled,
+            "continuation_target_r":s.continuation.target_r,
+            "continuation_break_even_r":s.continuation.break_even_r
         })
     );
     Ok(())
@@ -124,5 +151,8 @@ mod tests {
         assert_eq!(s.ilrc.swing_len, 20);
         assert_eq!(s.ilrc.retrace_bars, 5);
         assert_eq!(s.ilrc.min_rr, 1.5);
+        assert!(s.continuation.enabled);
+        assert_eq!(s.continuation.target_r, 3.0);
+        assert_eq!(s.continuation.break_even_r, 1.0);
     }
 }
