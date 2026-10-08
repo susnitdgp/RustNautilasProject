@@ -16,6 +16,8 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-ilrc-mock-broker",[])=>super::ilrc_broker_replay::run(),
         ("native-ilrc-mock-execution",[])=>super::ilrc_mock_execution::run(),
         ("native-ilrc-live-readiness",[strategy,broker,policy])=>super::ilrc_live_readiness::check(strategy,broker,policy),
+        ("native-ilrc-nautilus-fixture",[config,fixture,seconds])=>seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|s|super::ilrc_native_runner::run_fixture(config,fixture,s)),
+        ("native-ilrc-nautilus-mock",[config,seconds])=>seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|s|super::ilrc_native_runner::run_mock(config,s)),
         ("native-ilrc-shadow",[config,seconds])=>seconds.parse::<u64>().map_err(anyhow::Error::from).and_then(|seconds|super::ilrc_shadow::run(config,seconds)),
         ("native-ilrc-quality-research",[name,token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|token|super::ilrc_backtest::run_quality_research(name,token)),
         ("native-ilrc-frequency-research",[name,token])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|token|super::ilrc_backtest::run_frequency_research(name,token)),

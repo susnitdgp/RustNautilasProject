@@ -530,8 +530,65 @@ impl ExecutionClient for Client {
     fn submit_order_list(&self, _: SubmitOrderList) -> Result<()> {
         bail!("Real Kite orders are disabled")
     }
-    fn modify_order(&self, _: ModifyOrder) -> Result<()> {
-        bail!("Real Kite orders are disabled")
+    fn modify_order(&self, cmd: ModifyOrder) -> Result<()> {
+        use rust_decimal::prelude::ToPrimitive;
+        ensure!(self.is_connected(), "Kite execution client disconnected");
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or_else(|| anyhow!("Native Kite order modification is disabled"))?
+            .clone();
+        ensure!(
+            cmd.instrument_id == self.instrument_id && cmd.trader_id == self.factory.trader_id(),
+            "Native modify identity mismatch"
+        );
+        ensure!(
+            cmd.price.is_none() && cmd.quantity.is_none(),
+            "Only trigger-only stop modifications are allowed"
+        );
+        let trigger = cmd
+            .trigger_price
+            .ok_or_else(|| anyhow!("Stop modification trigger missing"))?
+            .as_decimal();
+        ensure!(
+            trigger.fract().is_zero(),
+            "Invalid stop modification tick precision"
+        );
+        let trigger = trigger
+            .to_i64()
+            .ok_or_else(|| anyhow!("Invalid stop modification trigger"))?;
+        let tx = try_get_exec_event_sender()
+            .ok_or_else(|| anyhow!("Native event channel unavailable"))?;
+        let active = self.active.clone();
+        let stop_signal = self.stop_signal.clone();
+        ensure!(
+            self.tasks.borrow().len() < 256,
+            "Native task admission capacity exhausted"
+        );
+        tokio::runtime::Handle::try_current().map_err(|_| anyhow!("Native runtime unavailable"))?;
+        self.tasks.borrow_mut().push(tokio::spawn(async move {
+            ensure!(
+                active.load(std::sync::atomic::Ordering::Acquire),
+                "Native client stopped"
+            );
+            let mut service = dispatcher.lock().await;
+            let result = async {
+                service
+                    .modify_stop(cmd.client_order_id, cmd.command_id, trigger)
+                    .await?;
+                service.refresh(&tx).await
+            }
+            .await;
+            if result.is_err() {
+                service.fault();
+                active.store(false, std::sync::atomic::Ordering::Release);
+                if let Some(signal) = &stop_signal {
+                    signal.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            result
+        }));
+        Ok(())
     }
     fn batch_modify_orders(&self, _: BatchModifyOrders) -> Result<()> {
         bail!("Real Kite orders are disabled")

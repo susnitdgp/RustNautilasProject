@@ -207,6 +207,7 @@ async fn fill_reports_refuse_to_invent_missing_commission() {
         quantity: 1,
         filled_quantity: 1,
         price: Decimal::from(6000),
+        trigger_price: None,
         tag: None,
         exchange_timestamp: Some("2026-09-15 10:00:00".into()),
         exchange_update_timestamp: Some("2026-09-15 10:00:00".into()),

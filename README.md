@@ -1,27 +1,57 @@
-# Rust Nautilus + Zerodha Kite — ILRC Combined
+# ILRC Combined — Rust NautilusTrader / Zerodha Kite
 
-Active strategy: ILRC Combined 3-minute CRUDEOIL **production shadow**. Broker orders are disabled and no execution client is loaded by the shadow runner.
+**Instrument:** MCX `CRUDEOIL26OCTFUT.MCX` · **interval:** 3-minute candles · **contracts:** 1 · **configuration:** `config/production-ilrc.json` · **expiry:** 19 October 2026. A new contract requires independently verified symbol, token, expiry, lot size, and session calendar.
 
-Setup A: liquidity-sweep reversal, opposing-liquidity target, break-even at +1R. Setup B: 20-bar structure break, displacement and VWAP-aligned retracement, 3R target, break-even at +1R. Only one position at a time; Setup A wins identical entry timestamps.
+## Strategy
 
-## Manual foreground operation
+ILRC Combined arbitrates two setups under **one-position-at-a-time** semantics. An active Setup A blocks B and vice versa; for simultaneous timestamps Setup A has priority.
+
+| | Setup A — liquidity reversal | Setup B — continuation |
+|---|---|---|
+| Entry idea | Sweep prior-day / 20-bar liquidity, displacement and VWAP/internal structure confirmation, retracement within 5 bars | Break 20-bar external structure with displacement and VWAP direction confirmation, then retracement |
+| Stop | Beyond swept liquidity plus ATR buffer | Structural anchor plus ATR buffer |
+| Target | Opposing liquidity, at least 1.5R | 3R |
+| Protection | Move stop to break-even once +1R reached; modification effective after confirmation | Move stop to break-even at +1R; 3R target unchanged |
+
+The historical evaluator uses bar-internal price touches; executable fills after the candle closes may differ considerably. On 7 October 2026, the original completed-trade backtest showed five trades/+68.93 gross points; a next-open mock showed five fills/+5.80 gross points at zero slippage and about +0.80 with 0.5-point adverse slippage each side, before fees. Neither simulation establishes real-trading profitability.
+
+## Manual production-shadow runner (read-only)
 
 ```bash
+cd /home/ubuntu/RustNautilasProject
 cargo build --release --locked -p kite-node
 bash deploy/verify-ilrc-production.sh
 bash deploy/run-ilrc-production-shadow.sh
 ```
 
-Stop the manual run with Ctrl+C. No systemd installation is required or recommended for the current manual workflow.
+To stop, use Ctrl+C. This shadow path **never creates an execution client or places real orders**. Do not install or start a service for the current manual workflow.
 
-## Validation
+## Nautilus native broker mock (no real orders)
+
+```bash
+cargo run --locked -p kite-node -- native-ilrc-nautilus-mock config/production-ilrc.json 30
+```
+
+Historical regression fixture (requires `data/ilrc-test/real-2026-10-07.json` on the machine):
+
+```bash
+cargo run --locked -p kite-node -- native-ilrc-nautilus-fixture config/production-ilrc.json data/ilrc-test/real-2026-10-07.json 35
+```
+
+These commands create a Nautilus `LiveNode` with real read-only data, Redis-backed native mock execution, and the ILRC strategy actor. The mock accounts are unique per run. Any unresolved mock exposure requires manual review; existing Redis ownership records are not silently cleared.
+
+## Quality checks
 
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+bash deploy/verify-ilrc-production.sh
 bash deploy/verify-ilrc-live-integration.sh
-cargo run --locked -p kite-node -- native-ilrc-mock-execution
 ```
 
-See [ILRC strategy and replay documentation](doc/ILRCv1.md) for historical replay, causal entry-event audit, mock slippage/restart testing, and limitations. Live order routing and broker recovery are **not** ready. Keep strategy and broker `live_orders_enabled=false`.
+## Execution status
+
+The repository includes Kite HTTP order transport, Nautilus native order translation, Redis ownership and a broker-observation dispatcher, plus a new ILRC `LiveNode` actor tested against native mock execution. **No ILRC production order-sending command is active**, and `live_orders_enabled` must remain `false` in both strategy and broker settings. A mock acceptance or broker-modeled protective stop must not be mistaken for a validated live Zerodha stop.
+
+See [ILRC strategy specification](doc/ILRCv1.md) and [Nautilus engineering architecture](doc/ILRC_ENGINEERING.md).

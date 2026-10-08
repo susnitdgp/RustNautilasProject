@@ -45,9 +45,11 @@ fn translate(
         "Closed native order cannot be submitted"
     );
     ensure!(
-        matches!(order.order_type(), OrderType::Limit | OrderType::Market)
-            && order.time_in_force() == TimeInForce::Day,
-        "Native Kite submission supports LIMIT or protected MARKET/DAY"
+        matches!(
+            order.order_type(),
+            OrderType::Limit | OrderType::Market | OrderType::StopMarket
+        ) && order.time_in_force() == TimeInForce::Day,
+        "Native Kite submission supports LIMIT, protected MARKET or SL-M/DAY"
     );
     ensure!(
         !order.is_post_only()
@@ -60,6 +62,41 @@ fn translate(
         "Contingent or emulated order must be resolved before Kite submission"
     );
     let quantity = order.quantity().as_decimal();
+    if order.order_type() == OrderType::StopMarket {
+        ensure!(
+            order.is_reduce_only() && reducing_policy_checked,
+            "Protective stop must be reducing exposure"
+        );
+        ensure!(quantity.fract().is_zero(), "Fractional stop quantity");
+        let trigger = order
+            .trigger_price()
+            .ok_or_else(|| anyhow!("Stop trigger missing"))?
+            .as_decimal();
+        ensure!(
+            trigger.fract().is_zero(),
+            "Stop trigger must match integer contract tick policy"
+        );
+        let command = Command::ProtectiveStopMarket {
+            symbol: symbol.clone(),
+            side: if order.order_side() == OrderSide::Buy {
+                "BUY"
+            } else {
+                "SELL"
+            }
+            .into(),
+            product: product.into(),
+            quantity: quantity
+                .to_u32()
+                .ok_or_else(|| anyhow!("Stop quantity invalid"))?,
+            trigger_price_rupees: trigger
+                .to_i64()
+                .ok_or_else(|| anyhow!("Stop trigger invalid"))?,
+            tag: persisted_tag.into(),
+            market_protection: -1,
+        };
+        command.validate()?;
+        return Ok(command);
+    }
     if order.order_type() == OrderType::Market {
         ensure!(quantity.fract().is_zero(), "Fractional market quantity");
         let command = Command::ProtectedMarket {
@@ -150,6 +187,38 @@ mod tests {
     }
     fn limit(quantity: Quantity, price: Price, reduce_only: bool) -> OrderAny {
         limit_for("CRUDEOIL26SEPFUT.MCX", quantity, price, reduce_only)
+    }
+    #[test]
+    fn native_reduce_only_stop_market_translates_to_kite_slm() {
+        let stop = factory().stop_market(
+            "CRUDEOIL26SEPFUT.MCX".into(),
+            OrderSide::Sell,
+            Quantity::from(1),
+            Price::new(6000.0, 0),
+            None,
+            Some(TimeInForce::Day),
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let cmd = submit_with_position(&stop, "MIS", "ILRCSTOPTEST", 1).unwrap();
+        assert!(matches!(
+            cmd,
+            Command::ProtectiveStopMarket {
+                quantity: 1,
+                trigger_price_rupees: 6000,
+                market_protection: -1,
+                ..
+            }
+        ));
+        assert!(submit_with_position(&stop, "MIS", "ILRCSTOPTEST", 0).is_err());
     }
     #[test]
     fn native_limit_preserves_exact_terms_and_explicit_correlation_tag() {

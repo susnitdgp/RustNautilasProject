@@ -67,6 +67,17 @@ impl Broker for ObservedBroker {
                         Some(OrderEventAny::Submitted(_))
                     ));
                 }
+                Command::ProtectiveStopMarket { tag, .. } => {
+                    assert_eq!(last.outcome, "Dispatching");
+                    assert_eq!(&last.tag, tag);
+                }
+                Command::ModifyProtectiveStop { .. } => {
+                    assert!(
+                        last.management
+                            .values()
+                            .any(|v| v.contains("StopModify:") && v.ends_with("Dispatching"))
+                    );
+                }
                 Command::Cancel { .. } => {
                     assert!(last.management.values().any(|s| s == "Dispatching"))
                 }
@@ -464,4 +475,73 @@ async fn reconciliation_integrity_auth_and_rate_errors_fail_without_retry() {
         assert_eq!(records.lock().unwrap().len(), saved);
         assert!(drain(&mut rx).is_empty());
     }
+}
+
+fn stop_market_order() -> OrderAny {
+    let mut f = OrderFactory::new(
+        "SUSANTA-001".into(),
+        "CROSSOVER-001".into(),
+        None,
+        None,
+        Rc::new(RefCell::new(TestClock::new())),
+        true,
+        false,
+    );
+    f.stop_market(
+        "CRUDEOIL26SEPFUT.MCX".into(),
+        OrderSide::Sell,
+        Quantity::from(1),
+        Price::from("5900"),
+        None,
+        Some(TimeInForce::Day),
+        None,
+        Some(true),
+        Some(false),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some("ILRCSTOP001".into()),
+    )
+}
+#[tokio::test]
+async fn persisted_stop_modification_requires_broker_observation_and_emits_updated() {
+    let (mut d, calls, records) = fixture(false, false);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    d.submit(order(OrderSide::Buy, 1, false), 0, &tx)
+        .await
+        .unwrap();
+    d.refresh(&tx).await.unwrap();
+    drain(&mut rx);
+    let stop = stop_market_order();
+    d.submit(stop.clone(), 1, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    let events = drain(&mut rx);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OrderEventAny::Accepted(_)))
+    );
+    d.modify_stop(stop.client_order_id(), UUID4::new(), 6000)
+        .await
+        .unwrap();
+    d.refresh(&tx).await.unwrap();
+    let events = drain(&mut rx);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, OrderEventAny::Updated(_)))
+    );
+    assert!(
+        records
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .management
+            .is_empty()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
 }

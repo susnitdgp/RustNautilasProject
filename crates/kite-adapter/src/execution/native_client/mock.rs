@@ -29,11 +29,13 @@ use std::{
 #[derive(Debug)]
 pub struct MockConfig {
     pub namespace: String,
+    pub account_id: String,
     pub stop_signal: Arc<std::sync::atomic::AtomicBool>,
     pub product: String,
     pub instrument_id: String,
     pub symbol: String,
     pub instrument_token: u32,
+    pub market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
 }
 impl ClientConfig for MockConfig {
     fn as_any(&self) -> &dyn Any {
@@ -62,7 +64,7 @@ impl ExecutionClientFactory for MockFactory {
             .downcast_ref::<MockConfig>()
             .ok_or_else(|| anyhow!("Invalid native Kite mock config"))?;
         let config = Config {
-            user_id: "MOCK".into(),
+            user_id: cfg.account_id.clone(),
             product: cfg.product.clone(),
             instrument_id: cfg.instrument_id.clone(),
             symbol: cfg.symbol.clone(),
@@ -76,11 +78,14 @@ impl ExecutionClientFactory for MockFactory {
             trader,
             name,
             config,
-            Box::new(MockBroker::new(cfg.instrument_token, &cfg.product)),
+            Box::new(
+                MockBroker::new(cfg.instrument_token, &cfg.product)
+                    .with_market_price(cfg.market_price.clone()),
+            ),
         )?;
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
-            Box::new(RedisStore::coordinated(&cfg.namespace, "MOCK")?),
+            Box::new(RedisStore::coordinated(&cfg.namespace, &cfg.account_id)?),
             client.factory.clone(),
             cfg.product.clone(),
             cfg.instrument_token,
@@ -97,6 +102,7 @@ pub(crate) struct MockBroker {
     delay: std::sync::atomic::AtomicUsize,
     token: u32,
     product: String,
+    market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
 }
 impl MockBroker {
     #[cfg(test)]
@@ -123,7 +129,12 @@ impl MockBroker {
             }),
             token,
             product: product.into(),
+            market_price: None,
         }
+    }
+    pub fn with_market_price(mut self, value: Option<Arc<std::sync::atomic::AtomicI64>>) -> Self {
+        self.market_price = value;
+        self
     }
     fn time() -> String {
         chrono::Utc::now()
@@ -228,7 +239,11 @@ impl Broker for MockBroker {
                 product: product.clone(),
                 quantity: *quantity,
                 tag: tag.clone(),
-                price_rupees: 6000,
+                price_rupees: self
+                    .market_price
+                    .as_ref()
+                    .map_or(6000, |x| x.load(std::sync::atomic::Ordering::Acquire))
+                    .max(1),
             };
             let outcome = self.execute(&translated).await?;
             if let Outcome::Acknowledged { order_id } = &outcome {
@@ -275,6 +290,7 @@ impl Broker for MockBroker {
                     quantity: *quantity,
                     filled_quantity: 0,
                     price: Decimal::from(*price_rupees),
+                    trigger_price: None,
                     tag: Some(tag.clone()),
                     exchange_timestamp: Some(timestamp.clone()),
                     exchange_update_timestamp: Some(timestamp.clone()),
@@ -288,7 +304,7 @@ impl Broker for MockBroker {
                     .iter_mut()
                     .find(|o| &o.order_id == order_id)
                     .ok_or_else(|| anyhow!("Unknown mock broker order"))?;
-                if o.status != "OPEN" {
+                if !matches!(o.status.as_str(), "OPEN" | "TRIGGER PENDING") {
                     return Ok(Outcome::Rejected);
                 }
                 o.status = "CANCELLED".into();
@@ -323,7 +339,8 @@ impl Broker for MockBroker {
                     status: "TRIGGER PENDING".into(),
                     quantity: *quantity,
                     filled_quantity: 0,
-                    price: Decimal::from(*trigger_price_rupees),
+                    price: Decimal::ZERO,
+                    trigger_price: Some(Decimal::from(*trigger_price_rupees)),
                     tag: Some(tag.clone()),
                     exchange_timestamp: Some(timestamp.clone()),
                     exchange_update_timestamp: Some(timestamp.clone()),
@@ -346,7 +363,7 @@ impl Broker for MockBroker {
                     return Ok(Outcome::Rejected);
                 }
                 o.quantity = *quantity;
-                o.price = Decimal::from(*trigger_price_rupees);
+                o.trigger_price = Some(Decimal::from(*trigger_price_rupees));
                 o.market_protection = Some(Decimal::from(*market_protection));
                 o.exchange_update_timestamp = Some(Self::time());
                 Ok(Outcome::Acknowledged {
@@ -400,7 +417,7 @@ mod ilrc_stop_flow_tests {
         ));
         let after = broker.snapshot().await.unwrap();
         let updated = after.orders.iter().find(|o| o.order_id == id).unwrap();
-        assert_eq!(updated.price, Decimal::from(8700));
+        assert_eq!(updated.trigger_price, Some(Decimal::from(8700)));
         assert_eq!(updated.status, "TRIGGER PENDING");
     }
     #[tokio::test]

@@ -43,6 +43,8 @@ pub struct BrokerOrder {
     pub quantity: u32,
     pub filled_quantity: u32,
     pub price: Decimal,
+    #[serde(default)]
+    pub trigger_price: Option<Decimal>,
     pub tag: Option<String>,
     pub exchange_timestamp: Option<String>,
     pub exchange_update_timestamp: Option<String>,
@@ -147,7 +149,7 @@ pub fn reconcile(
     );
     ensure!(
         broker.variety == "regular"
-            && matches!(broker.order_type.as_str(), "LIMIT" | "MARKET")
+            && matches!(broker.order_type.as_str(), "LIMIT" | "MARKET" | "SL-M")
             && broker.validity == "DAY",
         "Unsupported Kite order instructions"
     );
@@ -159,7 +161,21 @@ pub fn reconcile(
         broker.quantity > 0 && broker.filled_quantity <= broker.quantity,
         "Invalid Kite order quantities"
     );
+    let stop_market = current.order_type() == nautilus_model::enums::OrderType::StopMarket;
     let market = current.order_type() == nautilus_model::enums::OrderType::Market;
+    if stop_market {
+        ensure!(
+            matches!(broker.order_type.as_str(), "SL-M" | "MARKET"),
+            "Stop-market order type changed"
+        );
+        ensure!(
+            broker
+                .trigger_price
+                .is_some_and(|p| price(p).ok() == current.trigger_price())
+                || broker.status == "COMPLETE",
+            "Protective stop trigger mismatch"
+        );
+    }
     if market {
         ensure!(
             broker
@@ -172,13 +188,13 @@ pub fn reconcile(
                         && broker.price.fract().is_zero())),
             "Owned market order has unsupported broker conversion metadata"
         );
-    } else {
+    } else if !stop_market {
         ensure!(broker.order_type == "LIMIT", "Broker order type changed");
     }
     // Modification requires its separately persisted ownership/intent before support.
     ensure!(
         Quantity::from(broker.quantity) == current.quantity()
-            && (market || Some(price(broker.price)?) == current.price()),
+            && (market || stop_market || Some(price(broker.price)?) == current.price()),
         "Unconfirmed Kite order modification"
     );
     let last = timestamp(
@@ -265,7 +281,7 @@ pub fn reconcile(
         ObservationLag("Order/trade snapshot mismatch; no inferred fills")
     );
     let accepted = match broker.status.as_str() {
-        "OPEN" | "COMPLETE" | "CANCELLED" => true,
+        "OPEN" | "TRIGGER PENDING" | "COMPLETE" | "CANCELLED" => true,
         "REJECTED" => false,
         "PUT ORDER REQ RECEIVED" | "VALIDATION PENDING" | "OPEN PENDING" => {
             ensure!(
@@ -281,7 +297,7 @@ pub fn reconcile(
         "Incomplete COMPLETE observation"
     );
     ensure!(
-        broker.status != "OPEN" || sum < broker.quantity,
+        !matches!(broker.status.as_str(), "OPEN" | "TRIGGER PENDING") || sum < broker.quantity,
         "Filled OPEN observation"
     );
     ensure!(
@@ -336,7 +352,7 @@ pub fn reconcile(
             order.status() == OrderStatus::Filled,
             "Native order not filled"
         ),
-        "OPEN" => ensure!(
+        "OPEN" | "TRIGGER PENDING" => ensure!(
             matches!(
                 order.status(),
                 OrderStatus::Accepted | OrderStatus::PartiallyFilled
@@ -408,6 +424,7 @@ mod tests {
             quantity: 2,
             filled_quantity: 1,
             price: Decimal::from(6000),
+            trigger_price: None,
             tag: Some("Native1".into()),
             exchange_timestamp: Some("2026-09-15 10:00:01".into()),
             exchange_update_timestamp: Some("2026-09-15 10:00:03".into()),

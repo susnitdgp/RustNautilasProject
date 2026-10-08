@@ -7,8 +7,9 @@ use super::{
 };
 use anyhow::{Result, ensure};
 use kite_adapter::execution::{request::Command, transport::Outcome};
+use serde::{Deserialize, Serialize};
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Orchestrator {
     pub state: Lifecycle,
     pub protective_order_id: Option<String>,

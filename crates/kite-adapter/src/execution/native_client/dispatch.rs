@@ -437,19 +437,84 @@ impl Dispatcher {
                 product: &record.product,
                 token: record.token,
             };
-            let events = broker_events::reconcile(
+            let mut normalized = broker.clone();
+            let mut stop_modified = None::<i64>;
+            if !record.management.is_empty() {
+                use rust_decimal::prelude::ToPrimitive;
+                ensure!(
+                    record.management.len() == 1,
+                    "Ambiguous outstanding broker management commands"
+                );
+                let status = record.management.values().next().expect("management");
+                if let Some(rest) = status.strip_prefix("StopModify:") {
+                    let (value, phase) = rest
+                        .split_once(':')
+                        .ok_or_else(|| anyhow!("Malformed persisted stop modification"))?;
+                    let requested: i64 = value.parse()?;
+                    let previous = current
+                        .trigger_price()
+                        .ok_or_else(|| anyhow!("Stop trigger missing"))?
+                        .as_decimal()
+                        .to_i64()
+                        .ok_or_else(|| anyhow!("Invalid stop trigger"))?;
+                    let actual = broker
+                        .trigger_price
+                        .ok_or_else(|| anyhow!("Broker stop trigger missing"))?
+                        .to_i64()
+                        .ok_or_else(|| anyhow!("Invalid broker stop trigger"))?;
+                    ensure!(
+                        actual == previous || actual == requested,
+                        "Unowned protective stop modification observed"
+                    );
+                    if actual == requested && actual != previous {
+                        ensure!(
+                            phase == "Acknowledged" && broker.status == "TRIGGER PENDING",
+                            "Unconfirmed protective stop modification"
+                        );
+                        normalized.trigger_price = Some(rust_decimal::Decimal::from(previous));
+                        stop_modified = Some(requested);
+                    }
+                }
+            }
+            let mut events = broker_events::reconcile(
                 &current,
                 &owner,
-                broker,
+                &normalized,
                 &snapshot.trades,
                 &self.factory,
                 Self::now(),
             )?;
+            if let Some(trigger) = stop_modified {
+                use nautilus_model::{
+                    identifiers::VenueOrderId,
+                    types::{Price, Quantity},
+                };
+                let latest = broker_events::timestamp(
+                    broker
+                        .exchange_update_timestamp
+                        .as_deref()
+                        .unwrap_or(&broker.order_timestamp),
+                )?;
+                let updated = self.factory.generate_order_updated(
+                    &current,
+                    VenueOrderId::from(broker.order_id.as_str()),
+                    Quantity::from(broker.quantity),
+                    None,
+                    Some(Price::new(trigger as f64, 0)),
+                    None,
+                    latest,
+                    Self::now(),
+                );
+                events.push(updated);
+            }
             if record.broker_id.as_deref() != Some(broker.order_id.as_str()) || !events.is_empty() {
                 let mut next = record.clone();
                 next.broker_id = Some(broker.order_id.clone());
                 next.outcome = "Observed".into();
                 next.events.extend(events.iter().cloned());
+                if stop_modified.is_some() {
+                    next.management.clear();
+                }
                 prepared.records.insert(id.clone(), next);
                 prepared.events.extend(events);
             }
@@ -475,6 +540,97 @@ impl Dispatcher {
             )));
         }
         Ok(prepared)
+    }
+    pub async fn modify_stop(
+        &mut self,
+        id: ClientOrderId,
+        command_id: UUID4,
+        new_trigger: i64,
+    ) -> Result<()> {
+        use nautilus_model::enums::{OrderSide, OrderStatus, OrderType};
+        use rust_decimal::prelude::ToPrimitive;
+        ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
+        ensure!(new_trigger > 0, "Invalid protective stop trigger");
+        self.store.reserve()?;
+        let record = self
+            .records
+            .get(id.as_str())
+            .ok_or_else(|| anyhow!("Unowned protective stop"))?
+            .clone();
+        ensure!(
+            record.management.is_empty(),
+            "Protective stop modification already unresolved"
+        );
+        let current = OrderAny::from_events(record.events.clone())?;
+        ensure!(
+            current.order_type() == OrderType::StopMarket
+                && current.is_reduce_only()
+                && current.status() == OrderStatus::Accepted,
+            "Only accepted reduce-only SL-M orders can be modified"
+        );
+        let old = current
+            .trigger_price()
+            .ok_or_else(|| anyhow!("Protective trigger missing"))?
+            .as_decimal()
+            .to_i64()
+            .ok_or_else(|| anyhow!("Invalid protective trigger"))?;
+        ensure!(
+            if current.order_side() == OrderSide::Sell {
+                new_trigger >= old && self.position == 1
+            } else {
+                new_trigger <= old && self.position == -1
+            },
+            "Stop update cannot loosen risk or mismatch exposure"
+        );
+        let broker_id = record
+            .broker_id
+            .clone()
+            .ok_or_else(|| anyhow!("Protective stop broker identity unknown"))?;
+        let snapshot = self.snapshot().await?;
+        ensure!(
+            snapshot.orders.iter().any(|o| o.order_id == broker_id
+                && o.status == "TRIGGER PENDING"
+                && o.tag.as_deref() == Some(record.tag.as_str())
+                && o.trigger_price == Some(rust_decimal::Decimal::from(old))),
+            "Protective stop not confirmed at broker"
+        );
+        let command = Command::ModifyProtectiveStop {
+            order_id: broker_id.clone(),
+            quantity: 1,
+            trigger_price_rupees: new_trigger,
+            market_protection: -1,
+        };
+        command.validate()?;
+        let key = command_id.to_string();
+        let record = self.records.get_mut(id.as_str()).expect("record");
+        record
+            .management
+            .insert(key.clone(), format!("StopModify:{new_trigger}:Dispatching"));
+        self.poisoned = true;
+        self.store.save(id.as_str(), record)?;
+        self.store.health("Dispatching", 1, self.position)?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            self.broker.execute(&command),
+        )
+        .await
+        .unwrap_or(Ok(Outcome::Unknown));
+        let accepted =
+            matches!(&response,Ok(Outcome::Acknowledged{order_id}) if order_id==&broker_id);
+        record.management.insert(
+            key,
+            format!(
+                "StopModify:{new_trigger}:{}",
+                if accepted { "Acknowledged" } else { "Unknown" }
+            ),
+        );
+        self.store.save(id.as_str(), record)?;
+        self.poisoned = false;
+        if !accepted {
+            self.fault();
+            anyhow::bail!("Protective stop modification uncertain; manual review required");
+        }
+        Ok(())
     }
     pub async fn cancel(
         &mut self,

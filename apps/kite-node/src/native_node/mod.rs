@@ -22,8 +22,11 @@ mod ilrc_continuation_backtest;
 mod ilrc_dashboard;
 #[allow(dead_code)]
 mod ilrc_kite_adapter;
+#[allow(dead_code)]
+mod ilrc_live_actor;
 mod ilrc_live_readiness;
 mod ilrc_mock_execution;
+mod ilrc_native_runner;
 #[allow(dead_code)]
 mod ilrc_nautilus_bridge;
 #[allow(dead_code)]
@@ -32,6 +35,8 @@ mod ilrc_orchestrator;
 mod ilrc_order_intent;
 #[allow(dead_code)]
 mod ilrc_order_lifecycle;
+#[allow(dead_code)]
+mod ilrc_redis_state;
 mod ilrc_shadow;
 mod ilrc_timed_mock;
 // Legacy shared infrastructure kept for historical tooling and tests.
