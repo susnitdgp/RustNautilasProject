@@ -368,7 +368,7 @@ impl DataActor for IlrcActor {
             d.bars += 1;
             d.last_price = bar.close.as_f64();
             d.last_bar = dt.format("%d-%m %H:%M").to_string();
-            d.last_bar_epoch = Some(dt.timestamp());
+            d.last_bar_epoch = Some((close / 1_000_000_000) as i64);
             let p = self.selection.ilrc;
             let prior = self
                 .candles
@@ -486,7 +486,15 @@ impl DataActor for IlrcActor {
                         body,
                         atr * 0.8
                     ),
-                    format!("{} VWAP {:.1} (BOS side)", status(close_vwap), vwap),
+                    format!(
+                        "{} VWAP {:.1} (BOS side)",
+                        if bos == "NO" {
+                            "WAIT"
+                        } else {
+                            status(close_vwap)
+                        },
+                        vwap
+                    ),
                     "WAIT internal BOS / pullback / stop".into(),
                 ];
             } else {

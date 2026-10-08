@@ -118,8 +118,8 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
     };
     let age = state.last_bar_epoch.map(|ts| (now.timestamp() - ts).max(0));
     let feed = match age {
-        Some(s) if s <= 360 => format!("OK · bar {}s old", s),
-        Some(s) => format!("STALE · {}s old", s),
+        Some(s) if s <= 240 => format!("OK · close {}s ago", s),
+        Some(s) => format!("STALE · close {}s ago", s),
         None => "WAITING · no candle".into(),
     };
     let status = if state.fault.is_some() {
@@ -130,7 +130,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         "IN POSITION · STOP TRACKED"
     } else if state.event == "Entry order submitted" {
         "ENTRY PENDING"
-    } else if age.is_none_or(|s| s > 360) {
+    } else if age.is_none_or(|s| s > 240) {
         "DATA NOT READY"
     } else if !(540..1395).contains(&minute) {
         "ENTRY WINDOW CLOSED"
@@ -145,7 +145,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         "Position open: monitoring stop / target"
     } else if state.event == "Entry order submitted" {
         "Entry submitted: awaiting broker fill"
-    } else if age.is_none_or(|s| s > 360) {
+    } else if age.is_none_or(|s| s > 240) {
         "No fresh completed 3-minute candle"
     } else if !(540..1395).contains(&minute) {
         "New entries disabled by session clock"
@@ -160,7 +160,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         "Watch target / BE / exit events"
     } else if state.event == "Entry order submitted" {
         "Await order accepted or fill event"
-    } else if age.is_none_or(|s| s > 360) {
+    } else if age.is_none_or(|s| s > 240) {
         "Wait for finalized candle; check feed"
     } else {
         "Evaluate next completed 3-minute bar"
