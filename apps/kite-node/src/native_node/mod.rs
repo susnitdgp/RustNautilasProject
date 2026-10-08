@@ -21,6 +21,8 @@ mod ilrc_continuation_backtest;
 mod ilrc_dashboard;
 mod ilrc_live_readiness;
 mod ilrc_mock_execution;
+#[allow(dead_code)]
+mod ilrc_order_intent;
 mod ilrc_shadow;
 mod ilrc_timed_mock;
 // Legacy shared infrastructure kept for historical tooling and tests.
