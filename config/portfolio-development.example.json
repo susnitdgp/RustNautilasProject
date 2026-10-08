@@ -13,13 +13,20 @@
       "live_orders_enabled": false
     },
     {
-      "id": "crudeoil26oct-ilrc",
+      "id": "crudeoil-ilrc-202610",
       "enabled": true,
       "strategy": "institutional_liquidity_reversal_continuation_v1",
       "instrument": "CRUDEOIL26OCTFUT.MCX",
       "instrument_token": 145894407,
       "strategy_config": "config/production-ilrc.json",
-      "live_orders_enabled": false
+      "live_orders_enabled": false,
+      "rollover": {
+        "strategy_id": "crudeoil-ilrc",
+        "contract_month": "2026-10",
+        "expected_expiry": "2026-10-19",
+        "lot_size": 100,
+        "next_contract": null
+      }
     },
     {
       "id": "gold-fut",

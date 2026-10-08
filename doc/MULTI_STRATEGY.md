@@ -21,3 +21,7 @@ cargo run --locked -p kite-node -- native-portfolio-validate config/portfolio-de
 ### Active research asset: standard CRUDEOIL October 2026
 
 The development portfolio selects `CRUDEOIL26OCTFUT.MCX` (Kite token `145894407`) using ID `crudeoil26oct-ilrc` and existing `config/production-ilrc.json`. Its *planned* Redis keys are `kite-dev:v1:{crudeoil26oct-ilrc}:journal` and `kite-dev:v1:{crudeoil26oct-ilrc}:owner`. These are independent from the legacy execution journal/ownership keys; this configuration validator does not create or migrate any Redis keys or run a Nautilus strategy. All portfolio live order gates remain false. Contract changes/rollovers require a new verified token and deliberate handling of old state.
+
+### Rollover-safe identity (development only)
+
+The JSON `rollover` object separates permanent `strategy_id: crudeoil-ilrc` from month-specific `id: crudeoil-ilrc-202610`, `contract_month: 2026-10`, and verified current-contract expiry. Planned Redis keys use `kite-dev:v1:{crudeoil-ilrc-202610}:journal` and `kite-dev:v1:{crudeoil-ilrc-202610}:owner`. November has no configured token or expiry until verified against Kite; `next_contract` is therefore null. A proposed next contract cannot be approved/verified via the read-only portfolio skeleton. No Redis key is migrated, created, or deleted by validation, and the legacy ILRC runner remains isolated. Actual rollover requires broker-flat reconciliation, manual authorization and warmup on the new contract.

@@ -16,12 +16,33 @@ pub struct Portfolio {
 #[serde(deny_unknown_fields)]
 pub struct Instance {
     pub id: String,
+    #[serde(default)]
+    pub rollover: Option<Rollover>,
     pub enabled: bool,
     pub strategy: String,
     pub instrument: String,
     pub instrument_token: u32,
     pub strategy_config: String,
     pub live_orders_enabled: bool,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rollover {
+    pub strategy_id: String,
+    pub contract_month: String,
+    pub expected_expiry: chrono::NaiveDate,
+    pub lot_size: u32,
+    pub next_contract: Option<NextContract>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NextContract {
+    pub instrument: String,
+    pub instrument_token: u32,
+    pub contract_month: String,
+    pub expected_expiry: chrono::NaiveDate,
+    pub verified: bool,
+    pub approved: bool,
 }
 fn segment(value: &str) -> bool {
     !value.is_empty()
@@ -47,6 +68,57 @@ impl Portfolio {
         let mut token_instruments = std::collections::HashMap::new();
         for instance in &self.instances {
             ensure!(segment(&instance.id), "Unsafe instance ID");
+            if let Some(roll) = &instance.rollover {
+                ensure!(
+                    segment(&roll.strategy_id),
+                    "Unsafe permanent strategy identity"
+                );
+                ensure!(
+                    roll.contract_month.len() == 7
+                        && roll.contract_month.as_bytes()[4] == b'-'
+                        && roll.contract_month[..4].bytes().all(|c| c.is_ascii_digit())
+                        && roll.contract_month[5..].bytes().all(|c| c.is_ascii_digit())
+                        && (1..=12).contains(&roll.contract_month[5..].parse::<u32>()?),
+                    "Invalid contract month"
+                );
+                ensure!(
+                    roll.expected_expiry.format("%Y-%m").to_string() == roll.contract_month,
+                    "Expiry disagrees with contract month"
+                );
+                ensure!(roll.lot_size > 0, "Invalid lot size");
+                let symbol_month = roll
+                    .expected_expiry
+                    .format("%y%b")
+                    .to_string()
+                    .to_uppercase();
+                ensure!(
+                    instance.instrument.contains(&symbol_month),
+                    "Contract symbol does not match expiry month"
+                );
+                ensure!(
+                    instance.id
+                        == format!(
+                            "{}-{}",
+                            roll.strategy_id,
+                            roll.contract_month.replace('-', "")
+                        ),
+                    "Instance ID must bind strategy and contract month"
+                );
+                if let Some(next) = &roll.next_contract {
+                    ensure!(
+                        !next.approved && !next.verified && next.instrument_token == 0,
+                        "Next contract must remain unverified and unapproved in portfolio skeleton"
+                    );
+                    ensure!(
+                        next.contract_month > roll.contract_month
+                            && next.expected_expiry.format("%Y-%m").to_string()
+                                == next.contract_month,
+                        "Invalid next contract month/expiry"
+                    );
+                    ensure!(next.instrument.ends_with(".MCX"), "Invalid next exchange");
+                }
+            }
+
             ensure!(ids.insert(&instance.id), "Duplicate instance ID");
             ensure!(
                 !instance.strategy.trim().is_empty() && !instance.instrument.trim().is_empty(),
@@ -115,7 +187,7 @@ pub fn inspect(path: &str) -> Result<()> {
             "broker_config": portfolio.broker_config,
             "tokens": portfolio.tokens(),
             "instances": portfolio.instances.iter().map(|v| serde_json::json!({
-                "id": v.id, "enabled": v.enabled, "strategy": v.strategy, "instrument": v.instrument,
+                "id": v.id, "enabled": v.enabled, "rollover_strategy": v.rollover.as_ref().map(|r| &r.strategy_id), "contract_month":v.rollover.as_ref().map(|r| &r.contract_month), "strategy": v.strategy, "instrument": v.instrument,
                 "token": v.instrument_token, "strategy_config": v.strategy_config,
                 "redis_journal": portfolio.key(&v.id, "journal").expect("validated"),
                 "redis_owner": portfolio.key(&v.id, "owner").expect("validated")
