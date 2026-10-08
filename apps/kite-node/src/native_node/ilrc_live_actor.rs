@@ -421,6 +421,74 @@ impl DataActor for IlrcActor {
                     "NO"
                 };
                 d.trigger_b = format!("BOS:{} body {:.0}/{:.0} (1.3x)", bos, body, avg * 1.3);
+                let session_day = dt.date_naive();
+                let same_day = self
+                    .candles
+                    .iter()
+                    .rev()
+                    .take_while(|v| v.time().is_ok_and(|t| t.date_naive() == session_day));
+                let (mut pv, mut vol) = (0.0, 0.0);
+                for c in same_day {
+                    let v = c.volume as f64;
+                    pv += ((c.high + c.low + c.close) / 3.0) * v;
+                    vol += v;
+                }
+                let current_vol = bar.volume.as_f64();
+                pv += ((bar.high.as_f64() + bar.low.as_f64() + c) / 3.0) * current_vol;
+                vol += current_vol;
+                let vwap = if vol > 0.0 { pv / vol } else { c };
+                let close_vwap = if bos == "SHORT" {
+                    c <= vwap
+                } else if bos == "LONG" {
+                    c >= vwap
+                } else {
+                    false
+                };
+                let body_ok = body >= avg * 1.3;
+                let bbreak = bos != "NO";
+                let raw_ranges = self
+                    .candles
+                    .iter()
+                    .rev()
+                    .take(p.atr_len)
+                    .collect::<Vec<_>>();
+                let atr = if raw_ranges.len() == p.atr_len {
+                    raw_ranges.iter().map(|v| v.high - v.low).sum::<f64>() / raw_ranges.len() as f64
+                } else {
+                    0.0
+                };
+                let atr_body = atr > 0.0 && body >= atr * 0.8;
+                let status = |ok: bool| if ok { "PASS" } else { "FAIL" };
+                d.gates_a = vec![
+                    format!(
+                        "{} Sweep/reclaim: L={} S={}",
+                        status(long || short),
+                        long,
+                        short
+                    ),
+                    format!(
+                        "{} Close {:.1} vs swing {:.1}/{:.1}",
+                        status(long || short),
+                        c,
+                        lo,
+                        hi
+                    ),
+                    format!("INFO VWAP {:.1} | close {:.1}", vwap, c),
+                    "WAIT displacement / confirmation".into(),
+                    "WAIT retrace zone / stop / R:R".into(),
+                ];
+                d.gates_b = vec![
+                    format!("{} 20-bar BOS {}", status(bbreak), bos),
+                    format!("{} Body {:.1} >= {:.1}", status(body_ok), body, avg * 1.3),
+                    format!(
+                        "{} ATR body {:.1} >= {:.1}",
+                        status(atr_body),
+                        body,
+                        atr * 0.8
+                    ),
+                    format!("{} VWAP {:.1} (BOS side)", status(close_vwap), vwap),
+                    "WAIT internal BOS / pullback / stop".into(),
+                ];
             } else {
                 d.trigger_a = "WARMUP · insufficient swing bars".into();
                 d.trigger_b = "WARMUP · insufficient 20 bars".into();

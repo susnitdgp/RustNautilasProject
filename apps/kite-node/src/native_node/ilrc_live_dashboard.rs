@@ -28,6 +28,8 @@ pub struct State {
     pub last_tick_epoch: Option<i64>,
     pub trigger_a: String,
     pub trigger_b: String,
+    pub gates_a: Vec<String>,
+    pub gates_b: Vec<String>,
     pub bars: usize,
     pub last_bar_epoch: Option<i64>,
     pub last_bar: String,
@@ -269,6 +271,30 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
             "Today",
             format!("{} trades | {wins}W {losses}L", state.trades.len()),
         ),
+    );
+    full_border(&mut out, '├', '┤', '─');
+    whole(
+        &mut out,
+        "ENTRY CONDITIONS | Latest completed 3-minute candle (diagnostic only)",
+    );
+    border(&mut out, '├', '┬', '┤', '─');
+    pair(
+        &mut out,
+        "SETUP A | Liquidity reversal",
+        "SETUP B | BOS continuation",
+    );
+    let n = state.gates_a.len().max(state.gates_b.len());
+    for i in 0..n {
+        pair(
+            &mut out,
+            state.gates_a.get(i).map_or("", String::as_str),
+            state.gates_b.get(i).map_or("", String::as_str),
+        );
+    }
+    border(&mut out, '├', '┴', '┤', '─');
+    whole(
+        &mut out,
+        "WAIT = pending-state/confirmation not exposed; not an entry signal",
     );
     full_border(&mut out, '├', '┤', '─');
     whole(
