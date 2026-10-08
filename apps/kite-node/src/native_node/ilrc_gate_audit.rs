@@ -143,11 +143,15 @@ pub fn run(token: u32) -> Result<()> {
     let mock_a = super::ilrc_timed_mock::research_summary(&candles, &a, 0.5)?;
     let mock_b = super::ilrc_timed_mock::research_summary(&candles, &b, 0.5)?;
     let mock_combined = super::ilrc_timed_mock::research_summary(&candles, &combined, 0.5)?;
+    let net_a = super::ilrc_timed_mock::research_session_net(&candles, &a, 0.5, 2.0)?;
+    let net_b = super::ilrc_timed_mock::research_session_net(&candles, &b, 0.5, 2.0)?;
+    let net_combined = super::ilrc_timed_mock::research_session_net(&candles, &combined, 0.5, 2.0)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "event":"ilrc_full_entry_audit","instrument":config.instrument,
             "next_bar_mock":{"setup_a":mock_a,"setup_b":mock_b,"combined":mock_combined},
+            "session_flat_net_research":{"setup_a":net_a,"setup_b":net_b,"combined":net_combined},
             "candles":candles.len(),"preliminary":preliminary,
             "setup_a":counts(&a),"setup_b":counts(&b),
             "warning":"Actual historical strategy entry-event functions; NOT final broker admissions, next-open fills or per-rejection transition counters."

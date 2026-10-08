@@ -192,6 +192,89 @@ fn replay_with_state(
     }
     Ok(())
 }
+pub(super) fn research_session_net(
+    bars: &[Candle],
+    events: &[EntryEvent],
+    slippage: f64,
+    round_trip_cost_points: f64,
+) -> Result<serde_json::Value> {
+    ensure!(
+        slippage.is_finite() && slippage >= 0.0 && slippage <= 50.0,
+        "Invalid slippage"
+    );
+    ensure!(
+        round_trip_cost_points.is_finite() && round_trip_cost_points >= 0.0,
+        "Invalid cost"
+    );
+    let mut days = std::collections::BTreeMap::<String, Vec<Candle>>::new();
+    for bar in bars {
+        let t = bar.time()?;
+        // Exit before the live 23:15 entry cutoff, using the final 3-minute candle close.
+        if t.format("%H:%M").to_string().as_str() > "23:12" {
+            continue;
+        }
+        days.entry(t.date_naive().to_string())
+            .or_default()
+            .push(bar.clone());
+    }
+    let mut total = Stats::default();
+    let (mut net, mut peak, mut drawdown) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let mut daily = Vec::new();
+    let mut eod_exits = 0usize;
+    for (date, day_bars) in &days {
+        let day_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.observed_at.starts_with(date))
+            .cloned()
+            .collect();
+        let mut state = ReplayState::new(day_events.len());
+        replay_with_state(day_bars, &day_events, &mut state, slippage, None)?;
+        state.stats.unfilled += day_events.len() - state.next;
+        if let Some(open) = state.active.take() {
+            let last = day_bars.last().expect("date has bars");
+            let exit = last.close + if open.long { -slippage } else { slippage };
+            state.stats.gross_points += if open.long {
+                exit - open.entry
+            } else {
+                open.entry - exit
+            };
+            state.stats.slippage_points += slippage;
+            state.stats.completed_orders += 1;
+            eod_exits += 1;
+        }
+        let daily_net =
+            state.stats.gross_points - round_trip_cost_points * state.stats.completed_orders as f64;
+        net += daily_net;
+        peak = peak.max(net);
+        drawdown = drawdown.max(peak - net);
+        daily.push(
+            serde_json::json!({"date":date,"candidates":state.stats.candidates,
+            "fills":state.stats.filled,"exits":state.stats.completed_orders,
+            "net_points":daily_net}),
+        );
+        total.candidates += state.stats.candidates;
+        total.filled += state.stats.filled;
+        total.blocked += state.stats.blocked;
+        total.unfilled += state.stats.unfilled;
+        total.stopped += state.stats.stopped;
+        total.targeted += state.stats.targeted;
+        total.breakeven += state.stats.breakeven;
+        total.completed_orders += state.stats.completed_orders;
+        total.gross_points += state.stats.gross_points;
+    }
+    Ok(serde_json::json!({
+        "sessions":days.len(),"candidates":total.candidates,"filled":total.filled,
+        "completed":total.completed_orders,"blocked":total.blocked,"unfilled":total.unfilled,
+        "stopped":total.stopped,"targeted":total.targeted,"breakeven":total.breakeven,
+        "eod_exits":eod_exits,"gross_points_after_slippage":total.gross_points,
+        "cost_points":total.completed_orders as f64*round_trip_cost_points,
+        "net_points":net,"daily_close_max_drawdown_points":drawdown,
+        "assumed_slippage_per_side_points":slippage,
+        "round_trip_cost_points":round_trip_cost_points,"daily":daily,
+        "warning":"Research-only daily-flat next-bar mock; EOD exits at final historical bar close, not verified exchange fills. Intrabar sequencing and broker execution not modeled."
+    }))
+}
+
 pub(super) fn research_summary(
     bars: &[Candle],
     events: &[EntryEvent],
