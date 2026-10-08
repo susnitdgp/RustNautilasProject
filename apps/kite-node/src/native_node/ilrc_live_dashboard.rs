@@ -89,19 +89,49 @@ fn full_border(out: &mut String, left: char, right: char, fill: char) {
 fn line(label: &str, value: impl std::fmt::Display) -> String {
     format!("{label:<11} {value}")
 }
+const TRADE_COLS: [usize; 8] = [12, 3, 5, 9, 9, 16, 8, 6];
+fn trade_cells(out: &mut String, cells: [&str; 8]) {
+    out.push('│');
+    for (cell, width) in cells.iter().zip(TRADE_COLS) {
+        out.push_str(&format!(" {:<width$} │", clip(cell, width)));
+    }
+    out.push('\n');
+}
+fn trade_separator(out: &mut String) {
+    out.push('├');
+    for (idx, width) in TRADE_COLS.iter().enumerate() {
+        out.push_str(&"─".repeat(width + 2));
+        out.push(if idx == TRADE_COLS.len() - 1 {
+            '┤'
+        } else {
+            '┼'
+        });
+    }
+    out.push('\n');
+}
 fn trade_line(out: &mut String, trade: &TradeRow) {
-    whole(
+    let entry = format!("{:.2}", trade.entry);
+    let exit = format!("{:.2}", trade.exit);
+    let points = format!("{:+.2}", trade.points);
+    let result = if trade.points > 0.0 {
+        "WIN"
+    } else if trade.points < 0.0 {
+        "LOSS"
+    } else {
+        "FLAT"
+    };
+    trade_cells(
         out,
-        &format!(
-            "{}  {:<2} {:<5}  {:.2} -> {:.2}  {:+.2}pt  {}",
-            trade.time,
-            trade.setup,
-            trade.side,
-            trade.entry,
-            trade.exit,
-            trade.points,
-            trade.reason
-        ),
+        [
+            &trade.time,
+            &trade.setup,
+            &trade.side,
+            &entry,
+            &exit,
+            &trade.reason,
+            &points,
+            result,
+        ],
     );
 }
 pub fn render(state: &State, instrument: &str, mode: &str) {
@@ -301,7 +331,14 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         &mut out,
         "TRADE HISTORY | Current run (not broker account history)",
     );
-    full_border(&mut out, '├', '┤', '─');
+    trade_separator(&mut out);
+    trade_cells(
+        &mut out,
+        [
+            "Time", "Set", "Side", "Entry", "Exit", "Reason", "Points", "Result",
+        ],
+    );
+    trade_separator(&mut out);
     if state.trades.is_empty() {
         whole(&mut out, "No completed order-fill trades this run");
     }
@@ -309,12 +346,19 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         trade_line(&mut out, trade);
     }
     if let Some(t) = &state.open_trade {
-        whole(
+        let entry = format!("{:.2}", t.entry);
+        trade_cells(
             &mut out,
-            &format!(
-                "OPEN {} {} {} entry {:.2}",
-                t.time, t.setup, t.side, t.entry
-            ),
+            [
+                &t.time,
+                &t.setup,
+                &t.side,
+                &entry,
+                "—",
+                "Position open",
+                "—",
+                "OPEN",
+            ],
         );
     }
     full_border(&mut out, '└', '┘', '─');
@@ -348,6 +392,20 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trade_table_width_matches_dashboard() {
+        let mut output = String::new();
+        trade_separator(&mut output);
+        trade_cells(
+            &mut output,
+            [
+                "Time", "Set", "Side", "Entry", "Exit", "Reason", "Points", "Result",
+            ],
+        );
+        for row in output.lines() {
+            assert_eq!(row.chars().count(), WIDTH);
+        }
+    }
     #[test]
     fn initial_state_is_flat_and_empty() {
         let x = State::default();
