@@ -292,8 +292,7 @@ pub fn render(state: &State, instrument: &str, mode: &str) {
         );
     }
     full_border(&mut out, '└', '┘', '─');
-    out.push_str("Quote updates drive screen; strategy entries use completed 3-minute candles.\n");
-    out.push_str("Broker orderbook is authoritative for orders/stops.\n");
+    out.push_str("Press Ctrl+C to quit the running bot.\n");
     let mut stdout = io::stdout().lock();
     if is_tty {
         let _ = stdout.write_all(b"\x1b[?25l\x1b[H\x1b[2J");
