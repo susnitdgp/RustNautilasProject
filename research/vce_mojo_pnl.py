@@ -96,7 +96,7 @@ def report(trades,month):
  for val in daily.values():eq+=val;peak=max(peak,eq);dd=max(dd,peak-eq)
  return {'trades':len(t),'wins':sum(v>0 for v in t),'net_points':round(sum(t),2),'profit_factor':round(gp/gl,3) if gl else None,'max_daily_drawdown':round(dd,2)}
 if __name__=='__main__':
- for tf in (3,5):
+ for tf in (1,3,5):
   for R in (1.,1.5,2.):
    trades,counts,n=run(tf,R)
    print(json.dumps({'tf':tf,'exit_R':R,'bars':n,'counts':dict(counts),'sept':report(trades,'2026-09'),'oct':report(trades,'2026-10')}))

@@ -5,10 +5,12 @@ use kite_adapter::http::historical::{self, Interval};
 pub fn export(token: u32, minutes: u32) -> Result<()> {
     ensure!(token > 0, "Invalid token");
     ensure!(
-        minutes == 3 || minutes == 5,
-        "Only 3m and 5m export supported"
+        minutes == 1 || minutes == 3 || minutes == 5,
+        "Only 1m, 3m and 5m export supported"
     );
-    let interval = if minutes == 3 {
+    let interval = if minutes == 1 {
+        Interval::OneMinute
+    } else if minutes == 3 {
         Interval::ThreeMinute
     } else {
         Interval::FiveMinute
