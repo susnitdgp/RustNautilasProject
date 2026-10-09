@@ -31,7 +31,7 @@ pub fn run(config: &Config, csv: impl Read, as_of: NaiveDate) -> Result<Report> 
 
 /// Resolves one exact live contract from the JSON-selected symbol and Kite token.
 pub fn run_selected(symbol: &str, token: u32, csv: impl Read, as_of: NaiveDate) -> Result<Report> {
-    crate::instruments::contract::validate_symbol(symbol)?;
+    let spec = crate::instruments::contract::spec_for(symbol)?;
     ensure!(token > 0, "Zero configured instrument token");
     let rows = master::parse(csv)?;
     let matches: Vec<_> = rows
@@ -50,9 +50,10 @@ pub fn run_selected(symbol: &str, token: u32, csv: impl Read, as_of: NaiveDate) 
     ensure!(
         row.exchange == "MCX"
             && row.segment == "MCX-FUT"
-            && row.name == "CRUDEOIL"
+            && row.name == spec.underlying
             && row.instrument_type == "FUT",
-        "Configured contract is not a standard MCX CRUDEOIL future"
+        "Configured contract is not a verified MCX {} future",
+        spec.underlying
     );
     let expiry = NaiveDate::parse_from_str(&row.expiry, "%Y-%m-%d")
         .context("Invalid futures expiry in instrument master")?;
@@ -89,7 +90,8 @@ mod tests {
 
     const MASTER: &str = "instrument_token,tradingsymbol,name,expiry,tick_size,lot_size,instrument_type,segment,exchange\n\
 144870151,CRUDEOIL26SEPFUT,CRUDEOIL,2026-09-21,1,100,FUT,MCX-FUT,MCX\n\
-155000001,CRUDEOIL26OCTFUT,CRUDEOIL,2026-10-19,1,100,FUT,MCX-FUT,MCX\n";
+155000001,CRUDEOIL26OCTFUT,CRUDEOIL,2026-10-19,1,100,FUT,MCX-FUT,MCX\n\
+145894663,CRUDEOILM26OCTFUT,CRUDEOILM,2026-10-19,1,1,FUT,MCX-FUT,MCX\n";
 
     #[test]
     fn selected_contract_supports_rollover_and_rejects_split_identity() {
@@ -109,5 +111,14 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn mini_contract_resolves_and_must_carry_its_own_master_name() {
+        let as_of = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let report = run_selected("CRUDEOILM26OCTFUT", 145_894_663, MASTER.as_bytes(), as_of).unwrap();
+        assert_eq!(report.instrument_id, "CRUDEOILM26OCTFUT.MCX");
+        let wrong_name = MASTER.replace(",CRUDEOILM,", ",CRUDEOIL,");
+        assert!(run_selected("CRUDEOILM26OCTFUT", 145_894_663, wrong_name.as_bytes(), as_of).is_err());
     }
 }

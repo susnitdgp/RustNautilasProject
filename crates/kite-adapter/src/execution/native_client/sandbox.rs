@@ -136,6 +136,7 @@ impl ExecutionClientFactory for SandboxFactory {
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
             Box::new(RedisStore::coordinated(
+                &super::keys::KeySpace::Legacy,
                 &c.namespace,
                 &format!("SB{}", c.user_id),
             )?),

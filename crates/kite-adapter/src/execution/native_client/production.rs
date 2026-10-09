@@ -79,6 +79,8 @@ pub struct LiveConfig {
     pub symbol: String,
     pub namespace: String,
     pub stop_signal: Arc<AtomicBool>,
+    /// Redis key space for the ledger and lease (portfolio slot or legacy).
+    pub keys: super::keys::KeySpace,
 }
 impl ClientConfig for LiveConfig {
     fn as_any(&self) -> &dyn Any {
@@ -134,6 +136,7 @@ impl ExecutionClientFactory for Factory {
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
             Box::new(RedisStore::coordinated(
+                &c.keys,
                 &c.namespace,
                 &c.settings.expected_user_id,
             )?),

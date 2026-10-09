@@ -49,6 +49,16 @@ pub struct Config {
         u64,
         super::live_control::Control,
     )>,
+    /// Candle size for `live_bars` (warm-up conversion, WebSocket aggregation, bar type).
+    pub interval: kite_adapter::http::historical::Interval,
+}
+
+/// `<instrument>-<n>-MINUTE-LAST-EXTERNAL`, the bar type the live feed publishes.
+pub fn bar_type_for(
+    instrument: &nautilus_model::instruments::FuturesContract,
+    interval: kite_adapter::http::historical::Interval,
+) -> Result<nautilus_model::data::BarType> {
+    Ok(format!("{}-{}-MINUTE-LAST-EXTERNAL", instrument.id, interval.minutes()).parse()?)
 }
 impl ClientConfig for Config {
     fn as_any(&self) -> &dyn Any {
@@ -147,20 +157,22 @@ impl Client {
             let bar_type: Option<nautilus_model::data::BarType> = config
                 .live_bars
                 .as_ref()
-                .map(|_| format!("{}-3-MINUTE-LAST-EXTERNAL", config.instrument.id).parse())
+                .map(|_| bar_type_for(&config.instrument, config.interval))
                 .transpose()
                 .expect("bar type");
             let mut candle_agg = config
                 .live_bars
                 .as_ref()
-                .map(|(_, last, _)| super::ws_candles::Aggregator::new(*last));
+                .map(|(_, last, _)| {
+                    super::ws_candles::Aggregator::with_step(*last, (config.interval.minutes() * 60) as i64)
+                });
             if let (Some((warmup, _, _)), Some(bt)) = (&config.live_bars, bar_type) {
                 for bar in warmup {
                     match super::live_bars::bar_for(
                         bar,
                         bt,
                         now(),
-                        kite_adapter::http::historical::Interval::ThreeMinute,
+                        config.interval,
                     ) {
                         Ok(v) => {
                             let _ = tx.send(DataEvent::Data(Data::Bar(v)));
@@ -199,7 +211,7 @@ impl Client {
                                     &c,
                                     bt,
                                     now(),
-                                    kite_adapter::http::historical::Interval::ThreeMinute,
+                                    config.interval,
                                 ) {
                                     Ok(b) => {
                                         let _ = tx.send(DataEvent::Data(Data::Bar(b)));
@@ -360,8 +372,7 @@ impl DataClient for Client {
             self.config.live_bars.is_some(),
             "Live bar aggregation not configured"
         );
-        let bt: nautilus_model::data::BarType =
-            format!("{}-3-MINUTE-LAST-EXTERNAL", self.config.instrument.id).parse()?;
+        let bt = bar_type_for(&self.config.instrument, self.config.interval)?;
         ensure!(cmd.bar_type == bt, "Invalid live Kite bar subscription");
         self.begin()
     }

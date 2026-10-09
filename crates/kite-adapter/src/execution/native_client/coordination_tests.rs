@@ -97,3 +97,24 @@ fn sandbox_credentials_never_fall_back_to_production_keys() {
     assert_eq!(credentials.api_key(), "sandbox-only");
     assert_eq!(credentials.access_token(), "sandbox-token");
 }
+#[test]
+fn portfolio_slots_lease_independently_and_share_the_account_budget() {
+    use super::keys::KeySpace;
+    let server = TestRedis::new();
+    let crude = KeySpace::portfolio("kite-prod", "crudeoilm-sats-202610").unwrap();
+    let gold = KeySpace::portfolio("kite-prod", "gold-sats-202612").unwrap();
+    let a = Account::acquire_in(&server.url, &crude, "NVC171", "20261009-aaaa").unwrap();
+    assert!(
+        Account::acquire_in(&server.url, &crude, "NVC171", "20261009-bbbb").is_err(),
+        "one owner per slot"
+    );
+    let b = Account::acquire_in(&server.url, &gold, "NVC171", "20261009-cccc").unwrap();
+    let mut con = redis::Client::open(server.url.as_str()).unwrap().get_connection().unwrap();
+    let exists = |con: &mut redis::Connection, k: &str| -> bool { redis::cmd("EXISTS").arg(k).query::<i32>(con).unwrap() == 1 };
+    assert!(exists(&mut con, "kite-prod:v1:{crudeoilm-sats-202610}:lease:NVC171"));
+    assert!(exists(&mut con, "kite-prod:v1:{gold-sats-202612}:lease:NVC171"));
+    assert!(exists(&mut con, "kite-prod:v1:{account-NVC171}:order-budget"));
+    assert!(!exists(&mut con, "susanta:nautilus:native-kite:account:{NVC171}"), "no legacy key written");
+    drop((a, b));
+}
+

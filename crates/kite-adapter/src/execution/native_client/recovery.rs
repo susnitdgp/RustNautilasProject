@@ -9,17 +9,17 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn review(namespace: &str) -> Result<serde_json::Value> {
     review_at(&kite_journal::connection::url_from_env()?, namespace)
 }
+/// Review a run recorded under a specific key space (e.g. one portfolio slot).
+pub fn review_in(keys: &super::keys::KeySpace, namespace: &str) -> Result<serde_json::Value> {
+    review_key_at(&kite_journal::connection::url_from_env()?, &keys.commands(namespace)?)
+}
 pub fn review_at(url: &str, namespace: &str) -> Result<serde_json::Value> {
-    ensure!(
-        !namespace.is_empty()
-            && namespace.len() <= 64
-            && namespace
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
-        "Invalid recovery namespace"
-    );
+    ensure!(super::keys::namespace(namespace).is_ok(), "Invalid recovery namespace");
+    review_key_at(url, &super::keys::KeySpace::Legacy.commands(namespace)?)
+}
+fn review_key_at(url: &str, key: &str) -> Result<serde_json::Value> {
     let mut c = kite_journal::connection::connect(url)?;
-    let key = format!("susanta:nautilus:native-kite:commands:{{{namespace}}}");
+    let key = key.to_owned();
     let count: usize = redis::cmd("HLEN")
         .arg(&key)
         .query(&mut c)
@@ -68,6 +68,6 @@ pub fn review_at(url: &str, namespace: &str) -> Result<serde_json::Value> {
     );
     let unresolved = orders.iter().filter(|o| o["closed"] != true).count();
     Ok(
-        serde_json::json!({"event":"native_kite_recovery_review","namespace":namespace,"orders":orders,"unresolved":unresolved,"journal_exposure":exposure.to_string(),"requires_review":unresolved>0||!exposure.is_zero(),"broker_reconciliation_required":true,"resubmissions":0,"automatic_resume_enabled":false,"live_orders_enabled":false}),
+        serde_json::json!({"event":"native_kite_recovery_review","redis_key":key,"orders":orders,"unresolved":unresolved,"journal_exposure":exposure.to_string(),"requires_review":unresolved>0||!exposure.is_zero(),"broker_reconciliation_required":true,"resubmissions":0,"automatic_resume_enabled":false,"live_orders_enabled":false}),
     )
 }

@@ -1,9 +1,13 @@
 [package]
 name = "kite-node"
-version = "2.3.1"
+version = "2.5.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+
+[features]
+# Real Zerodha order submission (also requires broker + portfolio flags and a typed LIVE).
+live-orders = ["kite-adapter/live-orders"]
 
 [dependencies]
 anyhow.workspace = true

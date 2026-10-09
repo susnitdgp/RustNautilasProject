@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "broker_config": "config/kite-portfolio.json",
+  "redis_prefix": "kite-prod",
+  "instances": [
+    {
+      "id": "nifty-fut",
+      "enabled": false,
+      "strategy": "unassigned",
+      "instrument": "NIFTY_FUT_CONTRACT.NFO",
+      "instrument_token": 0,
+      "strategy_config": "config/nifty-fut.json",
+      "live_orders_enabled": false
+    },
+    {
+      "id": "crudeoilm-sats-202610",
+      "enabled": true,
+      "strategy": "sats",
+      "instrument": "CRUDEOILM26OCTFUT.MCX",
+      "instrument_token": 145894663,
+      "strategy_config": "config/sats-crudeoilm.json",
+      "live_orders_enabled": true,
+      "rollover": {
+        "strategy_id": "crudeoilm-sats",
+        "contract_month": "2026-10",
+        "expected_expiry": "2026-10-19",
+        "lot_size": 1,
+        "next_contract": null
+      }
+    },
+    {
+      "id": "gold-fut",
+      "enabled": false,
+      "strategy": "unassigned",
+      "instrument": "GOLD_FUT_CONTRACT.MCX",
+      "instrument_token": 0,
+      "strategy_config": "config/gold-fut.json",
+      "live_orders_enabled": false
+    },
+    {
+      "id": "banknifty-fut",
+      "enabled": false,
+      "strategy": "unassigned",
+      "instrument": "BANKNIFTY_FUT_CONTRACT.NFO",
+      "instrument_token": 0,
+      "strategy_config": "config/banknifty-fut.json",
+      "live_orders_enabled": false
+    }
+  ]
+}

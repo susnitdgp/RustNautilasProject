@@ -17,3 +17,38 @@ Writes `backtest_results/sats/<slot>/<run>/summary.json` and `trades.csv`: the `
 script's own R accounting (TradingView trader card); the `exec_*` columns apply the slot's `execution` settings
 (lots, thirds or single exit, next-open market fills, slippage, round-trip cost).
 
+### Running SATS on the market (CRUDEOILM slot)
+
+Settings: `config/sats-crudeoilm.json` (5m, Dynamic TP, 1 lot, full exit at TP1, square-off 23:15 IST, MIS),
+calendar `config/mcx-session-calendar.json` (reviewed through the contract expiry 2026-10-19).
+
+* Paper (live Kite data, Kite mock execution, no broker orders): `deploy/run-sats-paper.sh`
+* Live (REAL Zerodha orders):
+  1. `cargo build --release --features live-orders`
+  2. `config/portfolio-production.json` has the slot `enabled` and `live_orders_enabled`
+  3. local, git-ignored `config/kite-production.json` has `live_orders_enabled: true` and your Kite user ID
+  4. `deploy/run-sats-live.sh` runs the preflight, then asks you to type `LIVE`
+
+Each run covers one trading day: start it after 09:00 IST; it warms SATS on broker-finalised history, trades,
+flattens on the 23:15 bar and stops. A WebSocket gap, reconnect or invalid packet fails closed (flatten + stop),
+any order rejection or position mismatch halts new orders and flattens. The bar in progress when the feed
+connects is skipped (its ticks cannot be proven complete), so SATS sees a one-bar gap at start-up.
+Logs (JSON lines) go to `logs/`. After the contract expiry, roll the slot (instrument, token, rollover block).
+
+### Redis keys (named from the portfolio manifest)
+
+Every key a slot's run owns lives under the manifest's `redis_prefix` and the slot id
+(`{…}` is a Redis Cluster hash tag, so one slot's keys stay on one shard):
+
+| Key | Purpose |
+|---|---|
+| `<prefix>:v1:{<slot>}:commands:<YYYYMMDD>-<run>` | execution ledger of one run (written before any broker call) |
+| `<prefix>:v1:{<slot>}:lease:<kite user>` | single-owner lease for the slot; a run blocks if the last one was not clean |
+| `<prefix>:v1:{account-<kite user>}:order-budget` | order-rate budget, shared by all slots trading that Kite account |
+| `trader-<prefix>-<slot>:<run uuid>:…` | Nautilus cache (orders, positions) |
+
+Production uses `kite-prod` (`config/portfolio-production.json`), paper uses `kite-dev` and the pseudo-account
+`PAPER`, so the two never share keys. `native-portfolio-validate` prints each slot's keys; review a run's ledger
+with `kite-node native-sats-review <portfolio> <slot> <YYYYMMDD-run>`. Legacy tooling keeps the old
+`susanta:nautilus:native-kite:*` names.
+

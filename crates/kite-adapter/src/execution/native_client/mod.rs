@@ -1,6 +1,7 @@
 use std::rc::Rc;
 pub mod coordination;
 pub mod custom_sandbox;
+pub mod keys;
 mod dispatch;
 mod fees;
 mod ledger;

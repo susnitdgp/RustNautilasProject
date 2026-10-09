@@ -36,25 +36,18 @@ pub(crate) struct RedisStore {
     poisoned: bool,
 }
 impl RedisStore {
-    pub fn coordinated(namespace: &str, account: &str) -> Result<Self> {
-        let mut store = Self::create(namespace)?;
-        store.account = Some(super::coordination::Account::acquire(
+    pub fn coordinated(keys: &super::keys::KeySpace, namespace: &str, account: &str) -> Result<Self> {
+        let mut store = Self::create(keys, namespace)?;
+        store.account = Some(super::coordination::Account::acquire_in(
             &kite_journal::connection::url_from_env()?,
+            keys,
             account,
             namespace,
         )?);
         Ok(store)
     }
-    pub fn create(namespace: &str) -> Result<Self> {
-        ensure!(
-            !namespace.is_empty()
-                && namespace.len() <= 64
-                && namespace
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
-            "Invalid native command namespace"
-        );
-        let key = format!("susanta:nautilus:native-kite:commands:{{{namespace}}}");
+    pub fn create(keys: &super::keys::KeySpace, namespace: &str) -> Result<Self> {
+        let key = keys.commands(namespace)?;
         let mut connection =
             kite_journal::connection::connect(&kite_journal::connection::url_from_env()?)?;
         let created: bool = redis::cmd("HSETNX")

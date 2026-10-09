@@ -21,8 +21,28 @@ pub struct SatsConfig {
     pub lots: u32,
     /// Rupees per 1.0 price move for one lot (CRUDEOILM 10).
     pub point_value: f64,
+    /// Live-runner settings (calendar, daily square-off, product).
+    pub live: LiveSettings,
     pub execution: Execution,
     pub params: Params,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveSettings {
+    /// Reviewed exchange session calendar JSON (holidays, special sessions).
+    pub session_calendar: String,
+    /// IST time of the daily square-off; no new entries from this bar onwards.
+    pub square_off: chrono::NaiveTime,
+    /// Broker product; the production client only accepts MIS.
+    pub product: String,
+}
+
+impl LiveSettings {
+    pub fn square_off_minute(&self) -> u32 {
+        use chrono::Timelike;
+        self.square_off.hour() * 60 + self.square_off.minute()
+    }
 }
 
 /// How model events map to orders.
@@ -106,6 +126,13 @@ impl SatsConfig {
             e.exit_mode != ExitMode::Thirds || self.lots.is_multiple_of(3),
             "exit_mode \"thirds\" needs lots divisible by 3 (use \"single\" for {} lot(s))",
             self.lots
+        );
+        ensure!(self.live.product == "MIS", "live.product must be MIS (intraday)");
+        ensure!(
+            chrono::Timelike::second(&self.live.square_off) == 0
+                && chrono::Timelike::minute(&self.live.square_off).is_multiple_of(self.bar_minutes),
+            "live.square_off must fall on a {}-minute bar boundary",
+            self.bar_minutes
         );
         self.params.validate().map_err(anyhow::Error::msg)?;
         Ok(())

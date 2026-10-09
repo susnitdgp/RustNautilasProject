@@ -36,6 +36,8 @@ pub struct MockConfig {
     pub symbol: String,
     pub instrument_token: u32,
     pub market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
+    /// Redis key space for the ledger and lease (`KeySpace::Legacy` for old tooling).
+    pub keys: super::keys::KeySpace,
 }
 impl ClientConfig for MockConfig {
     fn as_any(&self) -> &dyn Any {
@@ -85,7 +87,7 @@ impl ExecutionClientFactory for MockFactory {
         )?;
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
-            Box::new(RedisStore::coordinated(&cfg.namespace, &cfg.account_id)?),
+            Box::new(RedisStore::coordinated(&cfg.keys, &cfg.namespace, &cfg.account_id)?),
             client.factory.clone(),
             cfg.product.clone(),
             cfg.instrument_token,

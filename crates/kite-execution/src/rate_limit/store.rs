@@ -34,9 +34,34 @@ impl Limiter {
     pub fn open_at(url: &str, account_scope: &str, policy: Policy) -> Result<Self> {
         Self::load(url, account_scope, policy, false)
     }
-    fn load(url: &str, account_scope: &str, policy: Policy, create: bool) -> Result<Self> {
+    /// Opens a shared budget stored under a full, caller-validated key, creating
+    /// it on first use. Used for per-account budgets shared by several slots.
+    pub fn open_or_create_key(url: &str, key: &str, policy: Policy) -> Result<Self> {
+        ensure!(
+            !key.is_empty()
+                && key.len() <= 160
+                && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:{}".contains(&b)),
+            "Invalid rate-limit key"
+        );
         policy.validate()?;
-        let key = Self::key(account_scope)?;
+        let mut connection = connection::connect(url)?;
+        let initial = serde_json::json!({"version":1,"policy":serde_json::to_string(&policy)?,"history":[],"last_ms":0,"cooldown_until":0}).to_string();
+        let created: Option<String> = redis::cmd("SET")
+            .arg(key)
+            .arg(initial)
+            .arg("NX")
+            .query(&mut connection)
+            .map_err(|_| anyhow!("Rate-limit initialization failed; outcome may be unknown"))?;
+        if created.is_some() {
+            connection::sync(&mut connection)?;
+        }
+        Self::load_key(url, key.to_owned(), policy, false)
+    }
+    fn load(url: &str, account_scope: &str, policy: Policy, create: bool) -> Result<Self> {
+        Self::load_key(url, Self::key(account_scope)?, policy, create)
+    }
+    fn load_key(url: &str, key: String, policy: Policy, create: bool) -> Result<Self> {
+        policy.validate()?;
         let policy = serde_json::to_string(&policy)?;
         let mut connection = connection::connect(url)?;
         if create {

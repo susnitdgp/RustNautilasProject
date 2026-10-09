@@ -1,9 +1,10 @@
-//! Live, exchange-timestamped 3-minute OHLCV from Kite full WebSocket packets.
+//! Live, exchange-timestamped OHLCV (3-minute by default) from Kite full WebSocket packets.
 //! Historical API is exclusively for warmup; gaps/reconnections fail closed.
 use anyhow::{Result, ensure};
 use chrono::{TimeZone, Utc};
 use kite_adapter::{http::historical::Candle, mapping::market_data::Snapshot};
-const STEP: i64 = 180;
+#[allow(dead_code)] // 3-minute default used by legacy ws_validation tooling
+const DEFAULT_STEP: i64 = 180;
 #[derive(Debug, Default)]
 pub struct Aggregator {
     current: Option<Current>,
@@ -12,6 +13,7 @@ pub struct Aggregator {
     generation: Option<u32>,
     last_exchange_ts: Option<i64>,
     skip_partial: bool,
+    step: i64,
 }
 #[derive(Debug)]
 struct Current {
@@ -24,9 +26,16 @@ struct Current {
     oi: u64,
 }
 impl Aggregator {
+    #[allow(dead_code)] // 3-minute default used by legacy ws_validation tooling
     pub fn new(last_close_ns: u64) -> Self {
+        Self::with_step(last_close_ns, DEFAULT_STEP)
+    }
+    /// Candle length in seconds (300 for 5-minute bars).
+    pub fn with_step(last_close_ns: u64, step_seconds: i64) -> Self {
+        assert!(step_seconds > 0 && 86_400 % step_seconds == 0, "invalid candle step");
         Self {
             last_close: (last_close_ns / 1_000_000_000) as i64,
+            step: step_seconds,
             ..Self::default()
         }
     }
@@ -53,9 +62,9 @@ impl Aggregator {
             price.is_finite() && price > 0.0,
             "invalid last traded price"
         );
-        let bucket = ts.div_euclid(STEP) * STEP;
+        let bucket = ts.div_euclid(self.step) * self.step;
         ensure!(
-            bucket + STEP > self.last_close,
+            bucket + self.step > self.last_close,
             "late tick for finalized candle"
         );
         if let Some(g) = self.generation {
@@ -98,11 +107,11 @@ impl Aggregator {
         ensure!(bucket >= old_start, "out-of-order WebSocket tick");
         if bucket != old_start {
             ensure!(
-                bucket == old_start + STEP,
+                bucket == old_start + self.step,
                 "WebSocket candle gap after subscription"
             );
             let prev = self.current.take().expect("current");
-            self.last_close = prev.start + STEP;
+            self.last_close = prev.start + self.step;
             let skipped = self.skip_partial;
             self.skip_partial = false;
             self.current = Some(Current {
@@ -182,6 +191,16 @@ mod tests {
             (bar.open, bar.high, bar.low, bar.close, bar.volume),
             (100., 110., 90., 90., 12)
         );
+    }
+    #[test]
+    fn five_minute_step_closes_only_on_five_minute_boundaries() {
+        let start = 1_800_000_000i64.div_euclid(300) * 300;
+        let mut a = Aggregator::with_step((start as u64) * 1_000_000_000, 300);
+        assert!(a.observe(&tick(start, 100, 1000, 1)).unwrap().is_none());
+        assert!(a.observe(&tick(start + 180, 120, 1010, 1)).unwrap().is_none(), "no 3-minute close");
+        let bar = a.observe(&tick(start + 300, 95, 1020, 1)).unwrap().unwrap();
+        assert_eq!((bar.open, bar.high, bar.low, bar.close, bar.volume), (100., 120., 100., 120., 10));
+        assert_eq!(bar.timestamp, Utc.timestamp_opt(start, 0).single().unwrap().to_rfc3339());
     }
     #[test]
     fn skips_partial_start_and_refuses_gaps_reconnect_and_volume_reset() {

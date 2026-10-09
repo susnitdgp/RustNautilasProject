@@ -147,8 +147,8 @@ impl Portfolio {
                 "Missing strategy config path"
             );
             ensure!(
-                !instance.live_orders_enabled,
-                "Portfolio execution is not yet enabled; use read-only instances"
+                !instance.live_orders_enabled || cfg!(feature = "live-orders"),
+                "live_orders_enabled needs a `--features live-orders` build"
             );
             ensure!(
                 bindings.insert((&instance.instrument, &instance.strategy)),
@@ -167,6 +167,18 @@ impl Portfolio {
         tokens.sort_unstable();
         tokens.dedup();
         tokens
+    }
+    /// Redis key space for everything one slot's execution owns
+    /// (`<prefix>:v1:{<slot>}:…`, plus the per-account order budget).
+    pub fn keyspace(&self, id: &str) -> Result<kite_adapter::execution::native_client::keys::KeySpace> {
+        ensure!(self.instances.iter().any(|v| v.id == id), "Unknown portfolio instance");
+        kite_adapter::execution::native_client::keys::KeySpace::portfolio(&self.redis_prefix, id)
+    }
+    /// Nautilus trader ID for a slot; its Redis cache keys become
+    /// `trader-<prefix>-<slot>:<run uuid>:…`.
+    pub fn trader_id(&self, id: &str) -> Result<String> {
+        ensure!(self.instances.iter().any(|v| v.id == id), "Unknown portfolio instance");
+        Ok(format!("{}-{}", self.redis_prefix, id))
     }
     pub fn key(&self, id: &str, kind: &str) -> Result<String> {
         ensure!(
@@ -208,7 +220,11 @@ pub fn inspect(path: &str) -> Result<()> {
                 "token": v.instrument_token, "strategy_config": v.strategy_config,
                 "strategy_settings": settings,
                 "redis_journal": portfolio.key(&v.id, "journal").expect("validated"),
-                "redis_owner": portfolio.key(&v.id, "owner").expect("validated")
+                "redis_owner": portfolio.key(&v.id, "owner").expect("validated"),
+                "redis_commands": portfolio.keyspace(&v.id).and_then(|k| k.commands("YYYYMMDD-run")).expect("validated"),
+                "redis_lease": portfolio.keyspace(&v.id).and_then(|k| k.lease("KITEUSER")).expect("validated"),
+                "redis_order_budget": portfolio.keyspace(&v.id).and_then(|k| k.order_budget("KITEUSER")).expect("validated"),
+                "nautilus_cache": format!("trader-{}:<run-uuid>:*", portfolio.trader_id(&v.id).expect("validated"))
             })).collect::<Vec<_>>()
         })
     );
@@ -242,7 +258,7 @@ mod tests {
         assert!(p.validate().is_err());
         p.instances[1].id = "gold-trend".into();
         p.instances[1].live_orders_enabled = true;
-        assert!(p.validate().is_err());
+        assert_eq!(p.validate().is_err(), !cfg!(feature = "live-orders"));
         p.instances[1].live_orders_enabled = false;
         p.instances[1].instrument_token = 123;
         p.instances[1].instrument = p.instances[0].instrument.clone();

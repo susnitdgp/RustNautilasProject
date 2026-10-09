@@ -58,6 +58,5 @@ mod synthetic;
 mod test_support;
 mod sats_backtest;
 pub mod sats_config;
-// Not yet wired to a LiveNode runner; compiled and type-checked against Nautilus 0.64.
-#[allow(dead_code)]
+mod sats_live;
 mod sats_strategy;

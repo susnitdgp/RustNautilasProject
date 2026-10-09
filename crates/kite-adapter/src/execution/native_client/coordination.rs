@@ -12,23 +12,22 @@ pub(crate) struct Account {
     poisoned: bool,
 }
 pub fn key(account: &str) -> Result<String> {
-    ensure!(
-        !account.is_empty()
-            && account.len() <= 32
-            && account.bytes().all(|b| b.is_ascii_alphanumeric()),
-        "Invalid native account scope"
-    );
-    Ok(format!(
-        "susanta:nautilus:native-kite:account:{{{account}}}"
-    ))
+    super::keys::KeySpace::Legacy.lease(account)
 }
 /// Read-only admission check before acquiring a strategy lease. The atomic
 /// Account::acquire remains authoritative if another process starts afterwards.
 pub fn check_startup(account: &str) -> Result<()> {
     check_startup_at(&connection::url_from_env()?, account)
 }
+/// Startup check for the lease of a specific key space (e.g. one portfolio slot).
+pub fn check_startup_in(keys: &super::keys::KeySpace, account: &str) -> Result<()> {
+    check_startup_key(&connection::url_from_env()?, &keys.lease(account)?)
+}
 pub fn check_startup_at(url: &str, account: &str) -> Result<()> {
-    let key = key(account)?;
+    check_startup_key(url, &key(account)?)
+}
+fn check_startup_key(url: &str, key: &str) -> Result<()> {
+    let key = key.to_owned();
     let mut con = connection::connect(url)?;
     let (values, ttl): (BTreeMap<String, String>, i64) = redis::pipe()
         .atomic()
@@ -63,7 +62,11 @@ fn validate_startup(values: &BTreeMap<String, String>, ttl: i64) -> Result<()> {
     Ok(())
 }
 impl Account {
+    #[allow(dead_code)] // legacy single-account entry point (tests, old tooling)
     pub fn acquire(url: &str, account: &str, owner: &str) -> Result<Self> {
+        Self::acquire_in(url, &super::keys::KeySpace::Legacy, account, owner)
+    }
+    pub fn acquire_in(url: &str, keys: &super::keys::KeySpace, account: &str, owner: &str) -> Result<Self> {
         ensure!(
             !owner.is_empty()
                 && owner.len() <= 64
@@ -72,7 +75,7 @@ impl Account {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
             "Invalid account owner"
         );
-        let key = key(account)?;
+        let key = keys.lease(account)?;
         let mut connection = connection::connect(url)?;
         let script = "if redis.call('EXISTS',KEYS[1])==0 then redis.call('HSET',KEYS[1],'scope','NATIVE_DISABLED_V1','owner',ARGV[1],'state','Starting'); return 1 end; if redis.call('HGET',KEYS[1],'scope')~='NATIVE_DISABLED_V1' or redis.call('PTTL',KEYS[1])~=-1 or redis.call('HGET',KEYS[1],'state')~='Clean' or redis.call('HGET',KEYS[1],'owner')~='' then return 0 end; redis.call('HSET',KEYS[1],'owner',ARGV[1],'state','Starting'); return 2";
         let acquired: u32 = redis::cmd("EVAL")
@@ -94,10 +97,11 @@ impl Account {
             per_minute: 100,
             per_day: 1000,
         };
-        let limiter = if acquired == 1 {
-            Limiter::create_at(url, &scope, policy)?
-        } else {
-            Limiter::open_at(url, &scope, policy)?
+        let limiter = match keys.order_budget(account)? {
+            // Portfolio budgets are shared by every slot on the account.
+            Some(budget) => Limiter::open_or_create_key(url, &budget, policy)?,
+            None if acquired == 1 => Limiter::create_at(url, &scope, policy)?,
+            None => Limiter::open_at(url, &scope, policy)?,
         };
         Ok(Self {
             connection,
