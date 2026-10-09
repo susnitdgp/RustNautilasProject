@@ -9,6 +9,8 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-amd-export",[token,minutes])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|t|minutes.parse::<u32>().map_err(anyhow::Error::from).and_then(|m|super::amd_data::export(t,m))),
         ("native-portfolio-validate",[config])=>super::portfolio::inspect(config),
         ("native-sats-backtest",[portfolio,instance,from,to])=>super::sats_backtest::run(portfolio,instance,from,to),
+        ("native-burst-backtest",[config,from,to])=>super::burst_backtest::run(config,from,to),
+        ("native-burst-sweep",[config,from,to])=>super::burst_sweep::run(config,from,to),
         ("native-sats-paper",[portfolio,instance])=>super::sats_live::run(portfolio,instance,None,super::sats_live::Mode::Paper),
         ("native-sats-live-preflight",[portfolio,instance,broker])=>super::sats_live::preflight(portfolio,instance,broker),
         ("native-sats-review",[portfolio,instance,namespace])=>super::sats_live::review(portfolio,instance,namespace),
@@ -25,5 +27,5 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 
 fn usage() -> Result<()> {
-    bail!("Usage: native-portfolio-validate CONFIG | native-sats-backtest PORTFOLIO INSTANCE FROM TO | native-sats-paper PORTFOLIO INSTANCE | native-sats-live-preflight PORTFOLIO INSTANCE BROKER | native-sats-live PORTFOLIO INSTANCE BROKER | native-kite-auth | native-kite-status ACCOUNT")
+    bail!("Usage: native-portfolio-validate CONFIG | native-sats-backtest PORTFOLIO INSTANCE FROM TO | native-burst-backtest CONFIG FROM TO | native-burst-sweep CONFIG FROM TO | native-sats-paper PORTFOLIO INSTANCE | native-sats-live-preflight PORTFOLIO INSTANCE BROKER | native-sats-live PORTFOLIO INSTANCE BROKER | native-kite-auth | native-kite-status ACCOUNT")
 }

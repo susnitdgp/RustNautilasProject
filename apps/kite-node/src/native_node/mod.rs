@@ -58,6 +58,9 @@ mod synthetic;
 #[cfg(test)]
 mod test_support;
 mod sats_backtest;
+mod burst_backtest;
+mod burst_config;
+mod burst_sweep;
 pub mod sats_config;
 mod sats_dashboard;
 mod sats_live;

@@ -1,6 +1,6 @@
 [package]
 name = "kite-node"
-version = "2.11.1"
+version = "2.12.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -26,6 +26,7 @@ tokio.workspace = true
 
 kite-journal = { path = "../../crates/kite-journal" }
 sats = { path = "../../crates/sats" }
+burst = { path = "../../crates/burst" }
 
 nautilus-trading.workspace = true
 
