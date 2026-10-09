@@ -1,18 +1,28 @@
 {
   "strategy": "sats",
-  "bar_minutes": 5,
+  "bar_minutes": 2,
+  "candle_sources": {
+    "1": "minute",
+    "2": "minute",
+    "3": "3minute",
+    "5": "5minute",
+    "6": "3minute",
+    "10": "10minute",
+    "15": "15minute",
+    "30": "30minute"
+  },
   "tick_size": 1.0,
   "lots": 1,
   "point_value": 10,
   "live": {
     "session_calendar": "config/mcx-session-calendar.json",
-    "square_off": "23:15:00",
+    "square_off": "23:14:00",
     "product": "MIS"
   },
   "execution": {
     "exit_mode": "single",
     "single_exit_at": "TP1",
-    "round_trip_cost_points": 6.0,
+    "round_trip_cost_points": 2.0,
     "slippage_points_per_side": 0.5
   },
   "params": {
@@ -20,12 +30,10 @@
     "atr_length": 13,
     "base_band_width": 2.0,
     "source": "close",
-
     "use_adaptive": true,
     "efficiency_window": 20,
     "adaptation_strength": 0.5,
     "atr_baseline_length": 100,
-
     "use_tqi": true,
     "quality_influence": 0.4,
     "quality_curve_power": 1.5,
@@ -38,13 +46,12 @@
     "char_flip_high_tqi": 0.55,
     "char_flip_low_tqi": 0.25,
     "weight_efficiency": 0.35,
-    "weight_vol_factor": 0.20,
+    "weight_vol_factor": 0.2,
     "weight_structure": 0.25,
-    "weight_momentum": 0.20,
+    "weight_momentum": 0.2,
     "structure_window": 20,
     "momentum_window": 10,
     "tqi_volatility_factor": "ATR regime",
-
     "score_use_structure": true,
     "pivot_strength": 3,
     "score_use_rsi": true,
@@ -54,7 +61,6 @@
     "rsi_memory_bars": 20,
     "score_use_volume": true,
     "volume_z_window": 20,
-
     "sl_buffer_atr": 1.5,
     "max_sl_distance_atr": 4.0,
     "tp_mode": "Dynamic",
@@ -62,14 +68,12 @@
     "tp2_r": 2.0,
     "tp3_r": 3.0,
     "trade_timeout_bars": 100,
-
     "dyn_tp_tqi_influence": 0.6,
     "dyn_tp_vol_influence": 0.4,
     "dyn_tp_min_scale": 0.5,
     "dyn_tp_max_scale": 2.0,
     "dyn_tp1_floor_r": 0.5,
     "dyn_tp_ceiling_r": 8.0,
-
     "auto_calibration": false,
     "calibration_window": 20,
     "calibration_bad_r": 0.0,
@@ -78,7 +82,6 @@
     "calibration_cooldown": 5,
     "calibration_quality_floor": 0.1,
     "calibration_quality_ceiling": 0.9,
-
     "commission_pct_per_fill": 0.0,
     "slippage_ticks": 0,
     "min_risk_ticks": 2,

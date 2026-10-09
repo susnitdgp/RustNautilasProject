@@ -128,7 +128,7 @@ fn prepare(portfolio_path: &str, instance_id: &str) -> Result<Prepared> {
     }
     let instrument = kite_adapter::instruments::contract::build(&report, now_ns.into())?;
 
-    let interval = config.interval();
+    let interval = config.interval()?;
     let raw = tokio::runtime::Runtime::new()?.block_on(kite_adapter::http::historical::fetch_window_for(
         inst.instrument_token,
         date,
@@ -196,7 +196,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         run_id.to_string().split('-').next().unwrap_or("run")
     );
     kite_adapter::execution::native_client::coordination::check_startup_in(&p.keys, &account_id)?;
-    let interval = p.config.interval();
+    let interval = p.config.interval()?;
     let mut control = Control::new(false).with_bar_ns(interval.nanoseconds());
     control.real = mode == Mode::Live;
     let market_price = Arc::new(AtomicI64::new(0));

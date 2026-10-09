@@ -3,19 +3,45 @@
 //! SATS v1.13.1 input; `execution` decides how the model's events become
 //! orders for the configured number of lots.
 use anyhow::{Context, Result, ensure};
-use kite_adapter::http::historical::{Candle, Interval};
+use kite_adapter::http::historical::{Candle, Interval, KiteInterval};
 use sats::{BarInput, Engine, EventKind, Params, SymbolSpec};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const STRATEGY: &str = "sats";
+
+/// Used when a config file has no `candle_sources`: each size from the finest
+/// Kite interval that divides it.
+pub fn default_candle_sources() -> BTreeMap<String, KiteInterval> {
+    [
+        (1, KiteInterval::Minute),
+        (2, KiteInterval::Minute),
+        (3, KiteInterval::ThreeMinute),
+        (5, KiteInterval::FiveMinute),
+        (6, KiteInterval::ThreeMinute),
+        (10, KiteInterval::TenMinute),
+        (15, KiteInterval::FifteenMinute),
+        (30, KiteInterval::ThirtyMinute),
+    ]
+    .into_iter()
+    .map(|(m, k)| (m.to_string(), k))
+    .collect()
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SatsConfig {
     /// Must be "sats"; guards against pointing a slot at another strategy's file.
     pub strategy: String,
-    /// Candle size the engine runs on: 1, 3 or 5 minutes (also drives preset "Auto").
+    /// Candle size the engine runs on, in minutes (also drives preset "Auto").
+    /// Must have an entry in `candle_sources`.
     pub bar_minutes: u32,
+    /// Candle minutes → Kite historical interval its warm-up/backtest history is
+    /// fetched at, e.g. {"2": "minute"} builds 2m candles from 1m history. Kite serves
+    /// "minute", "3minute", "5minute", "10minute", "15minute", "30minute". Live bars
+    /// are always built from WebSocket ticks at `bar_minutes`.
+    #[serde(default = "default_candle_sources")]
+    pub candle_sources: BTreeMap<String, KiteInterval>,
     /// Instrument tick (`syminfo.mintick`), e.g. 1.0 for CRUDEOILM.
     pub tick_size: f64,
     pub lots: u32,
@@ -113,7 +139,11 @@ impl SatsConfig {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(self.strategy == STRATEGY, "strategy must be \"{STRATEGY}\"");
-        ensure!(matches!(self.bar_minutes, 1 | 3 | 5), "bar_minutes must be 1, 3 or 5");
+        for (minutes, source) in &self.candle_sources {
+            let m: u32 = minutes.parse().map_err(|_| anyhow::anyhow!("candle_sources key \"{minutes}\" is not a whole number of minutes"))?;
+            Interval::built_from(m, *source).with_context(|| format!("candle_sources \"{minutes}\""))?;
+        }
+        self.interval()?;
         ensure!(self.tick_size.is_finite() && self.tick_size > 0.0, "tick_size must be positive");
         ensure!((1..=100).contains(&self.lots), "lots must be 1..100");
         ensure!(self.point_value.is_finite() && self.point_value > 0.0, "point_value must be positive");
@@ -138,12 +168,16 @@ impl SatsConfig {
         Ok(())
     }
 
-    pub fn interval(&self) -> Interval {
-        match self.bar_minutes {
-            1 => Interval::OneMinute,
-            3 => Interval::ThreeMinute,
-            _ => Interval::FiveMinute,
-        }
+    /// Candle size plus the Kite history interval it is built from (`candle_sources`).
+    pub fn interval(&self) -> Result<Interval> {
+        let source = self.candle_sources.get(&self.bar_minutes.to_string()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "bar_minutes {} has no entry in candle_sources (configured: {})",
+                self.bar_minutes,
+                self.candle_sources.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        Interval::built_from(self.bar_minutes, *source)
     }
 
     pub fn bar_ns(&self) -> i64 {

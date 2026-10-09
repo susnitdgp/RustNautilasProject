@@ -104,7 +104,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, from: &str, to: &str) -> Res
     let to = NaiveDate::parse_from_str(to, "%Y-%m-%d").context("TO must be YYYY-MM-DD")?;
     ensure!(from <= to, "FROM must not be after TO");
 
-    let candles = fetch(inst.instrument_token, from - Duration::days(WARMUP_DAYS), to, config.interval())?;
+    let candles = fetch(inst.instrument_token, from - Duration::days(WARMUP_DAYS), to, config.interval()?)?;
     let now_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
     let bars = candles
         .iter()

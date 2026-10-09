@@ -30,7 +30,12 @@ impl KiteOrderTransport {
         let mut authorization = HeaderValue::from_str(&value)
             .map_err(|_| anyhow!("Invalid Kite authentication header"))?;
         authorization.set_sensitive(true);
+        // Kite only accepts orders from the app's registered static IP. Dual-stack hosts
+        // would otherwise reach api.kite.trade over IPv6 (an unregistered address) and get
+        // 403 PermissionException; binding an IPv4 local address restricts connections to
+        // IPv4 destinations, i.e. the registered static IPv4.
         let client = Client::builder()
+            .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(5))
@@ -83,11 +88,18 @@ impl KiteOrderTransport {
                 retry_after_ms: seconds * 1000,
             });
         }
-        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-            return Ok(Outcome::SessionExpired);
-        }
-        // No automatic retries. Server/proxy failures may follow an accepted mutation.
         if !status.is_success() {
+            let error_type = kite_error(&mut response, status, path.as_str()).await;
+            if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+                // PermissionException (e.g. "IP ... is not allowed to place orders") is a
+                // definitive refusal: nothing was placed. Anything else is the session.
+                return Ok(if error_type.as_deref() == Some("PermissionException") {
+                    Outcome::Rejected
+                } else {
+                    Outcome::SessionExpired
+                });
+            }
+            // No automatic retries. Server/proxy failures may follow an accepted mutation.
             return Ok(if matches!(status.as_u16(), 400 | 404 | 405 | 422) {
                 Outcome::Rejected
             } else {
@@ -133,6 +145,34 @@ impl KiteOrderTransport {
             order_id: data.order_id,
         })
     }
+}
+/// Reads Kite's error envelope (bounded), writes `error_type`/`message` as one JSON line
+/// to stdout (the run log) and returns `error_type`. Kite error bodies carry no secrets.
+async fn kite_error(response: &mut reqwest::Response, status: StatusCode, path: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct ErrorBody {
+        error_type: Option<String>,
+        message: Option<String>,
+    }
+    let mut body = Vec::new();
+    while let Ok(Some(bytes)) = response.chunk().await {
+        if body.len() + bytes.len() > 4096 {
+            break;
+        }
+        body.extend_from_slice(&bytes);
+    }
+    let parsed: Option<ErrorBody> = serde_json::from_slice(&body).ok();
+    let error_type = parsed.as_ref().and_then(|b| b.error_type.clone());
+    let message: Option<String> = parsed.and_then(|b| b.message).map(|m| m.chars().take(300).collect());
+    use std::io::Write;
+    let line = serde_json::json!({
+        "event": "kite_order_api_error", "http_status": status.as_u16(), "path": path,
+        "error_type": error_type, "message": message,
+    });
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+    error_type
 }
 #[cfg(test)]
 mod tests {
@@ -244,6 +284,12 @@ mod tests {
                 },
             ),
             (403, "private", Outcome::SessionExpired),
+            (403, r#"{"status":"error","error_type":"TokenException","message":"Incorrect api_key or access_token."}"#, Outcome::SessionExpired),
+            (
+                403,
+                r#"{"status":"error","error_type":"PermissionException","message":"IP (2406::1) is not allowed to place orders for this app."}"#,
+                Outcome::Rejected,
+            ),
             (400, "private", Outcome::Rejected),
             (502, "private", Outcome::Unknown),
             (200, "private", Outcome::Unknown),
