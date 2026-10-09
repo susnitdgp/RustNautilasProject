@@ -1,10 +1,21 @@
 use anyhow::{Result, anyhow, ensure};
-use nautilus_common::cache::CacheConfig;
+use nautilus_common::{cache::CacheConfig, enums::SerializationEncoding};
 use nautilus_infrastructure::redis::cache::RedisCacheConfig;
 
+/// Batching window for Nautilus cache writes. The writes run on Nautilus' own background
+/// task, never the trading thread; batching sends them as one pipeline per window, so with
+/// `appendfsync always` they cause far fewer AOF fsyncs next to kite-journal's pre-order
+/// WAITAOF. A crash can lose at most this window of cache writes; kite-journal (WAITAOF)
+/// and broker reconciliation remain the durable record.
+const CACHE_BUFFER_INTERVAL_MS: usize = 100;
+
 /// Uses the native cache backing, with a unique run prefix and no database flush.
+/// MessagePack payloads (smaller than JSON). Runs written before kite-node 2.15.2 are
+/// JSON and cannot be read back by `native-recover` with this encoding.
 pub fn cache_config() -> CacheConfig {
     CacheConfig {
+        encoding: SerializationEncoding::MsgPack,
+        buffer_interval_ms: Some(CACHE_BUFFER_INTERVAL_MS),
         use_instance_id: true,
         flush_on_start: false,
         save_market_data: false,
