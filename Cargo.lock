@@ -536,15 +536,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "burst"
-version = "0.1.1"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2556,12 +2547,11 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.14.1"
+version = "2.15.0"
 dependencies = [
  "anyhow",
  "arrow",
  "async-trait",
- "burst",
  "chrono",
  "crossterm",
  "indexmap",

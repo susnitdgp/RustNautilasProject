@@ -3,7 +3,7 @@
 use anyhow::{Result, ensure};
 use chrono::{TimeZone, Utc};
 use kite_adapter::{http::historical::Candle, mapping::market_data::Snapshot};
-#[allow(dead_code)] // 3-minute default used by legacy ws_validation tooling
+#[allow(dead_code)] // 3-minute default, used by tests
 const DEFAULT_STEP: i64 = 180;
 #[derive(Debug, Default)]
 pub struct Aggregator {
@@ -29,7 +29,7 @@ struct Current {
     oi: u64,
 }
 impl Aggregator {
-    #[allow(dead_code)] // 3-minute default used by legacy ws_validation tooling
+    #[allow(dead_code)] // 3-minute default, used by tests
     pub fn new(last_close_ns: u64) -> Self {
         Self::with_step(last_close_ns, DEFAULT_STEP)
     }

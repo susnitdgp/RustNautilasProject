@@ -445,7 +445,7 @@ mod tests {
         assert!(c.validate().is_err());
         c.lots = 3;
         c.validate().unwrap();
-        c.strategy = "vce-mojo".into();
+        c.strategy = "not-sats".into();
         assert!(c.validate().is_err());
     }
 }

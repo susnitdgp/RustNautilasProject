@@ -6,11 +6,8 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(match(command,&args[1..]){
-        ("native-amd-export",[token,minutes])=>token.parse::<u32>().map_err(anyhow::Error::from).and_then(|t|minutes.parse::<u32>().map_err(anyhow::Error::from).and_then(|m|super::amd_data::export(t,m))),
         ("native-portfolio-validate",[config])=>super::portfolio::inspect(config),
         ("native-sats-backtest",[portfolio,instance,from,to])=>super::sats_backtest::run(portfolio,instance,from,to),
-        ("native-burst-backtest",[config,from,to])=>super::burst_backtest::run(config,from,to),
-        ("native-burst-sweep",[config,from,to])=>super::burst_sweep::run(config,from,to),
         ("native-sniper-backtest",[config,from,to])=>super::sniper_backtest::run(config,from,to),
         ("native-sniper-paper",[portfolio,instance])=>super::sniper_live::run(portfolio,instance,None,super::sniper_live::Mode::Paper),
         ("native-sniper-live-preflight",[portfolio,instance,broker])=>super::sniper_live::preflight(portfolio,instance,broker),
@@ -32,5 +29,5 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
 }
 
 fn usage() -> Result<()> {
-    bail!("Usage: native-portfolio-validate CONFIG | native-sats-backtest PORTFOLIO INSTANCE FROM TO | native-burst-backtest CONFIG FROM TO | native-burst-sweep CONFIG FROM TO | native-sniper-backtest CONFIG FROM TO | native-sniper-paper PORTFOLIO INSTANCE | native-sniper-live-preflight PORTFOLIO INSTANCE BROKER | native-sniper-live PORTFOLIO INSTANCE BROKER | native-sats-paper PORTFOLIO INSTANCE | native-sats-live-preflight PORTFOLIO INSTANCE BROKER | native-sats-live PORTFOLIO INSTANCE BROKER | native-kite-auth | native-kite-status ACCOUNT")
+    bail!("Usage: native-portfolio-validate CONFIG | native-sats-backtest PORTFOLIO INSTANCE FROM TO | native-sniper-backtest CONFIG FROM TO | native-sniper-paper PORTFOLIO INSTANCE | native-sniper-live-preflight PORTFOLIO INSTANCE BROKER | native-sniper-live PORTFOLIO INSTANCE BROKER | native-sats-paper PORTFOLIO INSTANCE | native-sats-live-preflight PORTFOLIO INSTANCE BROKER | native-sats-live PORTFOLIO INSTANCE BROKER | native-kite-auth | native-kite-status ACCOUNT")
 }
