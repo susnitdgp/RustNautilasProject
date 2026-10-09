@@ -61,3 +61,4 @@ pub mod sats_config;
 mod sats_dashboard;
 mod sats_live;
 mod sats_strategy;
+mod sats_trail;

@@ -155,11 +155,10 @@ impl Board {
         row(line.clone());
         row(format!(" Trend        {trend}    SuperTrend {}", px(self.supertrend)));
         row(format!(" TQI          {:.2} ({})    warmed {}", self.tqi, self.regime, if self.warmed { "yes" } else { "no" }));
-        row(format!(" Next R       {:.2} / {:.2} / {:.2}   exit: {}", self.next_r[0], self.next_r[1], self.next_r[2], self.exit_rule));
+        row(format!(" TP1 at      {:.2} R   exit: {}", self.next_r[0], self.exit_rule));
         row(line.clone());
         row(format!(" Position     {pos}    entry {}", px(self.entry_avg)));
-        row(format!(" SL / TPs     {} / {}", px(self.sl),
-            self.tps.map_or("—".into(), |t| format!("{:.0} · {:.0} · {:.0}", t[0], t[1], t[2]))));
+        row(format!(" Stop / TP1   {} / {}", px(self.sl), px(self.tps.map(|t| t[0]))));
         row(format!(" Unrealised   {}", self.unrealized_points().map_or("—".into(), money)));
         row(format!(" Realised     {}   ({} round trips, {} fills)", money(self.realized_points), self.round_trips, self.fills));
         row(line.clone());
@@ -265,7 +264,7 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
             kv("Trend", vec![trend]),
             kv("SuperTrend", vec![Span::raw(px(b.supertrend))]),
             kv("TQI", vec![Span::raw(format!("{:.2}  {}", b.tqi, b.regime))]),
-            kv("Next R", vec![Span::raw(format!("{:.2} / {:.2} / {:.2}", b.next_r[0], b.next_r[1], b.next_r[2]))]),
+            kv("TP1 at", vec![Span::raw(format!("{:.2} R", b.next_r[0]))]),
             kv("Exit", vec![Span::raw(b.exit_rule.clone())]),
             kv("Warmed", vec![if b.warmed { Span::styled("yes", green) } else { Span::styled("no", yellow) }]),
         ])
@@ -284,9 +283,9 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
         Paragraph::new(vec![
             kv("Position", vec![side]),
             kv("Entry", vec![Span::raw(px(b.entry_avg))]),
-            kv("SL", vec![Span::styled(px(b.sl), red)]),
-            kv("TP1·2·3", vec![Span::styled(
-                b.tps.map_or("—".into(), |t| format!("{:.0} · {:.0} · {:.0}", t[0], t[1], t[2])),
+            kv("Stop", vec![Span::styled(px(b.sl), red)]),
+            kv("TP1", vec![Span::styled(
+                px(b.tps.map(|t| t[0])),
                 green,
             )]),
             kv("Unrealised", vec![b.unrealized_points().map_or(Span::raw("—"), pnl)]),

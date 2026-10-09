@@ -15,7 +15,8 @@
 //! * any order rejection/denial or position mismatch halts new orders.
 use super::live_control::Control;
 use super::sats_dashboard::{self, Board, Shared};
-use super::sats_config::{Execution, SatsConfig};
+use super::sats_config::{Execution, ExitMode, SatsConfig};
+use super::sats_trail::Trail;
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, NaiveDate, Timelike};
 use nautilus_common::{actor::DataActor, timer::TimeEvent};
@@ -75,6 +76,8 @@ pub struct SatsStrategy {
     warm_reported: bool,
     /// Same-bar entry waiting for this run's closing order to fill (event, deadline ns).
     pending_entry: Option<(Event, i64)>,
+    /// Live trailing stop of the open position (`exit_mode: "trail"`).
+    trail: Option<Trail>,
 }
 
 /// How long a deferred flip entry waits for the closing fill before the strategy halts.
@@ -111,6 +114,7 @@ impl SatsStrategy {
             board: None,
             warm_reported: false,
             pending_entry: None,
+            trail: None,
         }
     }
 
@@ -290,11 +294,56 @@ impl SatsStrategy {
         }));
     }
 
+    fn trail_mode(&self) -> bool {
+        self.execution.exit_mode == ExitMode::Trail && self.live.is_some()
+    }
+
+    /// Every quote: executable price against the trailing stop / TP3.
+    fn check_trail(&mut self, bid: f64, ask: f64) -> Result<()> {
+        if self.open_lots == 0 || self.exiting {
+            return Ok(());
+        }
+        let Some(mut trail) = self.trail.take() else { return Ok(()) };
+        let px = if trail.side == Side::Long { bid } else { ask };
+        let (moved, hit) = trail.on_price(&self.execution.trail, px);
+        let stop = trail.stop;
+        let stage = trail.stage_label();
+        self.trail = Some(trail);
+        if let Some(m) = moved {
+            self.board(|b| {
+                b.sl = Some(stop);
+                b.event(format!("TRAIL {m}"));
+            });
+            self.log_json(serde_json::json!({"event":"sats_trail","instance":self.instance_id,"move":m,"stop":stop,"price":px}));
+        }
+        if hit {
+            return self.flatten(&format!("{stage} hit at {px:.0} (stop {stop:.0})"));
+        }
+        Ok(())
+    }
+
+    /// Bar close: follow the SuperTrend line once the trail is active.
+    fn trail_bar_close(&mut self) {
+        if self.open_lots == 0 || self.exiting {
+            return;
+        }
+        let status = self.engine.status().clone();
+        let Some(trail) = self.trail.as_mut() else { return };
+        if let Some(stop) = trail.on_bar_close(&self.execution.trail, status.trend, status.supertrend) {
+            self.board(|b| {
+                b.sl = Some(stop);
+                b.event(format!("TRAIL stop -> SuperTrend {stop:.0}"));
+            });
+            self.log_json(serde_json::json!({"event":"sats_trail","instance":self.instance_id,"move":"supertrend","stop":stop}));
+        }
+    }
+
     /// Market order closing the whole broker position for this strategy.
     fn flatten(&mut self, why: &str) -> Result<()> {
         let position = self.position();
         self.live_entry_bar = None;
         self.open_lots = 0;
+        self.trail = None;
         if position == 0.0 {
             self.exiting = false;
             self.set_flat(true);
@@ -326,6 +375,12 @@ impl SatsStrategy {
 
     fn handle(&mut self, ev: Event, entries_allowed: bool) -> Result<()> {
         let (side, lots, reduce_only) = if ev.kind.is_entry() {
+            if self.trail_mode() && self.open_lots > 0 {
+                // Trail mode has no target, so a position can outlive SATS's own
+                // trade; the new (opposite) signal closes it first. The entry below
+                // then waits for that close to fill (pending entry).
+                self.flatten(&format!("trend flip ({})", ev.kind.label()))?;
+            }
             if !entries_allowed {
                 self.log(&ev, 0, "entry blocked (square-off reached, stopping, or halted)");
                 self.board(|b| b.event(format!("{} signal blocked (cut-off/stopping/halted)", ev.kind.label())));
@@ -406,6 +461,12 @@ impl SatsStrategy {
                 b.tps = Some([t.tp1, t.tp2, t.tp3]);
             }
         });
+        if ev.kind.is_entry() && self.trail_mode() {
+            // breakeven switches to the real fill price once it is known
+            self.trail = Some(Trail::new(t.side, t.entry, t.sl, t.tp1));
+        } else if self.open_lots == 0 {
+            self.trail = None;
+        }
         self.submit_order(order, None, None, None)?;
         Ok(())
     }
@@ -468,6 +529,9 @@ impl DataActor for SatsStrategy {
             }
             self.handle(ev, entries_allowed)?;
         }
+        if self.trail_mode() {
+            self.trail_bar_close();
+        }
         self.show_model(close_ist, input.close, true);
         let status = self.engine.status().clone();
         self.log_json(serde_json::json!({
@@ -484,9 +548,13 @@ impl DataActor for SatsStrategy {
         if let Some(live) = &self.live
             && quote.instrument_id == self.bar_type.instrument_id()
         {
-            let mid = (quote.bid_price.as_f64() + quote.ask_price.as_f64()) / 2.0;
+            let (bid, ask) = (quote.bid_price.as_f64(), quote.ask_price.as_f64());
+            let mid = (bid + ask) / 2.0;
             live.market_price.store(mid.round() as i64, Ordering::Release);
             self.board(|b| b.last_price = Some(mid));
+            if self.trail_mode() {
+                self.check_trail(bid, ask)?;
+            }
         }
         Ok(())
     }
@@ -531,6 +599,13 @@ nautilus_strategy!(SatsStrategy, {
             b.apply_fill(signed, px);
             b.event(format!("FILL {:?} {qty:.0} @ {px:.0}", e.order_side));
         });
+        // entry fill: breakeven is measured from the real fill price
+        if let Some(trail) = self.trail.as_mut()
+            && !trail.active
+            && (e.order_side == OrderSide::Buy) == (trail.side == Side::Long)
+        {
+            trail.entry = px;
+        }
         if self.pending_entry.is_some() {
             // a same-bar flip entry was waiting for this closing fill
             let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);

@@ -10,7 +10,8 @@
 use super::{
     backtest_report,
     portfolio::Portfolio,
-    sats_config::{self, SatsConfig},
+    sats_config::{self, ExitMode, SatsConfig},
+    sats_trail::Trail,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone};
@@ -30,8 +31,12 @@ fn ist() -> FixedOffset {
 pub struct Trade {
     pub side: &'static str,
     pub entry_time: String,
+    /// When / why SATS's own trade ended.
     pub exit_time: String,
     pub exit_reason: &'static str,
+    /// When / why the executed position ended (TP1 / TRAIL / SL / FLIP / ...).
+    pub exec_exit_time: String,
+    pub exec_exit_reason: &'static str,
     pub entry_reason: String,
     pub score: f64,
     pub tqi: f64,
@@ -188,7 +193,7 @@ fn fetch(token: u32, first: NaiveDate, last: NaiveDate, interval: Interval) -> R
     Ok(candles)
 }
 
-/// One model trade's events, in order.
+/// One executed position and the SATS trade that opened it.
 struct Open {
     entry: Event,
     entry_idx: usize,
@@ -196,6 +201,32 @@ struct Open {
     open_lots: u32,
     exit_lots: u32,
     exit_value: f64,
+    /// `exit_mode: "trail"`: trailing stop of the executed position.
+    trail: Option<Trail>,
+    /// Why / when / at which bar the executed position was fully closed.
+    exec_exit: Option<(&'static str, i64, usize)>,
+    /// SATS's own closing event and bar. In trail mode the position can outlive it.
+    model_close: Option<(Event, usize)>,
+}
+
+impl Open {
+    /// Closes `n` lots at `px` (before adverse slippage `slip`).
+    fn close(&mut self, n: u32, px: f64, slip: f64, why: &'static str, time_ns: i64, idx: usize) {
+        if n == 0 {
+            return;
+        }
+        let d = self.entry.trade.side.sign();
+        self.exit_value += f64::from(n) * (px - d * slip);
+        self.exit_lots += n;
+        self.open_lots -= n;
+        if self.open_lots == 0 {
+            self.trail = None;
+            self.exec_exit = Some((why, time_ns, idx));
+        }
+    }
+    fn done(&self) -> bool {
+        self.open_lots == 0 && self.model_close.is_some()
+    }
 }
 
 /// Runs the engine over `bars` and scores trades entered at or after `from_ns`.
@@ -209,44 +240,85 @@ pub fn replay(
     let slip = config.execution.slippage_points_per_side;
     let lots = config.lots;
     let next_open = |i: usize| bars.get(i + 1).map_or(bars[i].close, |b| b.open);
+    let trail_cfg = config.execution.trail;
+    let trailing = config.execution.exit_mode == ExitMode::Trail;
     let mut open: Option<Open> = None;
     let mut trades = Vec::new();
+    let record = |o: Open, trades: &mut Vec<Trade>| {
+        if o.entry.trade.entry_time_ns >= from_ns {
+            trades.push(finish(&o, config));
+        }
+    };
     for (i, bar) in bars.iter().enumerate() {
+        // Trail mode: the stop acts inside the bar (live: every tick), before this
+        // bar's close-time SATS events. The entry filled at this or an earlier open.
+        if let Some(o) = open.as_mut()
+            && o.open_lots > 0
+            && i > o.entry_idx
+            && let Some(tr) = o.trail.as_mut()
+            && let Some(px) = tr.on_bar(&trail_cfg, bar.open, bar.high, bar.low)
+        {
+            let why = if tr.active { "TRAIL" } else { "SL" };
+            o.close(o.open_lots, px, slip, why, bar.close_time_ns, i);
+            if o.done() {
+                record(open.take().expect("open"), &mut trades);
+            }
+        }
         for ev in engine.on_bar(bar) {
-            let d = ev.trade.side.sign();
             if ev.kind.is_entry() {
+                // A position that outlived SATS's trade (trail mode) is closed by
+                // the new opposite signal at the next open.
+                if let Some(mut o) = open.take() {
+                    o.close(o.open_lots, next_open(i), slip, "FLIP", ev.time_ns, i);
+                    record(o, &mut trades);
+                }
+                let d = ev.trade.side.sign();
+                let exec_entry = next_open(i) + d * slip;
+                let t = &ev.trade;
                 open = Some(Open {
-                    exec_entry: next_open(i) + d * slip,
+                    trail: trailing.then(|| Trail::new(t.side, exec_entry, t.sl, t.tp1)),
+                    exec_entry,
                     entry: ev,
                     entry_idx: i,
                     open_lots: lots,
                     exit_lots: 0,
                     exit_value: 0.0,
+                    exec_exit: None,
+                    model_close: None,
                 });
                 continue;
             }
             let Some(o) = open.as_mut() else { continue };
-            let n = config.execution.lots_to_close(ev.kind, lots, o.open_lots);
-            if n > 0 {
-                o.exit_value += f64::from(n) * (next_open(i) - d * slip);
-                o.exit_lots += n;
-                o.open_lots -= n;
+            if o.model_close.is_some() {
+                continue; // SATS's trade already ended; the position only trails now
             }
+            let n = config.execution.lots_to_close(ev.kind, lots, o.open_lots);
+            o.close(n, next_open(i), slip, ev.kind.label(), ev.time_ns, i);
             if ev.closes_trade {
-                let o = open.take().expect("open trade");
-                if o.entry.trade.entry_time_ns >= from_ns {
-                    trades.push(finish(&o, &ev, i, config));
+                o.model_close = Some((ev, i));
+                if o.done() {
+                    record(open.take().expect("open"), &mut trades);
                 }
             }
+        }
+        // Bar close: the trailing stop follows the SuperTrend line once active.
+        if let Some(o) = open.as_mut()
+            && o.open_lots > 0
+            && let Some(tr) = o.trail.as_mut()
+        {
+            let status = engine.status();
+            tr.on_bar_close(&trail_cfg, status.trend, status.supertrend);
         }
     }
     let still_open = open.map(|o| o.entry.trade).filter(|t| t.entry_time_ns >= from_ns);
     Ok((trades, still_open, preset))
 }
 
-fn finish(o: &Open, last: &Event, exit_idx: usize, config: &SatsConfig) -> Trade {
+fn finish(o: &Open, config: &SatsConfig) -> Trade {
+    let (last, model_idx) = o.model_close.as_ref().map_or((&o.entry, o.entry_idx), |(e, i)| (e, *i));
     let t = &last.trade;
     let d = t.side.sign();
+    let (exec_reason, exec_time, exec_idx) = o.exec_exit.unwrap_or(("OPEN", last.time_ns, model_idx));
     let exit_avg = if o.exit_lots > 0 { o.exit_value / f64::from(o.exit_lots) } else { o.exec_entry };
     let lots = f64::from(o.exit_lots.max(1));
     // Points for the whole position (all lots), net of the per-lot round-trip cost.
@@ -257,10 +329,12 @@ fn finish(o: &Open, last: &Event, exit_idx: usize, config: &SatsConfig) -> Trade
         entry_time: fmt(t.entry_time_ns),
         exit_time: fmt(last.time_ns),
         exit_reason: last.kind.label(),
+        exec_exit_time: fmt(exec_time),
+        exec_exit_reason: exec_reason,
         entry_reason: t.reason.clone(),
         score: round2(t.entry_score),
         tqi: round2(t.entry_tqi),
-        bars_held: (exit_idx - o.entry_idx) as i64,
+        bars_held: (exec_idx - o.entry_idx) as i64,
         model_entry: t.entry,
         sl: t.sl,
         tp1: t.tp1,
@@ -306,13 +380,13 @@ pub fn stats(values: impl Iterator<Item = f64>) -> Stats {
 
 fn csv(trades: &[Trade]) -> String {
     let mut out = String::from(
-        "side,entry_time,exit_time,exit_reason,entry_reason,score,tqi,bars_held,model_entry,sl,tp1,tp2,tp3,risk_points,model_net_r,model_points,exec_entry,exec_exit_avg,exec_points,exec_rupees\n",
+        "side,entry_time,exit_time,exit_reason,exec_exit_time,exec_exit_reason,entry_reason,score,tqi,bars_held,model_entry,sl,tp1,tp2,tp3,risk_points,model_net_r,model_points,exec_entry,exec_exit_avg,exec_points,exec_rupees\n",
     );
     for t in trades {
         let _ = writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            t.side, t.entry_time, t.exit_time, t.exit_reason, t.entry_reason, t.score, t.tqi, t.bars_held,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            t.side, t.entry_time, t.exit_time, t.exit_reason, t.exec_exit_time, t.exec_exit_reason, t.entry_reason, t.score, t.tqi, t.bars_held,
             t.model_entry, t.sl, t.tp1, t.tp2, t.tp3, t.risk_points, t.model_net_r, t.model_points,
             t.exec_entry, t.exec_exit_avg, t.exec_points, t.exec_rupees
         );
@@ -366,5 +440,40 @@ mod tests {
             assert!(t.exec_points.is_finite() && t.model_net_r.is_finite());
             assert!(["TP2", "TP3", "SL", "FLIP", "TIMEOUT"].contains(&t.exit_reason) || t.exit_reason == "TP1");
         }
+    }
+
+    #[test]
+    fn trail_mode_has_no_targets_and_never_overlaps_positions() {
+        let mut config: SatsConfig = serde_json::from_str(include_str!("../../../../config/sats-crudeoilm.json")).unwrap();
+        config.execution.exit_mode = ExitMode::Trail;
+        config.validate().unwrap();
+        let mut price = 5000.0_f64;
+        let bars: Vec<BarInput> = (0..900)
+            .map(|i| {
+                let drift = if i < 300 { 3.0 } else if i < 500 { -6.0 } else if i < 700 { 5.0 } else { -2.0 };
+                let open = price;
+                price += drift + ((i as f64) * 0.7).sin() * 6.0;
+                let t = 1_790_000_000_000_000_000_i64 + i as i64 * 300_000_000_000;
+                BarInput {
+                    open_time_ns: t,
+                    close_time_ns: t + 300_000_000_000,
+                    open,
+                    high: open.max(price) + 2.0,
+                    low: open.min(price) - 2.0,
+                    close: price,
+                    volume: Some(1000.0),
+                }
+            })
+            .collect();
+        let (trades, _, _) = replay(&bars, &config, 0).unwrap();
+        assert!(!trades.is_empty());
+        let mut last_exit = String::new();
+        for t in &trades {
+            assert!(["SL", "TRAIL", "FLIP", "TIMEOUT"].contains(&t.exec_exit_reason), "{}", t.exec_exit_reason);
+            // one position at a time: each entry is at or after the previous exit
+            assert!(t.entry_time >= last_exit, "{} < {}", t.entry_time, last_exit);
+            last_exit = t.exec_exit_time.clone();
+        }
+        assert!(trades.iter().any(|t| t.exec_exit_reason == "TRAIL"));
     }
 }

@@ -77,8 +77,14 @@ impl LiveSettings {
 pub struct Execution {
     /// "thirds": ⅓ of the lots at TP1, ⅓ at TP2, rest at TP3 (lots must divide by 3).
     /// "single": the whole position exits at `single_exit_at` (or SL / flip / timeout first).
+    /// "trail":  no profit target. The stop is checked on every tick; at TP1 it
+    ///           moves to breakeven and then trails on the SuperTrend line. Exits
+    ///           on the stop, a trend flip, a timeout or the square-off.
     pub exit_mode: ExitMode,
     pub single_exit_at: Target,
+    /// Settings for `exit_mode: "trail"` (ignored otherwise).
+    #[serde(default)]
+    pub trail: TrailSettings,
     /// Backtest friction per lot per round trip, in price points.
     pub round_trip_cost_points: f64,
     /// Backtest adverse slippage per order, in price points.
@@ -90,6 +96,26 @@ pub struct Execution {
 pub enum ExitMode {
     Thirds,
     Single,
+    Trail,
+}
+
+/// Trailing-stop rules for `exit_mode: "trail"`. Levels only ever move in the
+/// trade's favour.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TrailSettings {
+    /// At TP1 the stop moves to breakeven = actual entry fill ± this many points
+    /// in the trade's favour (e.g. 2.0 to cover costs; 0.0 = exact entry).
+    pub breakeven_offset_points: f64,
+    /// After TP1, also trail the stop on the SATS SuperTrend line at each bar
+    /// close (the tighter of breakeven and the line is used).
+    pub supertrend_trail: bool,
+}
+
+impl Default for TrailSettings {
+    fn default() -> Self {
+        Self { breakeven_offset_points: 0.0, supertrend_trail: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -124,6 +150,12 @@ impl Execution {
                 };
                 if closing || kind == target { open_lots } else { 0 }
             }
+            // No targets: TP hits only move the trailing stop. SATS's SL, flip and
+            // timeout still close what is open; its TP3 does not (the position keeps
+            // trailing after SATS's own trade has ended).
+            ExitMode::Trail => {
+                if matches!(kind, EventKind::SlHit | EventKind::FlipExit | EventKind::TimeoutExit) { open_lots } else { 0 }
+            }
         }
     }
 }
@@ -157,6 +189,12 @@ impl SatsConfig {
             "exit_mode \"thirds\" needs lots divisible by 3 (use \"single\" for {} lot(s))",
             self.lots
         );
+        if e.exit_mode == ExitMode::Trail {
+            ensure!(
+                e.trail.breakeven_offset_points.is_finite() && e.trail.breakeven_offset_points >= 0.0,
+                "trail.breakeven_offset_points must be zero or positive"
+            );
+        }
         ensure!(self.live.product == "MIS", "live.product must be MIS (intraday)");
         ensure!(
             chrono::Timelike::second(&self.live.square_off) == 0
@@ -241,7 +279,29 @@ mod tests {
     }
 
     fn exec(mode: ExitMode, at: Target) -> Execution {
-        Execution { exit_mode: mode, single_exit_at: at, round_trip_cost_points: 0.0, slippage_points_per_side: 0.0 }
+        Execution {
+            exit_mode: mode,
+            single_exit_at: at,
+            trail: TrailSettings::default(),
+            round_trip_cost_points: 0.0,
+            slippage_points_per_side: 0.0,
+        }
+    }
+
+    #[test]
+    fn trail_mode_targets_only_move_the_stop() {
+        let e = exec(ExitMode::Trail, Target::Tp1);
+        for kind in [EventKind::Tp1Hit, EventKind::Tp2Hit, EventKind::Tp3Hit] {
+            assert_eq!(e.lots_to_close(kind, 1, 1), 0, "{kind:?}");
+        }
+        for kind in [EventKind::SlHit, EventKind::FlipExit, EventKind::TimeoutExit] {
+            assert_eq!(e.lots_to_close(kind, 1, 1), 1, "{kind:?}");
+        }
+        let mut c: SatsConfig = serde_json::from_str(SHIPPED).unwrap();
+        c.execution.exit_mode = ExitMode::Trail;
+        c.validate().unwrap();
+        c.execution.trail.breakeven_offset_points = -1.0;
+        assert!(c.validate().is_err());
     }
 
     #[test]

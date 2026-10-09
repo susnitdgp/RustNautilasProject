@@ -22,6 +22,10 @@
   "execution": {
     "exit_mode": "single",
     "single_exit_at": "TP1",
+    "trail": {
+      "breakeven_offset_points": 0.0,
+      "supertrend_trail": true
+    },
     "round_trip_cost_points": 2.0,
     "slippage_points_per_side": 0.5
   },

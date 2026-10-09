@@ -210,7 +210,11 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         slot: p.inst.id.clone(),
         instrument: p.inst.instrument.clone(),
         square_off: p.config.live.square_off.format("%H:%M").to_string(),
-        exit_rule: format!("{:?} {:?}", p.config.execution.exit_mode, p.config.execution.single_exit_at),
+        exit_rule: match p.config.execution.exit_mode {
+            sats_config::ExitMode::Trail if p.config.execution.trail.supertrend_trail => "Trail: BE@TP1 + SuperTrend".into(),
+            sats_config::ExitMode::Trail => "Trail: BE@TP1".into(),
+            mode => format!("{:?} {:?}", mode, p.config.execution.single_exit_at),
+        },
         redis_namespace: p.keys.commands(&namespace)?,
         point_value: p.config.point_value,
         lots: p.config.lots,
