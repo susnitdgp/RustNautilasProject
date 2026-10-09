@@ -16,5 +16,8 @@ echo 'WARNING: This will place REAL Zerodha Kite orders for CRUDEOILM (1 lot, MI
 read -r -p 'Type LIVE to proceed: ' CONFIRM
 [[ "$CONFIRM" == 'LIVE' ]] || { echo 'Cancelled.'; exit 1; }
 mkdir -p logs
-exec "$BIN" native-sats-live "$PORTFOLIO" "$SLOT" "$BROKER" \
-  | tee -a "logs/sats-live-$(TZ=Asia/Kolkata date +%F).jsonl"
+LOG="logs/sats-live-$(TZ=Asia/Kolkata date +%F).jsonl"
+echo "Dashboard starting; JSON events -> $LOG"
+# stdout (JSON) goes straight to the file: no pipe, so Ctrl+C reaches only the
+# runner, which flattens and stops cleanly. The dashboard draws on stderr.
+exec "$BIN" native-sats-live "$PORTFOLIO" "$SLOT" "$BROKER" >> "$LOG"

@@ -13,6 +13,7 @@
 //! and stops. Any feed gap or invalid packet fails closed (flatten, stop).
 use super::{
     data, live_bars, live_control::Control, persistence,
+    sats_dashboard::{self, Board, emit, note},
     portfolio::{Instance, Portfolio},
     sats_config::{self, SatsConfig},
     sats_strategy::SatsStrategy,
@@ -157,8 +158,7 @@ pub fn preflight(portfolio_path: &str, instance_id: &str, broker_path: &str) -> 
     let settings = load_broker(broker_path, &p.inst)?;
     live_gates(&p.inst)?;
     kite_adapter::execution::native_client::coordination::check_startup_in(&p.keys, &settings.expected_user_id)?;
-    println!(
-        "{}",
+    emit(
         serde_json::json!({
             "event": "sats_live_preflight", "status": "PASS",
             "instance": p.inst.id, "instrument": p.inst.instrument,
@@ -168,7 +168,7 @@ pub fn preflight(portfolio_path: &str, instance_id: &str, broker_path: &str) -> 
             "redis_lease": p.keys.lease(&settings.expected_user_id)?,
             "redis_order_budget": p.keys.order_budget(&settings.expected_user_id)?,
             "nautilus_trader_id": p.trader_id,
-        })
+        }),
     );
     Ok(())
 }
@@ -204,6 +204,19 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
     let redis = persistence::redis_config()?;
     let symbol = p.inst.instrument.trim_end_matches(".MCX").to_owned();
     let mode_label = if mode == Mode::Live { "LIVE (real Zerodha orders)" } else { "PAPER (Kite mock execution)" };
+    let square_off_ns = ist_ns(chrono::Utc::now().with_timezone(&ist()).date_naive(), p.config.live.square_off)? as i64;
+    let board = Board {
+        mode: mode_label.into(),
+        slot: p.inst.id.clone(),
+        instrument: p.inst.instrument.clone(),
+        square_off: p.config.live.square_off.format("%H:%M").to_string(),
+        exit_rule: format!("{:?} {:?}", p.config.execution.exit_mode, p.config.execution.single_exit_at),
+        redis_namespace: p.keys.commands(&namespace)?,
+        point_value: p.config.point_value,
+        lots: p.config.lots,
+        ..Board::default()
+    }
+    .shared();
 
     tokio::runtime::Runtime::new()?.block_on(async {
         let mut cfg = LiveNodeConfig {
@@ -271,17 +284,30 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         node.add_strategy(
             SatsStrategy::new(&p.inst.id, bar_type, &p.config, p.config.engine()?, true)
                 .with_data_client("KITE".into())
+                .with_dashboard(board.clone())
                 .with_live(p.start_ns as i64, p.config.live.square_off_minute(), control.clone(), market_price.clone()),
         )?;
         let handle = node.handle();
         let watcher_control = control.clone();
+        let watcher_board = board.clone();
         let seconds = p.run_seconds;
+        // Ctrl+C, SIGTERM (systemd/kill) and SIGHUP (SSH/terminal closed) all take the
+        // same path: flatten, wait for flat, stop. A dropped session never leaves a position.
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sighup = signal(SignalKind::hangup())?;
         let watcher = tokio::spawn(async move {
-            let manual = tokio::select! {
-                _ = tokio::signal::ctrl_c() => true,
-                _ = tokio::time::sleep(Duration::from_secs(seconds)) => false,
+            let why = tokio::select! {
+                _ = tokio::signal::ctrl_c() => "Ctrl+C received: flattening and stopping SATS",
+                _ = sigterm.recv() => "SIGTERM received: flattening and stopping SATS",
+                _ = sighup.recv() => "Terminal/SSH closed (SIGHUP): flattening and stopping SATS",
+                _ = tokio::time::sleep(Duration::from_secs(seconds)) => "Square-off window passed: stopping SATS",
             };
-            eprintln!("{}", if manual { "Ctrl+C received: flattening and stopping SATS" } else { "Session square-off window passed: stopping SATS" });
+            emit(serde_json::json!({"event":"sats_stop_requested","reason":why}));
+            if let Ok(mut b) = watcher_board.lock() {
+                b.status = "STOPPING".into();
+                b.event(why.into());
+            }
             watcher_control.stopping.store(true, std::sync::atomic::Ordering::Release);
             for _ in 0..240 {
                 if watcher_control.flat.load(std::sync::atomic::Ordering::Acquire) {
@@ -289,13 +315,14 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            if !watcher_control.flat.load(std::sync::atomic::Ordering::Acquire) {
-                eprintln!("SHUTDOWN WARNING: position not confirmed flat; check Kite immediately.");
+            if !watcher_control.flat.load(std::sync::atomic::Ordering::Acquire)
+                && let Ok(mut b) = watcher_board.lock()
+            {
+                b.event("SHUTDOWN WARNING: position not confirmed flat; check Kite immediately".into());
             }
             handle.stop();
         });
-        println!(
-            "{}",
+        emit(
             serde_json::json!({
                 "event": "sats_node_started", "mode": mode_label, "namespace": &namespace,
                 "redis_commands": p.keys.commands(&namespace)?, "redis_lease": p.keys.lease(&account_id)?,
@@ -304,20 +331,30 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
                 "instance": p.inst.id, "instrument": p.instrument.id.to_string(), "bar_type": bar_type.to_string(),
                 "warmup_bars": p.warmup.len(), "square_off": p.config.live.square_off.to_string(),
                 "runs_for_seconds": seconds, "lots": p.config.lots, "exit": p.config.execution,
-            })
+            }),
         );
+        let renderer = sats_dashboard::spawn(board.clone(), square_off_ns);
         let result = node.run_with_mode(NodeRunMode::Hosted).await;
         watcher.abort();
+        if let Some(d) = renderer {
+            d.close();
+        }
+        let final_board = board.lock().map(|b| b.render(chrono::Utc::now().with_timezone(&ist()), square_off_ns)).unwrap_or_default();
+        note(&final_board);
         let fault = control.fault.lock().ok().and_then(|f| f.clone());
         if let Err(err) = result {
-            eprintln!("SATS EXIT WARNING: {err:#}. Check positions and open orders in Kite.");
+            note(&format!("SATS EXIT WARNING: {err:#}. Check positions and open orders in Kite."));
             return Err(err);
         }
-        println!(
-            "{}",
+        emit(
             serde_json::json!({"event":"sats_node_finished","mode":mode_label,"namespace":&namespace,"fault":fault,
-                "flat":control.flat.load(std::sync::atomic::Ordering::Acquire)})
+                "flat":control.flat.load(std::sync::atomic::Ordering::Acquire)}),
         );
+        note(if control.flat.load(std::sync::atomic::Ordering::Acquire) {
+            "SATS stopped. Position confirmed flat."
+        } else {
+            "SATS stopped. Position NOT confirmed flat: check Kite now."
+        });
         Ok(())
     })
 }
@@ -325,6 +362,6 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
 /// Offline review of one run's execution ledger for a portfolio slot.
 pub fn review(portfolio_path: &str, instance_id: &str, namespace: &str) -> Result<()> {
     let (_, _, keys, _) = load_slot(portfolio_path, instance_id)?;
-    println!("{}", kite_adapter::execution::native_client::recovery::review_in(&keys, namespace)?);
+    emit(kite_adapter::execution::native_client::recovery::review_in(&keys, namespace)?);
     Ok(())
 }

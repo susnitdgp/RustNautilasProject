@@ -14,6 +14,7 @@
 //!   flatness to the runner through `Control::flat`;
 //! * any order rejection/denial or position mismatch halts new orders.
 use super::live_control::Control;
+use super::sats_dashboard::{self, Board, Shared};
 use super::sats_config::{Execution, SatsConfig};
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, NaiveDate, Timelike};
@@ -69,6 +70,7 @@ pub struct SatsStrategy {
     exiting: bool,
     last_close_ns: i64,
     halted: Option<String>,
+    board: Option<Shared>,
 }
 
 fn ist() -> FixedOffset {
@@ -99,6 +101,7 @@ impl SatsStrategy {
             exiting: false,
             last_close_ns: 0,
             halted: None,
+            board: None,
         }
     }
 
@@ -111,6 +114,20 @@ impl SatsStrategy {
     pub fn with_live(mut self, start_ns: i64, square_off_minute: u32, control: Control, market_price: Arc<AtomicI64>) -> Self {
         self.live = Some(Live { start_ns, square_off_minute, control, market_price });
         self
+    }
+
+    /// Live terminal dashboard state, updated on every bar, quote, order and fill.
+    pub fn with_dashboard(mut self, board: Shared) -> Self {
+        self.board = Some(board);
+        self
+    }
+
+    fn board(&self, f: impl FnOnce(&mut Board)) {
+        if let Some(b) = &self.board
+            && let Ok(mut b) = b.lock()
+        {
+            f(&mut b);
+        }
     }
 
     fn bar_input(&self, bar: &Bar) -> BarInput {
@@ -147,12 +164,17 @@ impl SatsStrategy {
     }
 
     fn halt(&mut self, reason: &str) {
-        eprintln!("SATS {} HALTED: {reason}", self.instance_id);
+        self.log_json(serde_json::json!({"event":"sats_halted","instance":self.instance_id,"reason":reason}));
+        self.board(|b| {
+            b.halted = Some(reason.to_owned());
+            b.status = "HALTED".into();
+            b.event(format!("HALTED: {reason}"));
+        });
         self.halted = Some(reason.to_owned());
     }
 
     fn log_json(&self, value: serde_json::Value) {
-        println!("{value}");
+        sats_dashboard::emit(value);
     }
 
     fn log(&self, ev: &Event, lots: u32, note: &str) {
@@ -201,6 +223,7 @@ impl SatsStrategy {
         );
         self.exiting = true;
         self.set_flat(false);
+        self.board(|b| b.event(format!("FLATTEN {side:?} {:.0} lot ({why})", position.abs())));
         self.log_json(serde_json::json!({"event":"sats_flatten","instance":self.instance_id,"reason":why,"qty":position.abs(),"side":format!("{side:?}")}));
         self.submit_order(order, None, None, None)?;
         Ok(())
@@ -210,6 +233,7 @@ impl SatsStrategy {
         let (side, lots, reduce_only) = if ev.kind.is_entry() {
             if !entries_allowed {
                 self.log(&ev, 0, "entry blocked (square-off reached, stopping, or halted)");
+                self.board(|b| b.event(format!("{} signal blocked (cut-off/stopping/halted)", ev.kind.label())));
                 return Ok(());
             }
             self.live_entry_bar = Some(ev.trade.entry_bar);
@@ -267,6 +291,14 @@ impl SatsStrategy {
         );
         self.set_flat(false);
         self.log(&ev, lots, "order submitted");
+        let t = ev.trade.clone();
+        self.board(|b| {
+            b.event(format!("{} {side:?} {lots} lot  (model {:.0}, SL {:.0}, TP1 {:.0})", ev.kind.label(), ev.fill, t.sl, t.tp1));
+            if ev.kind.is_entry() {
+                b.sl = Some(t.sl);
+                b.tps = Some([t.tp1, t.tp2, t.tp3]);
+            }
+        });
         self.submit_order(order, None, None, None)?;
         Ok(())
     }
@@ -310,6 +342,10 @@ impl DataActor for SatsStrategy {
         if at_or_after_cutoff && self.squared_off_on != Some(close_ist.date_naive()) {
             self.squared_off_on = Some(close_ist.date_naive());
             self.log_json(serde_json::json!({"event":"sats_square_off","instance":self.instance_id,"bar_close_ist":close_ist.format("%Y-%m-%d %H:%M").to_string()}));
+            self.board(|b| {
+                b.status = "SQUARED OFF".into();
+                b.event("Daily square-off: flattening, no new entries today".into());
+            });
             self.flatten("daily square-off")?;
         }
         let entries_allowed = !at_or_after_cutoff && !self.stopping() && self.halted.is_none();
@@ -319,7 +355,26 @@ impl DataActor for SatsStrategy {
             }
             self.handle(ev, entries_allowed)?;
         }
-        let status = self.engine.status();
+        let status = self.engine.status().clone();
+        let bar_label = close_ist.format("%H:%M").to_string();
+        let open_lots = self.open_lots;
+        self.board(|b| {
+            b.last_bar = Some((bar_label, input.close));
+            b.live_bars += 1;
+            b.warmed = status.warmed_up;
+            b.trend = status.trend;
+            b.supertrend = status.supertrend;
+            b.tqi = status.tqi;
+            b.regime = status.regime.clone();
+            b.next_r = status.next_r;
+            if b.status == "STARTING" {
+                b.status = "RUNNING".into();
+            }
+            if open_lots == 0 && b.position == 0.0 {
+                b.sl = None;
+                b.tps = None;
+            }
+        });
         self.log_json(serde_json::json!({
             "event": "sats_bar", "instance": self.instance_id,
             "bar_close_ist": close_ist.format("%H:%M").to_string(),
@@ -336,6 +391,7 @@ impl DataActor for SatsStrategy {
         {
             let mid = (quote.bid_price.as_f64() + quote.ask_price.as_f64()) / 2.0;
             live.market_price.store(mid.round() as i64, Ordering::Release);
+            self.board(|b| b.last_price = Some(mid));
         }
         Ok(())
     }
@@ -347,6 +403,11 @@ impl DataActor for SatsStrategy {
         if self.stopping() {
             if self.halted.is_none() {
                 let fault = self.live.as_ref().and_then(|l| l.control.fault.lock().ok().and_then(|f| f.clone()));
+                let shown = fault.clone();
+                self.board(|b| {
+                    b.feed_fault = shown;
+                    b.status = "STOPPING".into();
+                });
                 self.halt(&fault.unwrap_or_else(|| "stop requested".into()));
             }
             self.flatten("stop / feed fault")?;
@@ -359,17 +420,21 @@ impl DataActor for SatsStrategy {
 
 nautilus_strategy!(SatsStrategy, {
     fn on_order_filled(&mut self, e: &OrderFilled) {
-        println!(
-            "{}",
-            serde_json::json!({
-                "event": "sats_fill",
-                "instance": self.instance_id,
-                "client_order_id": e.client_order_id.to_string(),
-                "side": format!("{:?}", e.order_side),
-                "qty": e.last_qty.as_f64(),
-                "price": e.last_px.as_f64(),
-            })
-        );
+        sats_dashboard::emit(serde_json::json!({
+            "event": "sats_fill",
+            "instance": self.instance_id,
+            "client_order_id": e.client_order_id.to_string(),
+            "side": format!("{:?}", e.order_side),
+            "qty": e.last_qty.as_f64(),
+            "price": e.last_px.as_f64(),
+        }));
+        let qty = e.last_qty.as_f64();
+        let signed = if e.order_side == OrderSide::Buy { qty } else { -qty };
+        let px = e.last_px.as_f64();
+        self.board(|b| {
+            b.apply_fill(signed, px);
+            b.event(format!("FILL {:?} {qty:.0} @ {px:.0}", e.order_side));
+        });
         if self.position() == 0.0 {
             self.exiting = false;
             self.set_flat(true);
