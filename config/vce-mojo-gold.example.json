@@ -1,0 +1,17 @@
+{
+  "strategy": "vce-mojo",
+  "bar_minutes": 5,
+  "lots": 1,
+  "point_value": 100,
+  "params": {
+    "sensitivity": "Balanced",
+    "session_warmup_bars": 3,
+    "exit_target": "TP1",
+    "eod_hour": 23,
+    "eod_minute": 15
+  },
+  "costs": {
+    "round_trip_points": 10.0,
+    "slippage_points_per_side": 2.0
+  }
+}

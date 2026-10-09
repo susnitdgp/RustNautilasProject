@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -2575,6 +2575,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "vce-mojo",
  "zeroize",
 ]
 
@@ -4942,6 +4943,15 @@ name = "value-bag"
 version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2799ffb329a792ecfd902b71306c8a815a6ef1c0470fa9953a6aa4d4cecbe511"
+
+[[package]]
+name = "vce-mojo"
+version = "1.6.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "version_check"
