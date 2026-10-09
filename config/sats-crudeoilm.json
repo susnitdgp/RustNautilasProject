@@ -1,6 +1,6 @@
 {
   "strategy": "sats",
-  "bar_minutes": 2,
+  "bar_minutes": 5,
   "candle_sources": {
     "1": "minute",
     "2": "minute",
@@ -16,7 +16,7 @@
   "point_value": 10,
   "live": {
     "session_calendar": "config/mcx-session-calendar.json",
-    "square_off": "23:14:00",
+    "square_off": "23:15:00",
     "product": "MIS"
   },
   "execution": {
