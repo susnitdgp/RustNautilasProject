@@ -30,11 +30,41 @@ impl Endpoint {
         }
     }
 }
+/// Sliding one-second request windows, kept below Kite's published limits
+/// (10 req/s general, 3 req/s historical candles). A burst such as the 5-call
+/// pre-order safety snapshot goes out back to back instead of 150 ms apart.
+const PACE_WINDOW: Duration = Duration::from_secs(1);
+const GENERAL_PER_WINDOW: usize = 8;
+const HISTORICAL_PER_WINDOW: usize = 2;
+#[derive(Default)]
+struct Pacer {
+    general: std::collections::VecDeque<tokio::time::Instant>,
+    historical: std::collections::VecDeque<tokio::time::Instant>,
+}
+impl Pacer {
+    /// Admits a request at `now` (records it and returns None) or returns when to retry.
+    fn admit(&mut self, now: tokio::time::Instant, historical: bool) -> Option<tokio::time::Instant> {
+        let (queue, cap) = if historical {
+            (&mut self.historical, HISTORICAL_PER_WINDOW)
+        } else {
+            (&mut self.general, GENERAL_PER_WINDOW)
+        };
+        while queue.front().is_some_and(|t| now.duration_since(*t) >= PACE_WINDOW) {
+            queue.pop_front();
+        }
+        if queue.len() < cap {
+            queue.push_back(now);
+            None
+        } else {
+            queue.front().map(|t| *t + PACE_WINDOW)
+        }
+    }
+}
 pub(crate) struct ReadClient {
     #[cfg(test)]
     charge_test_url: Option<String>,
     root: &'static str,
-    pace: tokio::sync::Mutex<tokio::time::Instant>,
+    pace: tokio::sync::Mutex<Pacer>,
     client: Client,
     authorization: HeaderValue,
 }
@@ -59,7 +89,7 @@ impl ReadClient {
             #[cfg(test)]
             charge_test_url: None,
             root: "https://api.kite.trade",
-            pace: tokio::sync::Mutex::new(tokio::time::Instant::now()),
+            pace: tokio::sync::Mutex::new(Pacer::default()),
             client,
             authorization,
         })
@@ -102,16 +132,19 @@ impl ReadClient {
             "Historical reads require the market-data host"
         );
         ensure!(
-            matches!(interval, "minute" | "3minute" | "5minute"),
+            matches!(interval, "minute" | "3minute" | "5minute" | "10minute" | "15minute" | "30minute"),
             "Unsupported historical interval"
         );
         let url = format!("{}/instruments/historical/{token}/{interval}", self.root);
-        self.read_response(self.client.get(url).query(&[
-            ("from", format!("{from} 00:00:00")),
-            ("to", format!("{to} 23:30:00")),
-            ("continuous", "0".into()),
-            ("oi", "1".into()),
-        ]))
+        self.read_response_paced(
+            self.client.get(url).query(&[
+                ("from", format!("{from} 00:00:00")),
+                ("to", format!("{to} 23:30:00")),
+                ("continuous", "0".into()),
+                ("oi", "1".into()),
+            ]),
+            true,
+        )
         .await
     }
     pub(crate) async fn get<T: DeserializeOwned>(&self, endpoint: Endpoint) -> Result<T> {
@@ -147,9 +180,20 @@ impl ReadClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<T> {
-        let mut next = self.pace.lock().await;
-        tokio::time::sleep_until(*next).await;
-        *next = tokio::time::Instant::now() + Duration::from_millis(150);
+        self.read_response_paced(request, false).await
+    }
+    async fn read_response_paced<T: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+        historical: bool,
+    ) -> Result<T> {
+        loop {
+            let retry_at = self.pace.lock().await.admit(tokio::time::Instant::now(), historical);
+            match retry_at {
+                None => break,
+                Some(at) => tokio::time::sleep_until(at).await,
+            }
+        }
         let mut response = request
             .header("X-Kite-Version", "3")
             .header(AUTHORIZATION, self.authorization.clone())
@@ -213,6 +257,36 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pacer_allows_short_bursts_within_kite_limits() {
+        let mut p = Pacer::default();
+        let t0 = tokio::time::Instant::now();
+        // the 5-call safety snapshot (and 3 more) goes out immediately
+        for _ in 0..GENERAL_PER_WINDOW {
+            assert_eq!(p.admit(t0, false), None);
+        }
+        // the next one waits until the oldest leaves the 1 s window
+        assert_eq!(p.admit(t0, false), Some(t0 + PACE_WINDOW));
+        assert_eq!(p.admit(t0 + PACE_WINDOW, false), None);
+        // historical candles have their own, stricter window
+        assert_eq!(p.admit(t0, true), None);
+        assert_eq!(p.admit(t0, true), None);
+        assert_eq!(p.admit(t0 + Duration::from_millis(500), true), Some(t0 + PACE_WINDOW));
+        // never more than GENERAL_PER_WINDOW in any 1 s window under sustained load
+        let mut q = Pacer::default();
+        let mut now = t0;
+        let mut sent = Vec::new();
+        while sent.len() < 40 {
+            match q.admit(now, false) {
+                None => sent.push(now),
+                Some(at) => now = at,
+            }
+        }
+        for (i, t) in sent.iter().enumerate() {
+            let in_window = sent[i..].iter().take_while(|u| u.duration_since(*t) < PACE_WINDOW).count();
+            assert!(in_window <= GENERAL_PER_WINDOW);
+        }
+    }
     #[test]
     fn sandbox_read_root_is_fixed_and_separate_from_production() {
         let c = KiteCredentials::new(Some("sandbox-only".into()), Some("sandbox-token".into()))

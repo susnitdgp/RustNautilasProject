@@ -2491,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "kite-adapter"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.7.1"
+version = "2.7.2"
 dependencies = [
  "anyhow",
  "arrow",
