@@ -176,9 +176,26 @@ impl Portfolio {
         Ok(format!("{}:v1:{{{}}}:{}", self.redis_prefix, id, kind))
     }
 }
+/// Strategy-specific settings for the report. A `sats` slot's own config must
+/// load and validate when the slot is enabled; for a disabled slot the error is reported.
+fn strategy_settings(v: &Instance) -> Result<serde_json::Value> {
+    if v.strategy != super::sats_config::STRATEGY {
+        return Ok(serde_json::Value::Null);
+    }
+    match super::sats_config::SatsConfig::load(&v.strategy_config) {
+        Ok(c) => Ok(serde_json::json!({
+            "bar_minutes": c.bar_minutes, "lots": c.lots, "tick_size": c.tick_size,
+            "point_value": c.point_value, "execution": c.execution,
+            "preset": c.params.preset, "tp_mode": c.params.tp_mode,
+        })),
+        Err(e) if !v.enabled => Ok(serde_json::json!({ "error": format!("{e:#}") })),
+        Err(e) => Err(e),
+    }
+}
 pub fn inspect(path: &str) -> Result<()> {
     let portfolio: Portfolio = serde_json::from_str(&fs::read_to_string(path)?)?;
     portfolio.validate()?;
+    let settings = portfolio.instances.iter().map(strategy_settings).collect::<Result<Vec<_>>>()?;
     println!(
         "{}",
         serde_json::json!({
@@ -186,9 +203,10 @@ pub fn inspect(path: &str) -> Result<()> {
             "mode": "read_only",
             "broker_config": portfolio.broker_config,
             "tokens": portfolio.tokens(),
-            "instances": portfolio.instances.iter().map(|v| serde_json::json!({
+            "instances": portfolio.instances.iter().zip(&settings).map(|(v, settings)| serde_json::json!({
                 "id": v.id, "enabled": v.enabled, "rollover_strategy": v.rollover.as_ref().map(|r| &r.strategy_id), "contract_month":v.rollover.as_ref().map(|r| &r.contract_month), "strategy": v.strategy, "instrument": v.instrument,
                 "token": v.instrument_token, "strategy_config": v.strategy_config,
+                "strategy_settings": settings,
                 "redis_journal": portfolio.key(&v.id, "journal").expect("validated"),
                 "redis_owner": portfolio.key(&v.id, "owner").expect("validated")
             })).collect::<Vec<_>>()

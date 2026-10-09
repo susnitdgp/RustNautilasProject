@@ -1,0 +1,15 @@
+[package]
+name = "sats"
+# Tracks the Pine source it ports: SATS v1.13.1. Bump on every change.
+version = "1.13.1"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Bar-for-bar Rust port of the Self-Aware Trend System v1.13.1 (WillyAlgoTrader) signal and trade model"
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

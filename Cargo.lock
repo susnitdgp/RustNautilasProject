@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -2571,6 +2571,7 @@ dependencies = [
  "redis 0.32.7",
  "reqwest",
  "rustls",
+ "sats",
  "serde",
  "serde_json",
  "tempfile",
@@ -4040,6 +4041,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "sats"
+version = "1.13.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
