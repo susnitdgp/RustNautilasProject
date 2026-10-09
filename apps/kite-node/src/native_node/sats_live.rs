@@ -214,6 +214,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         redis_namespace: p.keys.commands(&namespace)?,
         point_value: p.config.point_value,
         lots: p.config.lots,
+        bar_ns: p.config.bar_ns(),
         ..Board::default()
     }
     .shared();

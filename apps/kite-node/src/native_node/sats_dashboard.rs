@@ -33,6 +33,9 @@ pub struct Board {
     pub last_price: Option<f64>,
     pub last_bar: Option<(String, f64)>,
     pub live_bars: u64,
+    pub history_bars: u64,
+    /// Bar length (ns) for the next-bar countdown; 0 hides it.
+    pub bar_ns: i64,
     pub feed_fault: Option<String>,
     // SATS
     pub warmed: bool,
@@ -92,6 +95,18 @@ impl Board {
         self.position = after;
     }
 
+    /// "13:20  (in 3:41)" — the next bar close, bars aligned to the clock (5m → :00, :05, …).
+    pub fn next_bar(&self, now: chrono::DateTime<chrono::FixedOffset>) -> String {
+        if self.bar_ns <= 0 {
+            return "—".into();
+        }
+        let now_ns = now.timestamp_nanos_opt().unwrap_or(0);
+        let next = (now_ns / self.bar_ns + 1) * self.bar_ns;
+        let left = (next - now_ns) / 1_000_000_000;
+        let at = chrono::DateTime::from_timestamp_nanos(next).with_timezone(&ist());
+        format!("{}  (in {}:{:02})", at.format("%H:%M"), left / 60, left % 60)
+    }
+
     pub fn unrealized_points(&self) -> Option<f64> {
         Some(self.position * (self.last_price? - self.entry_avg?))
     }
@@ -134,7 +149,8 @@ impl Board {
         row(line.clone());
         row(format!(" Price        {b}{}{x}     last bar {}", px(self.last_price),
             self.last_bar.as_ref().map_or("—".into(), |(t, c)| format!("{t} close {c:.0}"))));
-        row(format!(" Live bars    {}        feed {}", self.live_bars,
+        row(format!(" Bars         history {} · live {}   next {}", self.history_bars, self.live_bars, self.next_bar(now)));
+        row(format!(" Feed         {}",
             self.feed_fault.as_ref().map_or(format!("{g}OK{x}"), |f| format!("{r}FAULT: {f}{x}"))));
         row(line.clone());
         row(format!(" Trend        {trend}    SuperTrend {}", px(self.supertrend)));
@@ -231,7 +247,8 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
         Paragraph::new(vec![
             kv("Price", vec![Span::styled(px(b.last_price), bold)]),
             kv("Last bar", vec![Span::raw(b.last_bar.as_ref().map_or("—".into(), |(t, c)| format!("{t}  close {c:.0}")))]),
-            kv("Live bars", vec![Span::raw(b.live_bars.to_string())]),
+            kv("Bars", vec![Span::raw(format!("history {} · live {}", b.history_bars, b.live_bars))]),
+            kv("Next bar", vec![Span::styled(b.next_bar(now), yellow)]),
             kv("Feed", vec![feed]),
         ])
         .block(panel("Market")),
@@ -353,6 +370,16 @@ mod tests {
         b.apply_fill(-1.0, 8800.0); // short
         b.apply_fill(1.0, 8810.0); // covered higher: loss
         assert_eq!(b.realized_points, 5.0);
+    }
+
+    #[test]
+    fn next_bar_counts_down_to_the_clock_aligned_close() {
+        let b = Board { bar_ns: 300_000_000_000, ..Board::default() };
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-09T13:14:42+05:30").unwrap();
+        assert_eq!(b.next_bar(now), "13:15  (in 0:18)");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-09T13:15:00+05:30").unwrap();
+        assert_eq!(b.next_bar(now), "13:20  (in 5:00)");
+        assert_eq!(Board::default().next_bar(now), "—");
     }
 
     #[test]

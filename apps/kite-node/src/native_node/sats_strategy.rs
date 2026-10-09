@@ -71,6 +71,8 @@ pub struct SatsStrategy {
     last_close_ns: i64,
     halted: Option<String>,
     board: Option<Shared>,
+    /// The "warm-up finished" dashboard event was shown.
+    warm_reported: bool,
 }
 
 fn ist() -> FixedOffset {
@@ -102,6 +104,7 @@ impl SatsStrategy {
             last_close_ns: 0,
             halted: None,
             board: None,
+            warm_reported: false,
         }
     }
 
@@ -128,6 +131,63 @@ impl SatsStrategy {
         {
             f(&mut b);
         }
+    }
+
+    /// Copies the engine's current state onto the dashboard (history or live bar).
+    fn show_model(&self, close_ist: DateTime<FixedOffset>, close: f64, live_bar: bool) {
+        let status = self.engine.status().clone();
+        let label = close_ist.format("%d %b %H:%M").to_string();
+        let open_lots = self.open_lots;
+        self.board(|b| {
+            b.last_bar = Some((label, close));
+            if live_bar {
+                b.live_bars += 1;
+            } else {
+                b.history_bars += 1;
+            }
+            b.warmed = status.warmed_up;
+            b.trend = status.trend;
+            b.supertrend = status.supertrend;
+            b.tqi = status.tqi;
+            b.regime = status.regime.clone();
+            b.next_r = status.next_r;
+            if open_lots == 0 && b.position == 0.0 {
+                b.sl = None;
+                b.tps = None;
+            }
+        });
+    }
+
+    /// One-time "warm-up finished" event; status turns RUNNING.
+    fn report_warm(&mut self) {
+        if self.warm_reported {
+            return;
+        }
+        self.warm_reported = true;
+        let status = self.engine.status().clone();
+        let trend = match status.trend {
+            1 => "BULLISH",
+            -1 => "BEARISH",
+            _ => "neutral",
+        };
+        // The bar in progress at start-up is incomplete on the stream and is skipped;
+        // the first live bar is the next full one.
+        let now_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let first_live = DateTime::from_timestamp_nanos((now_ns / self.bar_ns + 2) * self.bar_ns).with_timezone(&ist());
+        self.board(|b| {
+            let msg = format!(
+                "Warm-up done on {} history bars · trend {trend} · warmed {} · first live bar closes {} (bar in progress at start is skipped)",
+                b.history_bars,
+                if status.warmed_up { "yes" } else { "NO" },
+                first_live.format("%H:%M")
+            );
+            b.event(msg);
+            if b.status == "STARTING" {
+                b.status = "RUNNING".into();
+            }
+        });
+        self.log_json(serde_json::json!({"event":"sats_warmed","instance":self.instance_id,
+            "warmed_up":status.warmed_up,"trend":status.trend,"supertrend":status.supertrend}));
     }
 
     fn bar_input(&self, bar: &Bar) -> BarInput {
@@ -337,8 +397,14 @@ impl DataActor for SatsStrategy {
         let at_or_after_cutoff = close_ist.hour() * 60 + close_ist.minute() >= cutoff_minute;
         let events = self.engine.on_bar(&input);
         if warming {
-            return Ok(()); // historical warm-up: model state only, never orders
+            // historical warm-up: model state only, never orders — but show it at once
+            self.show_model(close_ist, input.close, false);
+            if input.close_time_ns >= start_ns {
+                self.report_warm();
+            }
+            return Ok(());
         }
+        self.report_warm();
         if at_or_after_cutoff && self.squared_off_on != Some(close_ist.date_naive()) {
             self.squared_off_on = Some(close_ist.date_naive());
             self.log_json(serde_json::json!({"event":"sats_square_off","instance":self.instance_id,"bar_close_ist":close_ist.format("%Y-%m-%d %H:%M").to_string()}));
@@ -355,26 +421,8 @@ impl DataActor for SatsStrategy {
             }
             self.handle(ev, entries_allowed)?;
         }
+        self.show_model(close_ist, input.close, true);
         let status = self.engine.status().clone();
-        let bar_label = close_ist.format("%H:%M").to_string();
-        let open_lots = self.open_lots;
-        self.board(|b| {
-            b.last_bar = Some((bar_label, input.close));
-            b.live_bars += 1;
-            b.warmed = status.warmed_up;
-            b.trend = status.trend;
-            b.supertrend = status.supertrend;
-            b.tqi = status.tqi;
-            b.regime = status.regime.clone();
-            b.next_r = status.next_r;
-            if b.status == "STARTING" {
-                b.status = "RUNNING".into();
-            }
-            if open_lots == 0 && b.position == 0.0 {
-                b.sl = None;
-                b.tps = None;
-            }
-        });
         self.log_json(serde_json::json!({
             "event": "sats_bar", "instance": self.instance_id,
             "bar_close_ist": close_ist.format("%H:%M").to_string(),
