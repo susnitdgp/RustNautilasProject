@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """VCE-Mojo v1.6 independent default signal/next-bar backtest; no order placement."""
-import json,datetime as D,collections,statistics as S,math
+import json,datetime as D,collections,statistics as S,math,os
 COST=2.0;SLIP=.5
 def run(tf,exit_r=1.0):
- raw=json.load(open(f'/tmp/amd_crudeoil_{tf}m.json'))
+ raw=json.load(open(f"/tmp/{os.environ.get('VCE_DATASET','amd_crudeoil')}_{tf}m.json"))
+ raw=[x for x in raw if x['timestamp'][:10]<='2026-10-08']
  b=[dict(t=D.datetime.strptime(x['timestamp'][:19],'%Y-%m-%dT%H:%M:%S'),o=x['open'],h=x['high'],l=x['low'],c=x['close']) for x in raw]
  tr=[];atr14=[];atr20=[];atr4=[];q14=q20=q4=None
  for i,x in enumerate(b):
