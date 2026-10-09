@@ -25,7 +25,7 @@
     "single_exit_at": "TP1",
     "intrabar_exits": true,
     "trail": {
-      "breakeven_offset_points": 0.0,
+      "breakeven_offset_points": 3.0,
       "supertrend_trail": true
     },
     "round_trip_cost_points": 2.0,
