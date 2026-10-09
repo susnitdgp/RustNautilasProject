@@ -6,7 +6,7 @@
   "point_value": 10,
   "execution": {
     "exit_mode": "single",
-    "single_exit_at": "TP2",
+    "single_exit_at": "TP1",
     "round_trip_cost_points": 6.0,
     "slippage_points_per_side": 0.5
   },
@@ -52,7 +52,7 @@
 
     "sl_buffer_atr": 1.5,
     "max_sl_distance_atr": 4.0,
-    "tp_mode": "Fixed",
+    "tp_mode": "Dynamic",
     "tp1_r": 1.0,
     "tp2_r": 2.0,
     "tp3_r": 3.0,
