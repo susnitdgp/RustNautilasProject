@@ -1,3 +1,12 @@
-# Development portfolio configurations
+# Configuration files
 
-`portfolio-development.example.json` is a read-only four-asset skeleton; the crude slot is CRUDEOILM Oct 2026 running `sats` (all inputs in `sats-crudeoilm.json`), disabled pending validation. The file does not enable broker execution. Contract rollover identity remains per month.
+| File | Purpose |
+|---|---|
+| `portfolio-production.json` | Portfolio manifest: the strategy slots (see `doc/PORTFOLIO_SLOTS.md`) |
+| `portfolio-development.example.json` | Example manifest for development |
+| `sniper-crudeoilm.json` | Precision Sniper settings, main strategy (see `doc/SNIPER_STRATEGY.md`) |
+| `sats-crudeoilm.json` | SATS settings (see `doc/SATS_STRATEGY.md`) |
+| `kite-production.json` | Broker settings for live runs: Kite user, contract token, MIS, `max_lots`, live-orders gate |
+| `kite-production.example.json` | Template for the broker settings |
+| `kite-sandbox.example.toml` | Template for Kite sandbox runs |
+| `mcx-session-calendar.json` | MCX holidays and special sessions |
