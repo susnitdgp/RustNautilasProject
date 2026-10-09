@@ -78,6 +78,12 @@ pub struct Engine {
     /// flip still closes the open trade but opens no new one. Not a Pine input.
     #[serde(default = "entries_on")]
     entries_enabled: bool,
+    /// Host-set minimum signal score (0-100) and TQI (0-1) for a new entry;
+    /// 0 = no filter. Not Pine inputs.
+    #[serde(default)]
+    min_entry_score: f64,
+    #[serde(default)]
+    min_entry_tqi: f64,
 }
 
 fn entries_on() -> bool {
@@ -126,6 +132,8 @@ impl Engine {
             trade: None,
             status: Status { preset: format!("{:?}", r.preset), ..Status::default() },
             entries_enabled: true,
+            min_entry_score: 0.0,
+            min_entry_tqi: 0.0,
             bars: 0,
             p,
             r,
@@ -148,6 +156,11 @@ impl Engine {
     /// Enables or disables new entries from the next `on_bar` on (exits unaffected).
     pub fn set_entries_enabled(&mut self, enabled: bool) {
         self.entries_enabled = enabled;
+    }
+    /// Minimum signal score (0-100) and TQI (0-1) required to open a trade.
+    pub fn set_entry_quality(&mut self, min_score: f64, min_tqi: f64) {
+        self.min_entry_score = min_score;
+        self.min_entry_tqi = min_tqi;
     }
 
     /// Processes one confirmed bar; returns the bar's events in the script's
@@ -312,6 +325,12 @@ impl Engine {
         }
         if (raw_buy || raw_sell) && self.trade.is_none() && !self.entries_enabled {
             self.status.last_rejected = Some("Entry skipped: outside the entry window".into());
+        } else if (raw_buy || raw_sell)
+            && self.trade.is_none()
+            && (score < self.min_entry_score || tqi.value < self.min_entry_tqi)
+        {
+            self.status.last_rejected =
+                Some(format!("Entry skipped: quality below minimum (score {score:.0}, TQI {:.2})", tqi.value));
         } else if (raw_buy || raw_sell) && self.trade.is_none() {
             let side = if raw_buy { Side::Long } else { Side::Short };
             match atr_value {

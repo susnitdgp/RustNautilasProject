@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.9.1"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4045,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "sats"
-version = "1.13.1+1"
+version = "1.13.1+2"
 dependencies = [
  "chrono",
  "serde",

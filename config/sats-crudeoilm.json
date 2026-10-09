@@ -15,6 +15,7 @@
   "lots": 1,
   "point_value": 10,
   "entry_window": { "from": "15:00:00", "to": "23:00:00" },
+  "entry_filter": { "min_score": 0.0, "min_tqi": 0.0 },
   "live": {
     "session_calendar": "config/mcx-session-calendar.json",
     "square_off": "23:15:00",

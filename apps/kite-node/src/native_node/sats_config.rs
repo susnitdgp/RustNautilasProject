@@ -53,6 +53,10 @@ pub struct SatsConfig {
     /// to allow entries all session.
     #[serde(default)]
     pub entry_window: Option<EntryWindow>,
+    /// Optional minimum quality for NEW entries: SATS signal score (0-100) and
+    /// TQI (0-1) at the signal bar. 0 = no minimum. Exits are never blocked.
+    #[serde(default)]
+    pub entry_filter: EntryFilter,
     /// Live-runner settings (calendar, daily square-off, product).
     pub live: LiveSettings,
     pub execution: Execution,
@@ -75,6 +79,15 @@ pub struct LiveSettings {
 pub struct EntryWindow {
     pub from: chrono::NaiveTime,
     pub to: chrono::NaiveTime,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EntryFilter {
+    #[serde(default)]
+    pub min_score: f64,
+    #[serde(default)]
+    pub min_tqi: f64,
 }
 
 impl LiveSettings {
@@ -237,6 +250,9 @@ impl SatsConfig {
                 "trail.breakeven_offset_points must be zero or positive"
             );
         }
+        let f = self.entry_filter;
+        ensure!((0.0..=100.0).contains(&f.min_score), "entry_filter.min_score must be 0..100");
+        ensure!((0.0..=1.0).contains(&f.min_tqi), "entry_filter.min_tqi must be 0..1");
         if let Some(w) = self.entry_window {
             ensure!(w.from < w.to, "entry_window.from must be before entry_window.to");
             ensure!(w.to <= self.live.square_off, "entry_window.to must not be after live.square_off");
@@ -278,11 +294,13 @@ impl SatsConfig {
     }
 
     pub fn engine(&self) -> Result<Engine> {
-        Engine::new(
+        let mut engine = Engine::new(
             self.params.clone(),
             SymbolSpec { tick_size: self.tick_size, bar_minutes: f64::from(self.bar_minutes) },
         )
-        .map_err(anyhow::Error::msg)
+        .map_err(anyhow::Error::msg)?;
+        engine.set_entry_quality(self.entry_filter.min_score, self.entry_filter.min_tqi);
+        Ok(engine)
     }
 
     /// Kite candle (timestamped at its open, IST) -> engine bar.
