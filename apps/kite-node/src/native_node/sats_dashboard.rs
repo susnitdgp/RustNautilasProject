@@ -190,7 +190,7 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
         layout::{Constraint, Layout},
         style::{Color, Modifier, Style},
         text::{Line, Span},
-        widgets::{Block, BorderType, List, ListItem, Paragraph},
+        widgets::{Block, BorderType, Paragraph, Wrap},
     };
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(Color::DarkGray);
@@ -304,15 +304,18 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
     if let Some(h) = &b.halted {
         session_lines.push(kv("HALTED", vec![Span::styled(h.clone(), red.add_modifier(Modifier::BOLD))]));
     }
-    frame.render_widget(Paragraph::new(session_lines).block(panel("Session")), session);
+    frame.render_widget(Paragraph::new(session_lines).wrap(Wrap { trim: false }).block(panel("Session")), session);
 
-    let items: Vec<ListItem> = if b.events.is_empty() {
-        vec![ListItem::new(Span::styled("none yet", dim))]
+    // Newest first; long events wrap onto the next line instead of being cut off.
+    let lines: Vec<Line> = if b.events.is_empty() {
+        vec![Line::from(Span::styled("none yet", dim))]
     } else {
-        b.events.iter().map(|e| ListItem::new(e.clone())).collect()
+        b.events.iter().map(|e| Line::from(e.clone())).collect()
     };
     frame.render_widget(
-        List::new(items).block(panel("Events").title_bottom(Span::styled(" Ctrl+C = flatten and stop · JSON log in logs/ ", dim))),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel("Events").title_bottom(Span::styled(" Ctrl+C = flatten and stop · JSON log in logs/ ", dim))),
         events,
     );
 }
@@ -413,6 +416,17 @@ mod tests {
         for needle in ["Market", "SATS", "Position", "Session", "Events", "SHORT 1 lot", "SELL 1 lot", "+10.0 pts"] {
             assert!(text.contains(needle), "missing {needle}");
         }
+    }
+
+    #[test]
+    fn long_events_wrap_instead_of_being_cut() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut b = Board { mode: "PAPER".into(), ..Board::default() };
+        b.event(format!("Warm-up done on 1297 history bars {} END-OF-EVENT", "x".repeat(120)));
+        let mut t = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        t.draw(|f| draw(f, &b, chrono::Utc::now().with_timezone(&ist()), 0)).unwrap();
+        let text: String = t.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+        assert!(text.contains("END-OF-EVENT"), "tail of a long event must be visible");
     }
 }
 
