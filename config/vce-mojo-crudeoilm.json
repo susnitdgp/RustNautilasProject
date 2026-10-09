@@ -2,7 +2,7 @@
   "strategy": "vce-mojo",
   "bar_minutes": 1,
   "lots": 1,
-  "point_value": 100,
+  "point_value": 10,
   "params": {
     "sensitivity": "Balanced",
     "catalyst_mode": true,
@@ -13,7 +13,7 @@
     "eod_minute": 15
   },
   "costs": {
-    "round_trip_points": 2.0,
+    "round_trip_points": 6.0,
     "slippage_points_per_side": 0.5
   }
 }

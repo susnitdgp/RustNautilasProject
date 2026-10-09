@@ -18,7 +18,7 @@ pub struct VceConfig {
     pub bar_minutes: u32,
     #[serde(default = "one_lot")]
     pub lots: u32,
-    /// Rupees per 1.0 price move for one lot (e.g. CRUDEOIL 100, CRUDEOILM 10).
+    /// Rupees per 1.0 price move for one lot (e.g. CRUDEOILM 10, GOLD 100).
     pub point_value: f64,
     #[serde(default)]
     pub params: Params,
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn shipped_examples_are_valid() {
         for text in [
-            include_str!("../../../../config/vce-mojo-crudeoil.example.json"),
+            include_str!("../../../../config/vce-mojo-crudeoilm.json"),
             include_str!("../../../../config/vce-mojo-gold.example.json"),
         ] {
             let c: VceConfig = serde_json::from_str(text).unwrap();

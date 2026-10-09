@@ -304,7 +304,7 @@ mod tests {
     use vce_mojo::ExitTarget;
 
     fn cfg() -> VceConfig {
-        serde_json::from_str(include_str!("../../../../config/vce-mojo-crudeoil.example.json")).unwrap()
+        serde_json::from_str(include_str!("../../../../config/vce-mojo-crudeoilm.json")).unwrap()
     }
     fn bar(i: i64, o: f64, h: f64, l: f64, c: f64) -> BarInput {
         let t = 1_790_000_000_000_000_000 + i * 60_000_000_000;
@@ -324,8 +324,8 @@ mod tests {
         assert_eq!(t.pine_points, 10.0);
         assert_eq!(t.fill_entry, 98.5); // next open 99 minus 0.5 adverse for a short
         assert_eq!(t.fill_exit, 90.5); // TP1 90 plus 0.5 adverse
-        assert_eq!(t.net_points, 6.0); // 8 - 2 round trip
-        assert_eq!(t.net_rupees, 600.0);
+        assert_eq!(t.net_points, 2.0); // 8 - 6 round trip (CRUDEOILM charges in points)
+        assert_eq!(t.net_rupees, 20.0); // ₹10 per point
 
         // Bar gaps straight through the stop: filled at the open, not the level.
         let gap = [bar(0, 100.0, 101.0, 99.0, 100.0), bar(1, 115.0, 116.0, 114.0, 115.0)];

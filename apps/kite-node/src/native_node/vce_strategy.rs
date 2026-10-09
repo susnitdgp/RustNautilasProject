@@ -1,7 +1,7 @@
 //! Nautilus strategy for one `vce-mojo` portfolio slot.
 //!
 //! One instance per portfolio slot: its strategy ID is derived from the slot ID,
-//! so several slots (CRUDEOIL, GOLD, NIFTY …) can run side by side with isolated
+//! so several slots (CRUDEOILM, GOLD, NIFTY …) can run side by side with isolated
 //! positions. Bars drive entries (bar-close confirmed); quotes drive intrabar
 //! SL / target exits, checked at the price an exit would fill at (bid for a long,
 //! ask for a short).
