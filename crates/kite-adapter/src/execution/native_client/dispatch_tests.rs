@@ -615,3 +615,38 @@ async fn multi_lot_orders_need_the_reviewed_max_lots_cap() {
     assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn single_order_flip_closes_and_reverses_within_the_cap() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (d, calls, _) = fixture(false, false);
+    let mut d = d.with_max_lots(3);
+    let filled = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>| {
+        drain(rx).iter().any(|e| matches!(e, OrderEventAny::Filled(_)))
+    };
+    d.submit(order(OrderSide::Buy, 3, false), 0, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(filled(&mut rx));
+    // no TP hit: +3 → −3 is one SELL 6
+    d.submit(order(OrderSide::Sell, 6, false), 3, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(filled(&mut rx), "flip SELL 6 fills");
+    // TP1 on the short (−3 → −2), then flip after TP1: −2 → +3 is one BUY 5
+    d.submit(order(OrderSide::Buy, 1, true), -3, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(filled(&mut rx));
+    d.submit(order(OrderSide::Buy, 5, false), -2, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(filled(&mut rx), "flip BUY 5 after TP1 fills");
+    // refused before the broker: flip beyond the cap (+3 → −4), a non-reduce order that
+    // only closes (+3 → 0) or only reduces (+3 → +1), and adding on the same side
+    for (side, qty) in [(OrderSide::Sell, 7), (OrderSide::Sell, 3), (OrderSide::Sell, 2), (OrderSide::Buy, 1)] {
+        d.submit(order(side, qty, false), 3, &tx).await.unwrap();
+        assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]), "{side:?} {qty} must be denied");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "denied orders never reach the broker");
+    d.submit(order(OrderSide::Sell, 3, true), 3, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(filled(&mut rx));
+    d.finish(&tx, false).await.unwrap();
+}

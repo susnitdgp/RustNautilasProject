@@ -6,7 +6,10 @@
 //! * Entry → target = ±lots (signal bar close, entries window / blackouts from JSON);
 //! * Partial (TP1 / TP2) → target shrinks by `tp1_lots` / `tp2_lots`;
 //! * Exit (SL, step stop, TP3, reversal, square-off) → target 0;
-//! * a reversal is "reduce to 0, then enter" — never one order through zero.
+//! * a reversal is ONE flip order: it closes the lots still open (3, 2 or 1 after TP1 /
+//!   TP2) and opens the opposite side, e.g. +2 → −3 is one SELL 5 (one order's brokerage,
+//!   no wait for a separate exit fill). A partly filled flip that leaves a smaller position
+//!   on the new side is never topped up: the strategy halts and flattens.
 //!
 //! Between bar closes every quote is checked like the script's intrabar model:
 //! the executable price (bid for a long, ask for a short) against the current stop
@@ -57,18 +60,23 @@ fn ist() -> FixedOffset {
     FixedOffset::east_opt(19_800).expect("IST")
 }
 
-/// The single next order moving `pos` toward `target` (signed lots): reduce-only toward
-/// the target, or to zero first when the side changes; an entry only from flat. `None`
-/// when the target would add to an open position (never done).
+/// The single next order moving `pos` toward `target` (signed lots), as
+/// `(side, lots, reduce_only)`:
+/// * from flat → entry of `|target|`;
+/// * same side, smaller, or to flat → reduce-only exit of the difference;
+/// * opposite side → ONE flip order of `|pos| + |target|` (not reduce-only);
+/// * same side, larger → `None` (never adds).
 pub fn next_order(pos: i64, target: i64) -> Option<(OrderSide, i64, bool)> {
     if pos == target {
         return None;
     }
-    if pos != 0 && (target.signum() != pos.signum() || target.abs() < pos.abs()) {
-        let goal = if target.signum() == pos.signum() { target } else { 0 };
-        Some((if pos > 0 { OrderSide::Sell } else { OrderSide::Buy }, (pos - goal).abs(), true))
-    } else if pos == 0 {
-        Some((if target > 0 { OrderSide::Buy } else { OrderSide::Sell }, target.abs(), false))
+    let toward = |signed: i64| if signed > 0 { OrderSide::Buy } else { OrderSide::Sell };
+    if pos == 0 {
+        Some((toward(target), target.abs(), false))
+    } else if target == 0 || (target.signum() == pos.signum() && target.abs() < pos.abs()) {
+        Some((toward(-pos), (pos - target).abs(), true))
+    } else if target.signum() == -pos.signum() {
+        Some((toward(-pos), pos.abs() + target.abs(), false))
     } else {
         None
     }
@@ -275,7 +283,7 @@ impl SniperStrategy {
         self.show_levels();
     }
 
-    /// One market order at a time toward `target`; never adds, never crosses zero.
+    /// One market order at a time toward `target`; never adds; a reversal is one flip order.
     fn reconcile(&mut self) -> Result<()> {
         if self.live.is_none() || !self.orders_enabled {
             return Ok(());
@@ -520,16 +528,23 @@ nautilus_strategy!(SniperStrategy, {
 mod tests {
     use super::*;
     #[test]
-    fn next_order_scales_out_flips_through_zero_and_never_adds() {
+    fn next_order_scales_out_flips_in_one_order_and_never_adds() {
         assert_eq!(next_order(0, 3), Some((OrderSide::Buy, 3, false)), "entry from flat");
+        assert_eq!(next_order(0, -3), Some((OrderSide::Sell, 3, false)), "short entry from flat");
         assert_eq!(next_order(3, 2), Some((OrderSide::Sell, 1, true)), "TP1: one lot");
         assert_eq!(next_order(2, 1), Some((OrderSide::Sell, 1, true)), "TP2: one lot");
+        assert_eq!(next_order(3, 1), Some((OrderSide::Sell, 2, true)), "TP1 + TP2 on one tick");
         assert_eq!(next_order(1, 0), Some((OrderSide::Sell, 1, true)), "TP3 / stop: last lot");
-        assert_eq!(next_order(3, -3), Some((OrderSide::Sell, 3, true)), "reversal: flatten first");
-        assert_eq!(next_order(0, -3), Some((OrderSide::Sell, 3, false)), "then enter short");
         assert_eq!(next_order(-2, 0), Some((OrderSide::Buy, 2, true)));
-        assert_eq!(next_order(-1, 3), Some((OrderSide::Buy, 1, true)), "short to long: flatten first");
-        assert_eq!(next_order(1, 3), None, "never adds to an open position");
+        // flip quantity = lots still open + new lots, whichever TPs were hit
+        assert_eq!(next_order(3, -3), Some((OrderSide::Sell, 6, false)), "flip, no TP hit");
+        assert_eq!(next_order(2, -3), Some((OrderSide::Sell, 5, false)), "flip after TP1");
+        assert_eq!(next_order(1, -3), Some((OrderSide::Sell, 4, false)), "flip after TP2");
+        assert_eq!(next_order(-3, 3), Some((OrderSide::Buy, 6, false)));
+        assert_eq!(next_order(-1, 3), Some((OrderSide::Buy, 4, false)));
+        // never adds: an open position below target on the same side (e.g. a partly filled flip)
+        assert_eq!(next_order(1, 3), None);
+        assert_eq!(next_order(-1, -3), None);
         assert_eq!(next_order(2, 2), None);
     }
 }

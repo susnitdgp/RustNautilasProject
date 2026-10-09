@@ -223,21 +223,34 @@ impl Dispatcher {
                     .all(|b| matches!(b.status.as_str(), "COMPLETE" | "CANCELLED" | "REJECTED")),
                 "Broker has an unresolved order for this contract"
             );
+            use nautilus_model::enums::OrderSide;
             let qty = order.quantity().as_decimal();
+            let held = rust_decimal::Decimal::from(position.unsigned_abs());
+            let opposing = matches!(
+                (order.order_side(), position.signum()),
+                (OrderSide::Buy, -1) | (OrderSide::Sell, 1)
+            );
+            let resulting = rust_decimal::Decimal::from(position)
+                + if order.order_side() == OrderSide::Buy { qty } else { -qty };
+            // The cap applies to the position before and after the order, so a flip
+            // order may be larger than `max_lots` (e.g. +3 → −3 is one SELL 6).
             ensure!(
                 qty >= rust_decimal::Decimal::ONE
                     && qty.fract().is_zero()
-                    && qty <= rust_decimal::Decimal::from(self.max_lots)
-                    && position.abs() <= self.max_lots,
+                    && position.abs() <= self.max_lots
+                    && resulting.abs() <= rust_decimal::Decimal::from(self.max_lots),
                 "Native account contract cap exceeded"
             );
+            // Allowed: a reduce-only exit, an entry from flat, or ONE flip order that closes
+            // the whole open position and opens the opposite side (qty > held). Never adds,
+            // and a non-reduce order on an open position must cross zero.
             ensure!(
                 if order.is_reduce_only() {
                     position != 0
                 } else {
-                    position == 0
+                    position == 0 || (opposing && qty > held)
                 },
-                "Exposure requires reducing exit before another entry"
+                "Exposure requires a reducing exit, an entry from flat, or a full flip"
             );
             // Recheck after awaited broker reads: the stream may have disconnected.
             admission()?;

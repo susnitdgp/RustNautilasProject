@@ -48,7 +48,10 @@ pub struct Row {
     pub exec_entry: f64,
     /// Sum over lots of executed points, after slippage, before costs.
     pub gross_lot_points: f64,
+    /// Orders charged to this trade. A reversal is one flip order: it is charged to the
+    /// trade it closes, so the trade it opens starts with 0 orders (`flip_entry`).
     pub orders: u32,
+    pub flip_entry: bool,
     pub costs_rupees: f64,
     pub net_points: f64,
     pub net_rupees: f64,
@@ -108,6 +111,7 @@ struct Open {
     lots_open: u32,
     gross_lot_points: f64,
     orders: u32,
+    flip_entry: bool,
     fills: Vec<String>,
 }
 
@@ -154,12 +158,15 @@ pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Eng
             exec_entry: o.entry + d * slip,
             gross_lot_points: round2(o.gross_lot_points),
             orders: o.orders,
+            flip_entry: o.flip_entry,
             costs_rupees: round2(costs),
             net_points: round2(net_rupees / c.point_value),
             net_rupees: round2(net_rupees),
         });
     };
-    let handle = |ev: Event, close_ts: i64, open: &mut Option<Open>, rows: &mut Vec<Row>| match ev {
+    // `flip`: a "Reversal" exit on this bar; the entry that follows on the same bar is the
+    // other half of the same live flip order and adds no order of its own.
+    let handle = |ev: Event, close_ts: i64, open: &mut Option<Open>, rows: &mut Vec<Row>, flip: &mut bool| match ev {
         Event::Partial { price, fraction, .. } => {
             if let Some(o) = open.as_mut() {
                 let lots = tranche(c, fraction, o.lots_open);
@@ -170,12 +177,14 @@ pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Eng
         }
         Event::Exit { price, reason, gross_r, .. } => {
             if let Some(mut o) = open.take() {
+                *flip = reason == "Reversal";
                 let lots = o.lots_open;
                 fill(&mut o, price, lots);
                 close_row(o, close_ts, price, reason, gross_r, rows);
             }
         }
         Event::Entry { dir, price, stop, tp1, tp3, grade, score, .. } => {
+            let flip_entry = std::mem::take(flip);
             *open = Some(Open {
                 dir,
                 entry_ts: close_ts,
@@ -187,7 +196,8 @@ pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Eng
                 score,
                 lots_open: c.lots,
                 gross_lot_points: 0.0,
-                orders: 1,
+                orders: if flip_entry { 0 } else { 1 },
+                flip_entry,
                 fills: Vec::new(),
             });
         }
@@ -197,13 +207,14 @@ pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Eng
         let trading = ist(b.start).date_naive() >= from;
         let last_of_day = bars.get(i + 1).is_none_or(|n| ist(n.start).date_naive() != ist(b.start).date_naive());
         let allowed = trading && !last_of_day && c.entries_allowed_at(close_ts);
+        let mut flip = false;
         for ev in engine.on_bar(*b, allowed) {
-            handle(ev, close_ts, &mut open, &mut rows);
+            handle(ev, close_ts, &mut open, &mut rows, &mut flip);
         }
         if (c.square_off_due(close_ts) || last_of_day)
             && let Some(ev) = engine.force_close(b.close, "Square-off")
         {
-            handle(ev, close_ts, &mut open, &mut rows);
+            handle(ev, close_ts, &mut open, &mut rows, &mut flip);
         }
     }
     (rows, engine)
@@ -398,7 +409,7 @@ mod tests {
         let (rows, _) = replay(&c, &bars(), chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
         check(&c, &rows);
         assert!(rows.iter().any(|r| r.orders > 2), "some trade should scale out at TP1");
-        assert!(rows.iter().all(|r| (2..=4).contains(&r.orders)));
+        assert!(rows.iter().all(|r| if r.flip_entry { (1..=3).contains(&r.orders) } else { (2..=4).contains(&r.orders) }));
     }
     #[test]
     fn whole_position_variant_uses_two_orders() {
@@ -409,6 +420,6 @@ mod tests {
         c.validate().unwrap();
         let (rows, _) = replay(&c, &bars(), chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
         check(&c, &rows);
-        assert!(rows.iter().all(|r| r.orders == 2));
+        assert!(rows.iter().all(|r| r.orders == if r.flip_entry { 1 } else { 2 }));
     }
 }
