@@ -2,15 +2,11 @@ pub mod backtest_report;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 mod bar_timing;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
-pub mod catalog;
 pub mod cli;
 mod portfolio;
 #[allow(dead_code)]
 pub mod data;
 mod execution_session;
-pub mod full_codec;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 pub mod lifecycle;

@@ -22,7 +22,6 @@ pub fn dispatch(args: &[String]) -> Option<Result<()>> {
         ("native-kite-margins-check",[config])=>tokio::runtime::Runtime::new().map_err(anyhow::Error::from).and_then(|rt|rt.block_on(kite_adapter::execution::native_client::margins::check(config))).map(|v|println!("{v}")),
         ("native-kite-review",[namespace])=>kite_adapter::execution::native_client::recovery::review(namespace).map(|v|println!("{v}")),
         ("native-kite-status",[account])=>kite_adapter::execution::native_client::coordination::status(account).map(|v|println!("{v}")),
-        ("native-full-audit",[catalog])=>super::catalog::audit(std::path::Path::new(catalog)),
         ("native-recover",[namespace])=>super::recovery::run(namespace),
         _=>usage(),
     })

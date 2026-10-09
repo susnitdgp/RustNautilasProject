@@ -46,8 +46,6 @@ nautilus-indicators = { version = "=0.64.0", default-features = false }
 
 nautilus-analysis = { version = "=0.64.0", default-features = false }
 
-nautilus-persistence = { version = "=0.64.0", default-features = false }
-
 nautilus-infrastructure = { version = "=0.64.0", default-features = false, features = ["redis"] }
 
 nautilus-sandbox = { version = "=0.64.0", default-features = false }
