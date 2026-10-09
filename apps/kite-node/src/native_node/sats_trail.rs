@@ -160,3 +160,86 @@ mod tests {
         assert_eq!(s.on_bar(&c, 101.0, 111.0, 95.0), Some(110.0));
     }
 }
+
+/// Fixed stop / target checked inside the bar (`exit_mode: "single"` with
+/// `intrabar_exits: true`): the whole position exits the moment the executable
+/// price crosses the SL or the target, instead of at the next bar close.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bracket {
+    pub side: Side,
+    pub stop: f64,
+    pub target: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BracketExit {
+    Stop,
+    Target,
+}
+
+impl Bracket {
+    pub fn new(side: Side, stop: f64, target: f64) -> Self {
+        Self { side, stop, target }
+    }
+
+    /// Live, every quote: `px` is the executable price (bid for a long, ask for a short).
+    pub fn on_price(&self, px: f64) -> Option<BracketExit> {
+        let d = self.side.sign();
+        if d * (px - self.stop) <= 0.0 {
+            Some(BracketExit::Stop)
+        } else if d * (px - self.target) >= 0.0 {
+            Some(BracketExit::Target)
+        } else {
+            None
+        }
+    }
+
+    /// Backtest replay of one bar, pessimistic: a gap through either level fills
+    /// at the open; if the bar touched both, the stop is assumed first.
+    pub fn on_bar(&self, open: f64, high: f64, low: f64) -> Option<(f64, BracketExit)> {
+        let d = self.side.sign();
+        let (fav, adv) = if self.side == Side::Long { (high, low) } else { (low, high) };
+        if d * (open - self.stop) <= 0.0 {
+            return Some((open, BracketExit::Stop));
+        }
+        if d * (open - self.target) >= 0.0 {
+            return Some((open, BracketExit::Target));
+        }
+        if d * (adv - self.stop) <= 0.0 {
+            return Some((self.stop, BracketExit::Stop));
+        }
+        if d * (fav - self.target) >= 0.0 {
+            return Some((self.target, BracketExit::Target));
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod bracket_tests {
+    use super::*;
+
+    #[test]
+    fn live_ticks_long_and_short() {
+        let b = Bracket::new(Side::Long, 8725.0, 8783.0);
+        assert_eq!(b.on_price(8760.0), None);
+        assert_eq!(b.on_price(8783.0), Some(BracketExit::Target));
+        assert_eq!(b.on_price(8725.0), Some(BracketExit::Stop));
+        let s = Bracket::new(Side::Short, 8790.0, 8730.0);
+        assert_eq!(s.on_price(8760.0), None);
+        assert_eq!(s.on_price(8730.0), Some(BracketExit::Target));
+        assert_eq!(s.on_price(8790.0), Some(BracketExit::Stop));
+    }
+
+    #[test]
+    fn backtest_bar_gaps_and_stop_first() {
+        let b = Bracket::new(Side::Long, 90.0, 110.0);
+        assert_eq!(b.on_bar(85.0, 95.0, 80.0), Some((85.0, BracketExit::Stop)));
+        assert_eq!(b.on_bar(112.0, 115.0, 108.0), Some((112.0, BracketExit::Target)));
+        assert_eq!(b.on_bar(100.0, 111.0, 89.0), Some((90.0, BracketExit::Stop)));
+        assert_eq!(b.on_bar(100.0, 111.0, 95.0), Some((110.0, BracketExit::Target)));
+        assert_eq!(b.on_bar(100.0, 105.0, 95.0), None);
+        let s = Bracket::new(Side::Short, 110.0, 90.0);
+        assert_eq!(s.on_bar(100.0, 105.0, 89.0), Some((90.0, BracketExit::Target)));
+    }
+}

@@ -14,15 +14,16 @@
   "tick_size": 1.0,
   "lots": 1,
   "point_value": 10,
-  "entry_window": null,
+  "entry_window": { "from": "15:00:00", "to": "23:00:00" },
   "live": {
     "session_calendar": "config/mcx-session-calendar.json",
     "square_off": "23:15:00",
     "product": "MIS"
   },
   "execution": {
-    "exit_mode": "trail",
+    "exit_mode": "single",
     "single_exit_at": "TP1",
+    "intrabar_exits": true,
     "trail": {
       "breakeven_offset_points": 0.0,
       "supertrend_trail": true

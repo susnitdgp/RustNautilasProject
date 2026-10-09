@@ -213,6 +213,9 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         exit_rule: match p.config.execution.exit_mode {
             sats_config::ExitMode::Trail if p.config.execution.trail.supertrend_trail => "Trail: BE@TP1 + SuperTrend".into(),
             sats_config::ExitMode::Trail => "Trail: BE@TP1".into(),
+            _ if p.config.execution.intrabar_single() => {
+                format!("{} or SL, intrabar", p.config.execution.single_exit_at.label())
+            }
             mode => format!("{:?} {:?}", mode, p.config.execution.single_exit_at),
         },
         redis_namespace: p.keys.commands(&namespace)?,

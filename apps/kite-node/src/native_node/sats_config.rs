@@ -95,6 +95,11 @@ pub struct Execution {
     ///           on the stop, a trend flip, a timeout or the square-off.
     pub exit_mode: ExitMode,
     pub single_exit_at: Target,
+    /// `exit_mode: "single"` only: true = the SL and `single_exit_at` target are
+    /// checked on every tick and exit immediately when crossed; false = checked
+    /// on the closed bar's high/low and exited at the bar close.
+    #[serde(default)]
+    pub intrabar_exits: bool,
     /// Settings for `exit_mode: "trail"` (ignored otherwise).
     #[serde(default)]
     pub trail: TrailSettings,
@@ -141,7 +146,31 @@ pub enum Target {
     Tp3,
 }
 
+impl Target {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tp1 => "TP1",
+            Self::Tp2 => "TP2",
+            Self::Tp3 => "TP3",
+        }
+    }
+}
+
 impl Execution {
+    /// Price of the `single_exit_at` target for a SATS trade.
+    pub fn single_target(&self, t: &sats::TradeSnapshot) -> f64 {
+        match self.single_exit_at {
+            Target::Tp1 => t.tp1,
+            Target::Tp2 => t.tp2,
+            Target::Tp3 => t.tp3,
+        }
+    }
+
+    /// Single mode with SL / target checked on every tick.
+    pub fn intrabar_single(&self) -> bool {
+        self.exit_mode == ExitMode::Single && self.intrabar_exits
+    }
+
     /// Lots to close for a model exit event, given the lots still open.
     /// Entries are not handled here (they always open `lots`).
     pub fn lots_to_close(&self, kind: EventKind, lots: u32, open_lots: u32) -> u32 {
@@ -311,6 +340,7 @@ mod tests {
         Execution {
             exit_mode: mode,
             single_exit_at: at,
+            intrabar_exits: false,
             trail: TrailSettings::default(),
             round_trip_cost_points: 0.0,
             slippage_points_per_side: 0.0,

@@ -11,7 +11,7 @@ use super::{
     backtest_report,
     portfolio::Portfolio,
     sats_config::{self, ExitMode, SatsConfig},
-    sats_trail::Trail,
+    sats_trail::{Bracket, BracketExit, Trail},
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone};
@@ -203,6 +203,8 @@ struct Open {
     exit_value: f64,
     /// `exit_mode: "trail"`: trailing stop of the executed position.
     trail: Option<Trail>,
+    /// `exit_mode: "single"` + `intrabar_exits`: SL / target checked inside bars.
+    bracket: Option<Bracket>,
     /// Why / when / at which bar the executed position was fully closed.
     exec_exit: Option<(&'static str, i64, usize)>,
     /// SATS's own closing event and bar. In trail mode the position can outlive it.
@@ -221,6 +223,7 @@ impl Open {
         self.open_lots -= n;
         if self.open_lots == 0 {
             self.trail = None;
+            self.bracket = None;
             self.exec_exit = Some((why, time_ns, idx));
         }
     }
@@ -242,6 +245,8 @@ pub fn replay(
     let next_open = |i: usize| bars.get(i + 1).map_or(bars[i].close, |b| b.open);
     let trail_cfg = config.execution.trail;
     let trailing = config.execution.exit_mode == ExitMode::Trail;
+    let intrabar = config.execution.intrabar_single();
+    let target_label = config.execution.single_exit_at.label();
     let mut open: Option<Open> = None;
     let mut trades = Vec::new();
     let record = |o: Open, trades: &mut Vec<Trade>| {
@@ -264,6 +269,17 @@ pub fn replay(
                 record(open.take().expect("open"), &mut trades);
             }
         }
+        // Single mode with intrabar exits: SL / target act inside the bar (live:
+        // every tick), before this bar's close-time SATS events.
+        if let Some(o) = open.as_mut()
+            && o.open_lots > 0
+            && i > o.entry_idx
+            && let Some(b) = o.bracket.clone()
+            && let Some((px, why)) = b.on_bar(bar.open, bar.high, bar.low)
+        {
+            let label = if why == BracketExit::Stop { "SL" } else { target_label };
+            o.close(o.open_lots, px, slip, label, bar.close_time_ns, i);
+        }
         engine.set_entries_enabled(config.entries_allowed(bar.close_time_ns));
         for ev in engine.on_bar(bar) {
             if ev.kind.is_entry() {
@@ -278,6 +294,7 @@ pub fn replay(
                 let t = &ev.trade;
                 open = Some(Open {
                     trail: trailing.then(|| Trail::new(t.side, exec_entry, t.sl, t.tp1)),
+                    bracket: intrabar.then(|| Bracket::new(t.side, t.sl, config.execution.single_target(t))),
                     exec_entry,
                     entry: ev,
                     entry_idx: i,

@@ -16,7 +16,7 @@
 use super::live_control::Control;
 use super::sats_dashboard::{self, Board, Shared};
 use super::sats_config::{Execution, ExitMode, SatsConfig};
-use super::sats_trail::Trail;
+use super::sats_trail::{Bracket, BracketExit, Trail};
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, NaiveDate, Timelike};
 use nautilus_common::{actor::DataActor, timer::TimeEvent};
@@ -80,6 +80,8 @@ pub struct SatsStrategy {
     pending_entry: Option<(Event, i64)>,
     /// Live trailing stop of the open position (`exit_mode: "trail"`).
     trail: Option<Trail>,
+    /// Live tick-checked SL / target (`exit_mode: "single"`, `intrabar_exits`).
+    bracket: Option<Bracket>,
 }
 
 /// How long a deferred flip entry waits for the closing fill before the strategy halts.
@@ -118,6 +120,7 @@ impl SatsStrategy {
             warm_reported: false,
             pending_entry: None,
             trail: None,
+            bracket: None,
         }
     }
 
@@ -301,7 +304,27 @@ impl SatsStrategy {
         self.execution.exit_mode == ExitMode::Trail && self.live.is_some()
     }
 
-    /// Every quote: executable price against the trailing stop / TP3.
+    fn bracket_mode(&self) -> bool {
+        self.execution.intrabar_single() && self.live.is_some()
+    }
+
+    /// Every quote (single mode, intrabar exits): executable price against the
+    /// SL and the target; exits the whole position the moment one is crossed.
+    fn check_bracket(&mut self, bid: f64, ask: f64) -> Result<()> {
+        if self.open_lots == 0 || self.exiting {
+            return Ok(());
+        }
+        let Some(b) = self.bracket.clone() else { return Ok(()) };
+        let px = if b.side == Side::Long { bid } else { ask };
+        let target = self.execution.single_exit_at.label();
+        match b.on_price(px) {
+            Some(BracketExit::Stop) => self.flatten(&format!("SL {:.0} hit at {px:.0} (intrabar)", b.stop)),
+            Some(BracketExit::Target) => self.flatten(&format!("{target} {:.0} reached at {px:.0} (intrabar)", b.target)),
+            None => Ok(()),
+        }
+    }
+
+    /// Every quote: executable price against the trailing stop.
     fn check_trail(&mut self, bid: f64, ask: f64) -> Result<()> {
         if self.open_lots == 0 || self.exiting {
             return Ok(());
@@ -347,6 +370,7 @@ impl SatsStrategy {
         self.live_entry_bar = None;
         self.open_lots = 0;
         self.trail = None;
+        self.bracket = None;
         if position == 0.0 {
             self.exiting = false;
             self.set_flat(true);
@@ -467,8 +491,11 @@ impl SatsStrategy {
         if ev.kind.is_entry() && self.trail_mode() {
             // breakeven switches to the real fill price once it is known
             self.trail = Some(Trail::new(t.side, t.entry, t.sl, t.tp1));
+        } else if ev.kind.is_entry() && self.bracket_mode() {
+            self.bracket = Some(Bracket::new(t.side, t.sl, self.execution.single_target(&t)));
         } else if self.open_lots == 0 {
             self.trail = None;
+            self.bracket = None;
         }
         self.submit_order(order, None, None, None)?;
         Ok(())
@@ -559,6 +586,8 @@ impl DataActor for SatsStrategy {
             self.board(|b| b.last_price = Some(mid));
             if self.trail_mode() {
                 self.check_trail(bid, ask)?;
+            } else if self.bracket_mode() {
+                self.check_bracket(bid, ask)?;
             }
         }
         Ok(())
