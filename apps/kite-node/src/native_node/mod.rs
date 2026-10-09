@@ -56,8 +56,3 @@ mod strategy_session;
 mod synthetic;
 #[cfg(test)]
 mod test_support;
-mod vce_backtest;
-pub mod vce_config;
-// Not yet wired to a LiveNode runner; compiled and type-checked against Nautilus 0.64.
-#[allow(dead_code)]
-mod vce_strategy;
