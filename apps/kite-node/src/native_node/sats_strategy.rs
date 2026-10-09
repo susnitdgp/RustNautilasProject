@@ -73,7 +73,12 @@ pub struct SatsStrategy {
     board: Option<Shared>,
     /// The "warm-up finished" dashboard event was shown.
     warm_reported: bool,
+    /// Same-bar entry waiting for this run's closing order to fill (event, deadline ns).
+    pending_entry: Option<(Event, i64)>,
 }
+
+/// How long a deferred flip entry waits for the closing fill before the strategy halts.
+const PENDING_ENTRY_NS: i64 = 30_000_000_000;
 
 fn ist() -> FixedOffset {
     FixedOffset::east_opt(19_800).expect("IST")
@@ -105,6 +110,7 @@ impl SatsStrategy {
             halted: None,
             board: None,
             warm_reported: false,
+            pending_entry: None,
         }
     }
 
@@ -231,6 +237,35 @@ impl SatsStrategy {
             b.event(format!("HALTED: {reason}"));
         });
         self.halted = Some(reason.to_owned());
+        if self.pending_entry.take().is_some() {
+            self.live_entry_bar = None;
+            self.open_lots = 0;
+        }
+    }
+
+    /// Releases a deferred same-bar entry once the closing order has filled, or halts
+    /// if the close is not confirmed within `PENDING_ENTRY_NS`.
+    fn try_pending(&mut self, now_ns: i64) -> Result<()> {
+        let Some(deadline) = self.pending_entry.as_ref().map(|(_, d)| *d) else {
+            return Ok(());
+        };
+        if self.position() == 0.0 {
+            self.exiting = false;
+            let (ev, _) = self.pending_entry.take().expect("pending entry");
+            let cutoff_passed = self.live.as_ref().is_some_and(|l| {
+                let t = DateTime::from_timestamp_nanos(now_ns).with_timezone(&ist());
+                t.hour() * 60 + t.minute() >= l.square_off_minute || self.squared_off_on == Some(t.date_naive())
+            });
+            let allowed = !cutoff_passed && !self.stopping() && self.halted.is_none();
+            self.live_entry_bar = None;
+            self.open_lots = 0;
+            return self.handle(ev, allowed);
+        }
+        if now_ns > deadline {
+            self.halt("closing order not filled within 30 s; flip entry cancelled");
+            return self.flatten("closing order not filled");
+        }
+        Ok(())
     }
 
     fn log_json(&self, value: serde_json::Value) {
@@ -327,6 +362,15 @@ impl SatsStrategy {
             return Ok(());
         }
         let position = self.position();
+        if !reduce_only && self.exiting && self.live.is_some() {
+            // Same-bar flip: our closing order is still in flight at the broker. Wait for
+            // its fill (guard timer / fill handler), never stack the entry on top of it.
+            let deadline = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) + PENDING_ENTRY_NS;
+            self.log(&ev, lots, "entry deferred until the closing order fills");
+            self.board(|b| b.event(format!("{} waiting for exit fill before entering", ev.kind.label())));
+            self.pending_entry = Some((ev, deadline));
+            return Ok(());
+        }
         let consistent = if reduce_only {
             (side == OrderSide::Sell && position >= f64::from(lots)) || (side == OrderSide::Buy && -position >= f64::from(lots))
         } else {
@@ -350,6 +394,9 @@ impl SatsStrategy {
             None,
         );
         self.set_flat(false);
+        if reduce_only && self.open_lots == 0 && self.live.is_some() {
+            self.exiting = true; // closing order in flight; cleared when the position is flat
+        }
         self.log(&ev, lots, "order submitted");
         let t = ev.trade.clone();
         self.board(|b| {
@@ -460,6 +507,7 @@ impl DataActor for SatsStrategy {
             }
             self.flatten("stop / feed fault")?;
         } else {
+            self.try_pending(e.ts_event.as_u64() as i64)?;
             self.set_flat(self.position() == 0.0 && !self.exiting);
         }
         Ok(())
@@ -483,7 +531,13 @@ nautilus_strategy!(SatsStrategy, {
             b.apply_fill(signed, px);
             b.event(format!("FILL {:?} {qty:.0} @ {px:.0}", e.order_side));
         });
-        if self.position() == 0.0 {
+        if self.pending_entry.is_some() {
+            // a same-bar flip entry was waiting for this closing fill
+            let now = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+            if let Err(err) = self.try_pending(now) {
+                self.halt(&format!("deferred entry failed: {err:#}"));
+            }
+        } else if self.position() == 0.0 {
             self.exiting = false;
             self.set_flat(true);
         }
