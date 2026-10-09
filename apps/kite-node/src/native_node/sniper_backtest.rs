@@ -32,8 +32,18 @@ pub struct SniperConfig {
     pub slippage_points_per_side: f64,
     pub entries_until: NaiveTime,
     pub square_off: NaiveTime,
+    /// IST windows [from, to) with no new entries (by signal-bar close), e.g. US data.
+    #[serde(default)]
+    pub entry_blackouts: Vec<Blackout>,
     #[serde(default)]
     pub params: sniper::Params,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Blackout {
+    pub from: NaiveTime,
+    pub to: NaiveTime,
 }
 
 impl SniperConfig {
@@ -52,6 +62,7 @@ impl SniperConfig {
         ensure!(self.point_value > 0.0, "point_value must be positive");
         ensure!(self.round_trip_cost_points >= 0.0 && self.slippage_points_per_side >= 0.0, "costs must be >= 0");
         ensure!(self.entries_until <= self.square_off, "entries_until must not be after square_off");
+        ensure!(self.entry_blackouts.iter().all(|w| w.from < w.to), "entry_blackouts need from < to");
         self.params.validate().map_err(anyhow::Error::msg)
     }
     fn interval(&self) -> Interval {
@@ -184,7 +195,12 @@ pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Eng
         let close_t = ist(close_ts).time();
         let trading = ist(b.start).date_naive() >= from;
         let last_of_day = bars.get(i + 1).is_none_or(|n| ist(n.start).date_naive() != ist(b.start).date_naive());
-        let allowed = trading && close_t < c.entries_until && close_t >= NaiveTime::from_hms_opt(9, 0, 0).expect("t") && !last_of_day;
+        let blacked_out = c.entry_blackouts.iter().any(|w| close_t >= w.from && close_t < w.to);
+        let allowed = trading
+            && close_t < c.entries_until
+            && close_t >= NaiveTime::from_hms_opt(9, 0, 0).expect("t")
+            && !last_of_day
+            && !blacked_out;
         for ev in engine.on_bar(*b, allowed) {
             match ev {
                 Event::Exit { price, reason, gross_r, .. } => {
