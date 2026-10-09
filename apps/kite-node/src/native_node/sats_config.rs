@@ -441,6 +441,7 @@ mod tests {
     fn thirds_with_one_lot_is_rejected() {
         let mut c: SatsConfig = serde_json::from_str(SHIPPED).unwrap();
         c.execution.exit_mode = ExitMode::Thirds;
+        c.execution.exchange_stop_loss = false; // thirds never allows a broker stop
         assert!(c.validate().is_err());
         c.lots = 3;
         c.validate().unwrap();

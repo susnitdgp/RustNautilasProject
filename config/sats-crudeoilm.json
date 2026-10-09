@@ -25,7 +25,7 @@
     "exit_mode": "single",
     "single_exit_at": "TP1",
     "intrabar_exits": true,
-    "exchange_stop_loss": true,
+    "exchange_stop_loss": false,
     "trail": {
       "breakeven_offset_points": 3.0,
       "supertrend_trail": true

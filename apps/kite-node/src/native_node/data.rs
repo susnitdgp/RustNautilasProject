@@ -144,6 +144,57 @@ fn emit(
         _ => status(tx, "invalid_top_quote", generation),
     }
 }
+/// Fetches the startup gap in the background and publishes it, unless the first
+/// live bar got there first (then the gap is left as before and logged).
+fn spawn_backfill(
+    tx: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    token: u32,
+    interval: kite_adapter::http::historical::Interval,
+    bt: nautilus_model::data::BarType,
+    gap: (i64, i64),
+    state: super::live_backfill::Shared,
+) {
+    use super::live_backfill::State;
+    super::sats_dashboard::emit(serde_json::json!({
+        "event": "sats_backfill_scheduled", "from_epoch_s": gap.0, "to_epoch_s": gap.1,
+    }));
+    tokio::spawn(async move {
+        let result = super::live_backfill::fetch(token, interval, gap).await;
+        let mut s = state.lock().unwrap_or_else(|p| p.into_inner());
+        if *s != State::Pending {
+            return; // the live bar already won; it logged the reason
+        }
+        let candles = match result {
+            Ok(c) => c,
+            Err(e) => {
+                *s = State::Abandoned;
+                super::sats_dashboard::emit(serde_json::json!({
+                    "event": "sats_backfill_failed", "reason": format!("{e:#}"),
+                }));
+                return;
+            }
+        };
+        let mut sent = Vec::new();
+        for c in &candles {
+            match super::live_bars::bar_for(c, bt, now(), interval) {
+                Ok(b) => {
+                    let _ = tx.send(DataEvent::Data(Data::Bar(b)));
+                    sent.push(c.timestamp.clone());
+                }
+                Err(e) => {
+                    super::sats_dashboard::emit(serde_json::json!({
+                        "event": "sats_backfill_failed", "reason": format!("bar conversion: {e:#}"),
+                    }));
+                    break;
+                }
+            }
+        }
+        *s = State::Done;
+        super::sats_dashboard::emit(serde_json::json!({
+            "event": "sats_backfill_done", "bars": sent.len(), "bar_starts": sent,
+        }));
+    });
+}
 impl Client {
     fn begin(&mut self) -> Result<()> {
         if self.task.is_some() {
@@ -166,6 +217,8 @@ impl Client {
                 .map(|(_, last, _)| {
                     super::ws_candles::Aggregator::with_step(*last, (config.interval.minutes() * 60) as i64)
                 });
+            // Startup gap backfill (see `live_backfill`); `None` until a gap is seen.
+            let mut backfill: Option<super::live_backfill::Shared> = None;
             if let (Some((warmup, _, _)), Some(bt)) = (&config.live_bars, bar_type) {
                 for bar in warmup {
                     match super::live_bars::bar_for(
@@ -214,7 +267,21 @@ impl Client {
                                     config.interval,
                                 ) {
                                     Ok(b) => {
-                                        let _ = tx.send(DataEvent::Data(Data::Bar(b)));
+                                        // A backfill still pending now would arrive after
+                                        // this bar: drop it so bars stay in order.
+                                        if let Some(state) = backfill.take() {
+                                            let mut s = state.lock().unwrap_or_else(|p| p.into_inner());
+                                            if *s == super::live_backfill::State::Pending {
+                                                *s = super::live_backfill::State::Abandoned;
+                                                super::sats_dashboard::emit(serde_json::json!({
+                                                    "event": "sats_backfill_abandoned",
+                                                    "reason": "first live bar arrived before the backfill",
+                                                }));
+                                            }
+                                            let _ = tx.send(DataEvent::Data(Data::Bar(b)));
+                                        } else {
+                                            let _ = tx.send(DataEvent::Data(Data::Bar(b)));
+                                        }
                                     }
                                     Err(e) => {
                                         if let Some((_, _, ctrl)) = &config.live_bars {
@@ -229,6 +296,11 @@ impl Client {
                                     }
                                     return;
                                 }
+                            }
+                            if let Some(gap) = agg.take_gap() {
+                                let state = super::live_backfill::shared();
+                                backfill = Some(state.clone());
+                                spawn_backfill(tx.clone(), config.token, config.interval, bt, gap, state);
                             }
                         }
                         emit(&tx, *s, &config.instrument)

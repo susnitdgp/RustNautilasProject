@@ -322,7 +322,7 @@ impl Broker for MockBroker {
                 quantity,
                 trigger_price_rupees,
                 tag,
-                market_protection,
+                market_protection: _,
             } => {
                 ensure!(product == &self.product, "Mock stop product mismatch");
                 let id = (s.orders.len() + 1).to_string();
@@ -335,13 +335,15 @@ impl Broker for MockBroker {
                     product: product.clone(),
                     transaction_type: side.clone(),
                     variety: "regular".into(),
-                    order_type: "SL-M".into(),
-                    market_protection: Some(Decimal::from(*market_protection)),
+                    // Real Kite (observed 2026-10-09) stores an MCX SL-M as an SL with a
+                    // 0.5% protective limit and market_protection 0; the mock does the same.
+                    order_type: "SL".into(),
+                    market_protection: Some(Decimal::ZERO),
                     validity: "DAY".into(),
                     status: "TRIGGER PENDING".into(),
                     quantity: *quantity,
                     filled_quantity: 0,
-                    price: Decimal::ZERO,
+                    price: kite_sl_limit(side, *trigger_price_rupees),
                     trigger_price: Some(Decimal::from(*trigger_price_rupees)),
                     tag: Some(tag.clone()),
                     exchange_timestamp: Some(timestamp.clone()),
@@ -361,12 +363,16 @@ impl Broker for MockBroker {
                     .iter_mut()
                     .find(|o| &o.order_id == order_id)
                     .ok_or_else(|| anyhow!("Unknown mock protective stop"))?;
-                if o.order_type != "SL-M" || o.status != "TRIGGER PENDING" {
+                if !matches!(o.order_type.as_str(), "SL" | "SL-M") || o.status != "TRIGGER PENDING" {
                     return Ok(Outcome::Rejected);
                 }
                 o.quantity = *quantity;
                 o.trigger_price = Some(Decimal::from(*trigger_price_rupees));
-                o.market_protection = Some(Decimal::from(*market_protection));
+                if o.order_type == "SL" {
+                    o.price = kite_sl_limit(&o.transaction_type, *trigger_price_rupees);
+                } else {
+                    o.market_protection = Some(Decimal::from(*market_protection));
+                }
                 o.exchange_update_timestamp = Some(Self::time());
                 Ok(Outcome::Acknowledged {
                     order_id: order_id.clone(),
@@ -375,6 +381,14 @@ impl Broker for MockBroker {
             Command::Modify { .. } => anyhow::bail!("Native Kite mock modification unsupported"),
         }
     }
+}
+
+/// Kite's SL-M → SL conversion: limit 0.5% beyond the trigger, rounded away from it
+/// to whole rupees (BUY trigger 8793 → 8837, as seen live on 2026-10-09).
+fn kite_sl_limit(side: &str, trigger: i64) -> Decimal {
+    let t = Decimal::from(trigger);
+    let band = t * Decimal::new(5, 3);
+    if side == "BUY" { (t + band).ceil() } else { (t - band).floor() }
 }
 
 #[cfg(test)]
@@ -403,7 +417,9 @@ mod ilrc_stop_flow_tests {
             .iter()
             .find(|o| o.order_id == id)
             .expect("broker stop observation");
-        assert_eq!(stop.order_type, "SL-M");
+        assert_eq!(stop.order_type, "SL", "Kite stores an MCX SL-M as SL");
+        assert_eq!(stop.price, Decimal::from(8646), "SELL 8690 - 0.5% floored");
+        assert_eq!(kite_sl_limit("BUY", 8793), Decimal::from(8837), "live 2026-10-09 case");
         assert_eq!(stop.status, "TRIGGER PENDING");
         assert_eq!(stop.quantity, 1);
         let modify = Command::ModifyProtectiveStop {

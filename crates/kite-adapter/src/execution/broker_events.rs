@@ -91,6 +91,22 @@ fn side(value: &str) -> Result<OrderSide> {
         _ => bail!("Invalid Kite order side"),
     }
 }
+/// Kite places an MCX SL-M as an SL (stop-limit) order whose limit sits a small
+/// protection band beyond the trigger (e.g. BUY trigger 8793 → limit 8837, 0.5%).
+/// Accept only that shape: integer limit on the protective side, within 3%.
+fn sl_m_conversion_ok(broker: &BrokerOrder, side: OrderSide) -> bool {
+    let (Some(trigger), limit) = (broker.trigger_price, broker.price) else {
+        return false;
+    };
+    if trigger <= Decimal::ZERO || limit <= Decimal::ZERO || !limit.fract().is_zero() {
+        return false;
+    }
+    let band = trigger * Decimal::new(3, 2);
+    match side {
+        OrderSide::Buy => limit >= trigger && limit - trigger <= band,
+        OrderSide::Sell => limit <= trigger && trigger - limit <= band,
+    }
+}
 fn price(value: Decimal) -> Result<Price> {
     ensure!(
         value > Decimal::ZERO && value.fract().is_zero(),
@@ -149,7 +165,7 @@ pub fn reconcile(
     );
     ensure!(
         broker.variety == "regular"
-            && matches!(broker.order_type.as_str(), "LIMIT" | "MARKET" | "SL-M")
+            && matches!(broker.order_type.as_str(), "LIMIT" | "MARKET" | "SL-M" | "SL")
             && broker.validity == "DAY",
         "Unsupported Kite order instructions"
     );
@@ -165,9 +181,15 @@ pub fn reconcile(
     let market = current.order_type() == nautilus_model::enums::OrderType::Market;
     if stop_market {
         ensure!(
-            matches!(broker.order_type.as_str(), "SL-M" | "MARKET"),
+            matches!(broker.order_type.as_str(), "SL-M" | "MARKET" | "SL"),
             "Stop-market order type changed"
         );
+        if broker.order_type == "SL" {
+            ensure!(
+                sl_m_conversion_ok(broker, current.order_side()),
+                "Protective stop converted to an unexpected SL limit"
+            );
+        }
         ensure!(
             broker
                 .trigger_price
@@ -364,6 +386,35 @@ pub fn reconcile(
     Ok(events)
 }
 
+#[cfg(test)]
+mod sl_conversion_tests {
+    use super::*;
+    fn sl(side: &str, trigger: i64, limit: &str) -> BrokerOrder {
+        serde_json::from_value(serde_json::json!({
+            "order_id": "2108527917502865408", "exchange": "MCX",
+            "tradingsymbol": "CRUDEOILM26OCTFUT", "instrument_token": 145894663,
+            "product": "MIS", "transaction_type": side, "variety": "regular",
+            "order_type": "SL", "market_protection": 0, "validity": "DAY",
+            "status": "TRIGGER PENDING", "quantity": 1, "filled_quantity": 0,
+            "price": limit, "trigger_price": trigger, "tag": "b5a5430ba72a43d29100",
+            "exchange_timestamp": null, "exchange_update_timestamp": null,
+            "order_timestamp": "2026-10-09 17:30:04"
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn accepts_kites_sl_m_conversion_and_nothing_wider() {
+        // exactly what Kite returned live on 2026-10-09
+        assert!(sl_m_conversion_ok(&sl("BUY", 8793, "8837"), OrderSide::Buy));
+        assert!(sl_m_conversion_ok(&sl("SELL", 8690, "8646"), OrderSide::Sell));
+        // limit on the wrong side of the trigger, too far, fractional, or missing
+        assert!(!sl_m_conversion_ok(&sl("BUY", 8793, "8780"), OrderSide::Buy));
+        assert!(!sl_m_conversion_ok(&sl("BUY", 8793, "9100"), OrderSide::Buy));
+        assert!(!sl_m_conversion_ok(&sl("BUY", 8793, "8837.5"), OrderSide::Buy));
+        assert!(!sl_m_conversion_ok(&sl("SELL", 8690, "8700"), OrderSide::Sell));
+        assert!(!sl_m_conversion_ok(&sl("BUY", 8793, "0"), OrderSide::Buy));
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

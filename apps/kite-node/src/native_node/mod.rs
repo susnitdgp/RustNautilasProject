@@ -29,6 +29,7 @@ mod live_control;
 #[allow(dead_code)]
 mod live_data;
 mod ws_candles;
+mod live_backfill;
 mod ws_validation;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]

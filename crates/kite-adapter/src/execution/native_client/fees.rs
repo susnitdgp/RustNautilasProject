@@ -76,7 +76,8 @@ pub(crate) fn groups_for<'a>(
                 && o.instrument_token == token
                 && o.product == product
                 && o.variety == "regular"
-                && matches!(o.order_type.as_str(), "LIMIT" | "MARKET")
+                // SL / SL-M: a filled protective stop (Kite reports MCX SL-M as SL)
+                && matches!(o.order_type.as_str(), "LIMIT" | "MARKET" | "SL" | "SL-M")
                 && o.validity == "DAY",
             "Trade/order scope mismatch"
         );

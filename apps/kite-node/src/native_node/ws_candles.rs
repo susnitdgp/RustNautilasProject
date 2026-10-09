@@ -14,6 +14,9 @@ pub struct Aggregator {
     last_exchange_ts: Option<i64>,
     skip_partial: bool,
     step: i64,
+    /// `(warm-up close, first full stream bar start)` in epoch seconds, set on the
+    /// first tick when candles between them can never come from the stream.
+    gap: Option<(i64, i64)>,
 }
 #[derive(Debug)]
 struct Current {
@@ -93,6 +96,12 @@ impl Aggregator {
             // The historical-to-stream gap is never replayed as an entry.
             // The first complete stream bar provides the new live anchor.
             self.skip_partial = ts > bucket;
+            // Candles the stream can't supply: the skipped partial one, plus any the
+            // warm-up was too early to receive. `live_backfill` fetches them.
+            let first_full = if self.skip_partial { bucket + self.step } else { bucket };
+            if first_full > self.last_close {
+                self.gap = Some((self.last_close, first_full));
+            }
             self.current = Some(Current {
                 start: bucket,
                 open: price,
@@ -148,6 +157,10 @@ impl Aggregator {
         c.volume += delta;
         c.oi = oi;
         Ok(None)
+    }
+    /// The startup gap to backfill from history, reported once.
+    pub fn take_gap(&mut self) -> Option<(i64, i64)> {
+        self.gap.take()
     }
 }
 #[cfg(test)]
@@ -224,8 +237,13 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        // the skipped partial candle is reported once for backfill
+        assert_eq!(partial.take_gap(), Some((start, start + 180)));
+        assert_eq!(partial.take_gap(), None);
         let mut gap = Aggregator::new(((start - 360) as u64) * 1_000_000_000);
         assert!(gap.observe(&tick(start, 100, 1000, 1)).unwrap().is_none());
+        // first tick on the boundary: no partial, but two candles before it are missing
+        assert_eq!(gap.take_gap(), Some((start - 360, start)));
         assert!(
             gap.observe(&tick(start + 180, 101, 1001, 1))
                 .unwrap()

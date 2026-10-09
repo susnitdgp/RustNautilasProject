@@ -101,6 +101,10 @@ const CANCEL_EXIT_NS: i64 = 15_000_000_000;
 
 /// How long a deferred flip entry waits for the closing fill before the strategy halts.
 const PENDING_ENTRY_NS: i64 = 30_000_000_000;
+/// A bar this long after its close came from the startup backfill, not the stream.
+const BACKFILLED_NS: i64 = 10_000_000_000;
+/// No new entries on a bar delivered later than this after its close.
+const MAX_ENTRY_LATENESS_NS: i64 = 90_000_000_000;
 
 fn ist() -> FixedOffset {
     FixedOffset::east_opt(19_800).expect("IST")
@@ -205,16 +209,17 @@ impl SatsStrategy {
             -1 => "BEARISH",
             _ => "neutral",
         };
-        // The bar in progress at start-up is incomplete on the stream and is skipped;
-        // the first live bar is the next full one.
+        // The bar in progress at start-up is incomplete on the stream; it is
+        // backfilled from Kite history ~45 s after it closes, before the first
+        // full stream bar.
         let now_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
-        let first_live = DateTime::from_timestamp_nanos((now_ns / self.bar_ns + 2) * self.bar_ns).with_timezone(&ist());
+        let gap_close = DateTime::from_timestamp_nanos((now_ns / self.bar_ns + 1) * self.bar_ns).with_timezone(&ist());
         self.board(|b| {
             let msg = format!(
-                "Warm-up done on {} history bars · trend {trend} · warmed {} · first live bar closes {} (bar in progress at start is skipped)",
+                "Warm-up done on {} history bars · trend {trend} · warmed {} · bar closing {} is backfilled from Kite history ~45s later",
                 b.history_bars,
                 if status.warmed_up { "yes" } else { "NO" },
-                first_live.format("%H:%M")
+                gap_close.format("%H:%M")
             );
             b.event(msg);
             if b.status == "STARTING" {
@@ -672,7 +677,21 @@ impl DataActor for SatsStrategy {
             });
             self.flatten("daily square-off")?;
         }
-        let entries_allowed = !at_or_after_cutoff && !self.stopping() && self.halted.is_none();
+        // Stream bars arrive ~1 s after close; a startup-gap bar backfilled from
+        // Kite history arrives ~45-60 s after. Entries on anything older are refused.
+        let late_ns = Self::now_ns() - input.close_time_ns;
+        let too_late = late_ns > MAX_ENTRY_LATENESS_NS;
+        if late_ns > BACKFILLED_NS {
+            let secs = late_ns / 1_000_000_000;
+            self.board(|b| b.event(format!(
+                "Backfilled bar {} from Kite history ({secs}s after close){}",
+                close_ist.format("%H:%M"),
+                if too_late { " · too late for an entry, exits only" } else { "" }
+            )));
+            self.log_json(serde_json::json!({"event":"sats_late_bar","instance":self.instance_id,
+                "bar_close_ist":close_ist.format("%H:%M").to_string(),"late_s":secs,"entries_allowed":!too_late}));
+        }
+        let entries_allowed = !at_or_after_cutoff && !self.stopping() && self.halted.is_none() && !too_late;
         for ev in events {
             if at_or_after_cutoff && !ev.kind.is_entry() && self.live_entry_bar.is_none() {
                 continue; // already flattened at square-off

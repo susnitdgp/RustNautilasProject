@@ -472,6 +472,11 @@ impl Dispatcher {
                             "Unconfirmed protective stop modification"
                         );
                         normalized.trigger_price = Some(rust_decimal::Decimal::from(previous));
+                        // Kite's SL form carries a limit tied to the trigger; shift it
+                        // with the trigger so the conversion band is judged consistently.
+                        if normalized.order_type == "SL" {
+                            normalized.price -= rust_decimal::Decimal::from(actual - previous);
+                        }
                         stop_modified = Some(requested);
                     }
                 }
