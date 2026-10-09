@@ -74,9 +74,11 @@ impl KiteBroker {
         user_id: String,
         product: String,
     ) -> Result<Self> {
+        // One client: reads keep the order connection warm (HTTP/2, multiplexed).
+        let client = crate::http::client::kite_client()?;
         Ok(Self {
-            read: ReadClient::sandbox(credentials)?,
-            orders: KiteOrderTransport::new(credentials)?,
+            read: ReadClient::with_client(credentials, client.clone())?.into_sandbox(),
+            orders: KiteOrderTransport::with_client(credentials, client)?,
             user_id,
             product,
             sandbox: true,
@@ -84,11 +86,13 @@ impl KiteBroker {
         })
     }
     pub fn new(credentials: &KiteCredentials, user_id: String, product: String) -> Result<Self> {
+        // One client: reads keep the order connection warm (HTTP/2, multiplexed).
+        let client = crate::http::client::kite_client()?;
         Ok(Self {
             sandbox: false,
             verified_mcx: std::sync::atomic::AtomicBool::new(false),
-            read: ReadClient::new(credentials)?,
-            orders: KiteOrderTransport::new(credentials)?,
+            read: ReadClient::with_client(credentials, client.clone())?,
+            orders: KiteOrderTransport::with_client(credentials, client)?,
             user_id,
             product,
         })

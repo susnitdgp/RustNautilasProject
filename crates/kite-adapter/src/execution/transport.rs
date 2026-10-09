@@ -8,6 +8,8 @@ use reqwest::{
 use serde::Deserialize;
 use std::time::Duration;
 use zeroize::Zeroizing;
+/// Whole-request bound for order mutations; connect is bounded by the shared client.
+const ORDER_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     Acknowledged { order_id: String },
@@ -22,6 +24,11 @@ pub struct KiteOrderTransport {
 }
 impl KiteOrderTransport {
     pub fn new(credentials: &KiteCredentials) -> Result<Self> {
+        Self::with_client(credentials, crate::http::client::kite_client()?)
+    }
+    /// Builds the transport on `client`, normally shared with the read path so both use
+    /// one warm, multiplexed HTTP/2 connection.
+    pub(crate) fn with_client(credentials: &KiteCredentials, client: Client) -> Result<Self> {
         let value = Zeroizing::new(format!(
             "token {}:{}",
             credentials.api_key(),
@@ -30,18 +37,6 @@ impl KiteOrderTransport {
         let mut authorization = HeaderValue::from_str(&value)
             .map_err(|_| anyhow!("Invalid Kite authentication header"))?;
         authorization.set_sensitive(true);
-        // Kite only accepts orders from the app's registered static IP. Dual-stack hosts
-        // would otherwise reach api.kite.trade over IPv6 (an unregistered address) and get
-        // 403 PermissionException; binding an IPv4 local address restricts connections to
-        // IPv4 destinations, i.e. the registered static IPv4.
-        let client = Client::builder()
-            .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| anyhow!("Kite order client initialization failed"))?;
         Ok(Self {
             client,
             authorization,
@@ -65,7 +60,8 @@ impl KiteOrderTransport {
             .client
             .request(method, format!("{base}{path}"))
             .header("X-Kite-Version", "3")
-            .header(AUTHORIZATION, self.authorization.clone());
+            .header(AUTHORIZATION, self.authorization.clone())
+            .timeout(ORDER_TIMEOUT);
         let request = if fields.is_empty() {
             request
         } else {

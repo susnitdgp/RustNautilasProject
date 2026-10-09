@@ -36,6 +36,8 @@ impl Endpoint {
 const PACE_WINDOW: Duration = Duration::from_secs(1);
 const GENERAL_PER_WINDOW: usize = 8;
 const HISTORICAL_PER_WINDOW: usize = 2;
+/// Whole-request bound for reads; connect is bounded by the shared client.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Default)]
 struct Pacer {
     general: std::collections::VecDeque<tokio::time::Instant>,
@@ -70,6 +72,10 @@ pub(crate) struct ReadClient {
 }
 impl ReadClient {
     pub(crate) fn new(credentials: &KiteCredentials) -> Result<Self> {
+        Self::with_client(credentials, super::client::kite_client()?)
+    }
+    /// Builds the reader on `client`, normally shared with the order transport.
+    pub(crate) fn with_client(credentials: &KiteCredentials, client: Client) -> Result<Self> {
         let value = Zeroizing::new(format!(
             "token {}:{}",
             credentials.api_key(),
@@ -78,13 +84,6 @@ impl ReadClient {
         let mut authorization = HeaderValue::from_str(&value)
             .map_err(|_| anyhow!("Invalid Kite authentication header"))?;
         authorization.set_sensitive(true);
-        let client = Client::builder()
-            .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| anyhow!("Kite read client initialization failed"))?;
         Ok(Self {
             #[cfg(test)]
             charge_test_url: None,
@@ -108,9 +107,12 @@ impl ReadClient {
         Ok(())
     }
     pub(crate) fn sandbox(credentials: &KiteCredentials) -> Result<Self> {
-        let mut client = Self::new(credentials)?;
-        client.root = "https://sandbox.kite.trade/oms";
-        Ok(client)
+        Self::new(credentials).map(Self::into_sandbox)
+    }
+    /// Points this reader at the sandbox OMS root.
+    pub(crate) fn into_sandbox(mut self) -> Self {
+        self.root = "https://sandbox.kite.trade/oms";
+        self
     }
     pub(crate) async fn sandbox_quote<T: DeserializeOwned>(&self) -> Result<T> {
         ensure!(
@@ -197,6 +199,7 @@ impl ReadClient {
         let mut response = request
             .header("X-Kite-Version", "3")
             .header(AUTHORIZATION, self.authorization.clone())
+            .timeout(READ_TIMEOUT)
             .send()
             .await
             .map_err(|_| anyhow!(ReadFailure::Transient))?;
