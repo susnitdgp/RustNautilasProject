@@ -2500,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "kite-adapter"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.13.1"
+version = "2.14.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4310,7 +4310,7 @@ checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
 
 [[package]]
 name = "sniper"
-version = "2.1.0+1"
+version = "2.1.0+2"
 dependencies = [
  "chrono",
  "serde",

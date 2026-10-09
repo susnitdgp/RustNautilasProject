@@ -9,7 +9,10 @@ pub mod engine;
 pub mod params;
 pub mod ta;
 
-pub use engine::{Bar, Engine, Event, Trade};
+pub use engine::{Bar, Engine, Event, Status, Trade};
+
+/// Pine source version this crate ports.
+pub const PORT_VERSION: &str = "2.1.0";
 pub use params::Params;
 
 #[cfg(test)]

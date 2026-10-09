@@ -2,16 +2,26 @@
   "strategy": "sniper",
   "symbol": "CRUDEOILM26OCTFUT",
   "instrument_token": 145894663,
-  "bar_minutes": 5,
-  "lots": 1,
+  "bar_minutes": 3,
+  "lots": 3,
+  "tp1_lots": 1,
+  "tp2_lots": 1,
   "point_value": 10,
-  "round_trip_cost_points": 6.0,
+  "round_trip_cost_points": 2.0,
+  "brokerage_per_order": 20.0,
   "slippage_points_per_side": 1.0,
+  "live": {
+    "session_calendar": "config/mcx-session-calendar.json",
+    "product": "MIS"
+  },
   "entries_until": "23:00:00",
   "square_off": "23:15:00",
+  "entry_blackouts": [
+    { "from": "17:30:00", "to": "19:30:00" }
+  ],
   "params": {
-    "preset": "Auto",
-    "timeframe_minutes": 5,
+    "preset": "Conservative",
+    "timeframe_minutes": 3,
     "vwap": true,
     "warmup_mult": 3,
     "grade_filter": "All",

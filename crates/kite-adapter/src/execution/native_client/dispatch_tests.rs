@@ -582,3 +582,36 @@ async fn resting_stop_blocks_exits_until_its_cancel_is_observed() {
     assert_eq!(calls.load(Ordering::SeqCst), 4);
     d.finish(&tx, false).await.unwrap();
 }
+#[tokio::test]
+async fn multi_lot_orders_need_the_reviewed_max_lots_cap() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    // default cap is one lot: a 3-lot entry never reaches the broker
+    let (mut one, calls, _) = fixture(false, false);
+    one.submit(order(OrderSide::Buy, 3, false), 0, &tx).await.unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // with max_lots 3: enter 3, scale out 1, refuse an exit larger than the position, close 2
+    let (d, calls, _) = fixture(false, false);
+    let mut d = d.with_max_lots(3);
+    d.submit(order(OrderSide::Buy, 3, false), 0, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, OrderEventAny::Filled(_))));
+    d.submit(order(OrderSide::Buy, 1, false), 3, &tx).await.unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]), "no adding to an open position");
+    d.submit(order(OrderSide::Sell, 1, true), 3, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, OrderEventAny::Filled(_))));
+    d.submit(order(OrderSide::Sell, 3, true), 2, &tx).await.unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]), "exit larger than the position would reverse");
+    d.submit(order(OrderSide::Sell, 2, true), 2, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, OrderEventAny::Filled(_))));
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    d.finish(&tx, false).await.unwrap();
+    // above the cap even with max_lots
+    let (d, calls, _) = fixture(false, false);
+    let mut d = d.with_max_lots(3);
+    d.submit(order(OrderSide::Buy, 4, false), 0, &tx).await.unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

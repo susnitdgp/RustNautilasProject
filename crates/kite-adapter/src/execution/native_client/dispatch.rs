@@ -35,6 +35,8 @@ pub(crate) struct Dispatcher {
     records: BTreeMap<String, Record>,
     poisoned: bool,
     position: i64,
+    /// Per-order and per-position contract cap (broker settings `max_lots`, default 1).
+    max_lots: i64,
 }
 impl Dispatcher {
     pub fn unresolved(&self) -> usize {
@@ -129,7 +131,13 @@ impl Dispatcher {
             records: BTreeMap::new(),
             poisoned: false,
             position: 0,
+            max_lots: 1,
         }
+    }
+    /// Raises the contract cap from 1 (reviewed `max_lots` setting, 1..=10).
+    pub fn with_max_lots(mut self, lots: u32) -> Self {
+        self.max_lots = i64::from(lots.clamp(1, 10));
+        self
     }
     fn now() -> UnixNanos {
         nautilus_core::time::get_atomic_clock_realtime().get_time_ns()
@@ -215,8 +223,12 @@ impl Dispatcher {
                     .all(|b| matches!(b.status.as_str(), "COMPLETE" | "CANCELLED" | "REJECTED")),
                 "Broker has an unresolved order for this contract"
             );
+            let qty = order.quantity().as_decimal();
             ensure!(
-                order.quantity().as_decimal() == rust_decimal::Decimal::ONE && position.abs() <= 1,
+                qty >= rust_decimal::Decimal::ONE
+                    && qty.fract().is_zero()
+                    && qty <= rust_decimal::Decimal::from(self.max_lots)
+                    && position.abs() <= self.max_lots,
                 "Native account contract cap exceeded"
             );
             ensure!(
@@ -373,7 +385,7 @@ impl Dispatcher {
         } else {
             quantity
         };
-        ensure!(position.abs() <= 1, "Account position exceeds contract cap");
+        ensure!(position.abs() <= self.max_lots, "Account position exceeds contract cap");
         ensure!(
             snapshot
                 .positions

@@ -29,6 +29,11 @@ pub struct Board {
     pub redis_namespace: String,
     pub point_value: f64,
     pub lots: u32,
+    /// Header title; empty = "SATS v…".
+    pub title: String,
+    /// Model panel: title and rows. Empty rows = the SATS panel.
+    pub model_title: String,
+    pub model_rows: Vec<(String, String)>,
     // feed
     pub last_price: Option<f64>,
     pub last_bar: Option<(String, f64)>,
@@ -109,6 +114,10 @@ impl Board {
         format!("{}  (in {}:{:02})", at.format("%H:%M"), left / 60, left % 60)
     }
 
+    fn title(&self) -> String {
+        if self.title.is_empty() { format!("SATS v{}", sats::PORT_VERSION) } else { self.title.clone() }
+    }
+
     pub fn unrealized_points(&self) -> Option<f64> {
         Some(self.position * (self.last_price? - self.entry_avg?))
     }
@@ -146,7 +155,7 @@ impl Board {
             s.push_str(&t);
             s.push('\n');
         };
-        row(format!("{b} SATS v{}  ·  {}  ·  {}{x}", sats::PORT_VERSION, self.instrument, self.slot));
+        row(format!("{b} {}  ·  {}  ·  {}{x}", self.title(), self.instrument, self.slot));
         row(format!(" {mode_col}{b}{}{x}   status {status_col}{b}{}{x}   {} IST", self.mode, self.status, now.format("%H:%M:%S")));
         row(line.clone());
         row(format!(" Price        {b}{}{x}     last bar {}", px(self.last_price),
@@ -155,9 +164,17 @@ impl Board {
         row(format!(" Feed         {}",
             self.feed_fault.as_ref().map_or(format!("{g}OK{x}"), |f| format!("{r}FAULT: {f}{x}"))));
         row(line.clone());
-        row(format!(" Trend        {trend}    SuperTrend {}", px(self.supertrend)));
-        row(format!(" TQI          {:.2} ({})    warmed {}", self.tqi, self.regime, if self.warmed { "yes" } else { "no" }));
-        row(format!(" TP1 at      {:.2} R   exit: {}", self.next_r[0], self.exit_rule));
+        if self.model_rows.is_empty() {
+            row(format!(" Trend        {trend}    SuperTrend {}", px(self.supertrend)));
+            row(format!(" TQI          {:.2} ({})    warmed {}", self.tqi, self.regime, if self.warmed { "yes" } else { "no" }));
+            row(format!(" TP1 at      {:.2} R   exit: {}", self.next_r[0], self.exit_rule));
+        } else {
+            row(format!(" Trend        {trend}    warmed {}", if self.warmed { "yes" } else { "no" }));
+            for (k, v) in &self.model_rows {
+                row(format!(" {k:<12} {v}"));
+            }
+            row(format!(" Exit         {}", self.exit_rule));
+        }
         row(line.clone());
         row(format!(" Position     {pos}    entry {}", px(self.entry_avg)));
         row(format!(" Stop / TP1   {} / {}{}", px(self.sl), px(self.tps.map(|t| t[0])),
@@ -230,7 +247,7 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(format!(" SATS v{} ", sats::PORT_VERSION), bold),
+            Span::styled(format!(" {} ", b.title()), bold),
             Span::raw(format!("· {} · {}   ", b.instrument, b.slot)),
             Span::styled(b.mode.clone(), mode_style.add_modifier(Modifier::BOLD)),
             Span::raw("   "),
@@ -262,18 +279,25 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
         -1 => Span::styled("▼ BEARISH", red.add_modifier(Modifier::BOLD)),
         _ => Span::raw("—"),
     };
-    frame.render_widget(
-        Paragraph::new(vec![
+    let warmed = kv("Warmed", vec![if b.warmed { Span::styled("yes", green) } else { Span::styled("no", yellow) }]);
+    let model_lines = if b.model_rows.is_empty() {
+        vec![
             kv("Trend", vec![trend]),
             kv("SuperTrend", vec![Span::raw(px(b.supertrend))]),
             kv("TQI", vec![Span::raw(format!("{:.2}  {}", b.tqi, b.regime))]),
             kv("TP1 at", vec![Span::raw(format!("{:.2} R", b.next_r[0]))]),
             kv("Exit", vec![Span::raw(b.exit_rule.clone())]),
-            kv("Warmed", vec![if b.warmed { Span::styled("yes", green) } else { Span::styled("no", yellow) }]),
-        ])
-        .block(panel("SATS")),
-        model,
-    );
+            warmed,
+        ]
+    } else {
+        let mut lines = vec![kv("Trend", vec![trend])];
+        lines.extend(b.model_rows.iter().map(|(k, v)| kv(k, vec![Span::raw(v.clone())])));
+        lines.push(kv("Exit", vec![Span::raw(b.exit_rule.clone())]));
+        lines.push(warmed);
+        lines
+    };
+    let model_title = if b.model_title.is_empty() { "SATS" } else { b.model_title.as_str() };
+    frame.render_widget(Paragraph::new(model_lines).block(panel(model_title)), model);
 
     let side = if b.position > 0.0 {
         Span::styled(format!("LONG {:.0} lot", b.position), green.add_modifier(Modifier::BOLD))

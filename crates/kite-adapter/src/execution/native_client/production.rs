@@ -38,11 +38,19 @@ pub struct Settings {
     pub instrument_token: u32,
     pub live_orders_enabled: bool,
     pub market_protection: i32,
+    /// Largest order and position in lots this account may hold for the contract.
+    /// Default 1; raising it is a reviewed setting (1..=10).
+    #[serde(default = "one_lot")]
+    pub max_lots: u32,
     #[serde(default)]
     pub sandbox_webhooks: SandboxWebhooks,
 }
+fn one_lot() -> u32 {
+    1
+}
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        ensure!((1..=10).contains(&self.max_lots), "max_lots must be 1..10");
         ensure!(
             self.market_protection == -1,
             "Reviewed production policy requires automatic market protection (-1)"
@@ -145,7 +153,8 @@ impl ExecutionClientFactory for Factory {
             c.settings.instrument_token,
             c.instrument_id.clone(),
             c.symbol.clone(),
-        ))));
+        )
+        .with_max_lots(c.settings.max_lots))));
         client.cache = Some(cache);
         client.stop_signal = Some(c.stop_signal.clone());
         client.production = true;
@@ -163,6 +172,7 @@ mod tests {
             instrument_token: 144870151,
             live_orders_enabled: false,
             market_protection: -1,
+            max_lots: 1,
             sandbox_webhooks: SandboxWebhooks::default(),
         };
         assert!(s.validate().is_err());

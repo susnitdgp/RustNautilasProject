@@ -6,76 +6,19 @@
 //! model: no new entries from `entries_until`, square-off at the first bar close at/after
 //! `square_off` (or the day's last bar), adverse slippage on every fill and an all-in
 //! round-trip cost per lot.
-use super::backtest_report;
-use anyhow::{Context, Result, ensure};
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, NaiveTime};
+use super::{
+    backtest_report,
+    sniper_config::{STRATEGY, SniperConfig},
+};
+use anyhow::{Result, ensure};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate};
 use kite_adapter::http::historical::{Candle, Interval, Reader};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sniper::{Bar, Engine, Event};
 use std::{collections::BTreeMap, fmt::Write as _, path::PathBuf};
 
-pub const STRATEGY: &str = "sniper";
 /// Calendar days fetched before FROM for warm-up (EMA trend × 3, ATR mean, MACD).
 const WARMUP_DAYS: i64 = 4;
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct SniperConfig {
-    pub strategy: String,
-    pub symbol: String,
-    pub instrument_token: u32,
-    /// Candle minutes: 3, 5, 10, 15 or 30 (fetched natively from Kite).
-    pub bar_minutes: u32,
-    pub lots: u32,
-    pub point_value: f64,
-    pub round_trip_cost_points: f64,
-    pub slippage_points_per_side: f64,
-    pub entries_until: NaiveTime,
-    pub square_off: NaiveTime,
-    /// IST windows [from, to) with no new entries (by signal-bar close), e.g. US data.
-    #[serde(default)]
-    pub entry_blackouts: Vec<Blackout>,
-    #[serde(default)]
-    pub params: sniper::Params,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct Blackout {
-    pub from: NaiveTime,
-    pub to: NaiveTime,
-}
-
-impl SniperConfig {
-    pub fn load(path: &str) -> Result<Self> {
-        let raw = std::fs::read(path).with_context(|| format!("Cannot read {path}"))?;
-        let c: Self = serde_json::from_slice(&raw).with_context(|| format!("Invalid sniper config {path}"))?;
-        c.validate()?;
-        Ok(c)
-    }
-    pub fn validate(&self) -> Result<()> {
-        ensure!(self.strategy == STRATEGY, "strategy must be \"{STRATEGY}\"");
-        ensure!(self.instrument_token > 0, "instrument_token required");
-        ensure!([3, 5, 10, 15, 30].contains(&self.bar_minutes), "bar_minutes must be 3, 5, 10, 15 or 30");
-        ensure!(self.params.timeframe_minutes == self.bar_minutes, "params.timeframe_minutes must equal bar_minutes");
-        ensure!((1..=100).contains(&self.lots), "lots must be 1..100");
-        ensure!(self.point_value > 0.0, "point_value must be positive");
-        ensure!(self.round_trip_cost_points >= 0.0 && self.slippage_points_per_side >= 0.0, "costs must be >= 0");
-        ensure!(self.entries_until <= self.square_off, "entries_until must not be after square_off");
-        ensure!(self.entry_blackouts.iter().all(|w| w.from < w.to), "entry_blackouts need from < to");
-        self.params.validate().map_err(anyhow::Error::msg)
-    }
-    fn interval(&self) -> Interval {
-        use kite_adapter::http::historical::KiteInterval as K;
-        match self.bar_minutes {
-            3 => K::ThreeMinute.native(),
-            10 => K::TenMinute.native(),
-            15 => K::FifteenMinute.native(),
-            30 => K::ThirtyMinute.native(),
-            _ => K::FiveMinute.native(),
-        }
-    }
-}
 
 fn ist(ts: i64) -> DateTime<FixedOffset> {
     DateTime::from_timestamp(ts, 0).expect("timestamp").with_timezone(&FixedOffset::east_opt(19_800).expect("IST"))
@@ -92,15 +35,21 @@ pub struct Row {
     pub exit_time: String,
     pub grade: &'static str,
     pub score: f64,
+    pub lots: u32,
     pub model_entry: f64,
     pub stop: f64,
     pub tp1: f64,
     pub tp3: f64,
+    /// Each executed tranche: "lots@price" (TP1, TP2, final).
+    pub fills: String,
     pub exit_reason: &'static str,
     pub model_exit: f64,
     pub model_r: f64,
     pub exec_entry: f64,
-    pub exec_exit: f64,
+    /// Sum over lots of executed points, after slippage, before costs.
+    pub gross_lot_points: f64,
+    pub orders: u32,
+    pub costs_rupees: f64,
     pub net_points: f64,
     pub net_rupees: f64,
 }
@@ -156,20 +105,36 @@ struct Open {
     tp3: f64,
     grade: &'static str,
     score: f64,
+    lots_open: u32,
+    gross_lot_points: f64,
+    orders: u32,
+    fills: Vec<String>,
 }
 
-/// Replays bars (oldest first, `seconds` long). Bars before `from` only warm the model.
+/// Lots to close for a partial of `fraction` of the original size (exact for whole-lot configs).
+fn tranche(c: &SniperConfig, fraction: f64, open: u32) -> u32 {
+    ((fraction * c.lots as f64).round() as u32).min(open)
+}
+
+/// Replays bars (oldest first). Bars before `from` only warm the model.
 pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Engine) {
-    let mut engine = Engine::new(c.params.clone());
+    let mut engine = Engine::new(c.engine_params());
     let step = c.bar_minutes as i64 * 60;
     let slip = c.slippage_points_per_side;
     let mut open: Option<Open> = None;
     let mut rows = Vec::new();
+    let fill = |o: &mut Open, px: f64, lots: u32| {
+        let d = o.dir as f64;
+        let exec = px - d * slip;
+        o.gross_lot_points += lots as f64 * d * (exec - (o.entry + d * slip));
+        o.lots_open -= lots;
+        o.orders += 1;
+        o.fills.push(format!("{lots}@{exec}"));
+    };
     let close_row = |o: Open, ts: i64, px: f64, reason: &'static str, model_r: f64, rows: &mut Vec<Row>| {
         let d = o.dir as f64;
-        let exec_entry = o.entry + d * slip;
-        let exec_exit = px - d * slip;
-        let net = d * (exec_exit - exec_entry) - c.round_trip_cost_points;
+        let costs = c.round_trip_cost_points * c.point_value * c.lots as f64 + c.brokerage_per_order * o.orders as f64;
+        let net_rupees = o.gross_lot_points * c.point_value - costs;
         rows.push(Row {
             date: ist(o.entry_ts).date_naive().to_string(),
             side: if o.dir == 1 { "LONG" } else { "SHORT" },
@@ -177,47 +142,68 @@ pub fn replay(c: &SniperConfig, bars: &[Bar], from: NaiveDate) -> (Vec<Row>, Eng
             exit_time: ist(ts).format("%H:%M").to_string(),
             grade: o.grade,
             score: o.score,
+            lots: c.lots,
             model_entry: o.entry,
             stop: o.stop,
             tp1: o.tp1,
             tp3: o.tp3,
+            fills: o.fills.join(" "),
             exit_reason: reason,
             model_exit: px,
             model_r: round2(model_r),
-            exec_entry,
-            exec_exit,
-            net_points: round2(net),
-            net_rupees: round2(net * c.point_value * c.lots as f64),
+            exec_entry: o.entry + d * slip,
+            gross_lot_points: round2(o.gross_lot_points),
+            orders: o.orders,
+            costs_rupees: round2(costs),
+            net_points: round2(net_rupees / c.point_value),
+            net_rupees: round2(net_rupees),
         });
     };
-    for (i, b) in bars.iter().enumerate() {
-        let close_ts = b.start + step;
-        let close_t = ist(close_ts).time();
-        let trading = ist(b.start).date_naive() >= from;
-        let last_of_day = bars.get(i + 1).is_none_or(|n| ist(n.start).date_naive() != ist(b.start).date_naive());
-        let blacked_out = c.entry_blackouts.iter().any(|w| close_t >= w.from && close_t < w.to);
-        let allowed = trading
-            && close_t < c.entries_until
-            && close_t >= NaiveTime::from_hms_opt(9, 0, 0).expect("t")
-            && !last_of_day
-            && !blacked_out;
-        for ev in engine.on_bar(*b, allowed) {
-            match ev {
-                Event::Exit { price, reason, gross_r, .. } => {
-                    if let Some(o) = open.take() {
-                        close_row(o, close_ts, price, reason, gross_r, &mut rows);
-                    }
-                }
-                Event::Entry { dir, price, stop, tp1, tp3, grade, score, .. } => {
-                    open = Some(Open { dir, entry_ts: close_ts, entry: price, stop, tp1, tp3, grade, score });
+    let handle = |ev: Event, close_ts: i64, open: &mut Option<Open>, rows: &mut Vec<Row>| match ev {
+        Event::Partial { price, fraction, .. } => {
+            if let Some(o) = open.as_mut() {
+                let lots = tranche(c, fraction, o.lots_open);
+                if lots > 0 && lots < o.lots_open {
+                    fill(o, price, lots);
                 }
             }
         }
-        if (close_t >= c.square_off || last_of_day)
-            && let Some(Event::Exit { price, reason, gross_r, .. }) = engine.force_close(b.close, "Square-off")
-            && let Some(o) = open.take()
+        Event::Exit { price, reason, gross_r, .. } => {
+            if let Some(mut o) = open.take() {
+                let lots = o.lots_open;
+                fill(&mut o, price, lots);
+                close_row(o, close_ts, price, reason, gross_r, rows);
+            }
+        }
+        Event::Entry { dir, price, stop, tp1, tp3, grade, score, .. } => {
+            *open = Some(Open {
+                dir,
+                entry_ts: close_ts,
+                entry: price,
+                stop,
+                tp1,
+                tp3,
+                grade,
+                score,
+                lots_open: c.lots,
+                gross_lot_points: 0.0,
+                orders: 1,
+                fills: Vec::new(),
+            });
+        }
+    };
+    for (i, b) in bars.iter().enumerate() {
+        let close_ts = b.start + step;
+        let trading = ist(b.start).date_naive() >= from;
+        let last_of_day = bars.get(i + 1).is_none_or(|n| ist(n.start).date_naive() != ist(b.start).date_naive());
+        let allowed = trading && !last_of_day && c.entries_allowed_at(close_ts);
+        for ev in engine.on_bar(*b, allowed) {
+            handle(ev, close_ts, &mut open, &mut rows);
+        }
+        if (c.square_off_due(close_ts) || last_of_day)
+            && let Some(ev) = engine.force_close(b.close, "Square-off")
         {
-            close_row(o, close_ts, price, reason, gross_r, &mut rows);
+            handle(ev, close_ts, &mut open, &mut rows);
         }
     }
     (rows, engine)
@@ -338,13 +324,13 @@ pub fn run(config_path: &str, from: &str, to: &str) -> Result<()> {
         .join(chrono::Local::now().format("%Y%m%d-%H%M%S").to_string());
     std::fs::create_dir_all(&dir)?;
     backtest_report::json(&dir, "summary.json", &report)?;
-    let mut csv = String::from("date,side,entry_time,exit_time,grade,score,model_entry,stop,tp1,tp3,exit_reason,model_exit,model_r,exec_entry,exec_exit,net_points,net_rupees\n");
+    let mut csv = String::from("date,side,entry_time,exit_time,grade,score,lots,model_entry,stop,tp1,tp3,fills,exit_reason,model_exit,model_r,exec_entry,gross_lot_points,orders,costs_rupees,net_points,net_rupees\n");
     for r in &rows {
         let _ = writeln!(
             csv,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            r.date, r.side, r.entry_time, r.exit_time, r.grade, r.score, r.model_entry, r.stop, r.tp1, r.tp3, r.exit_reason,
-            r.model_exit, r.model_r, r.exec_entry, r.exec_exit, r.net_points, r.net_rupees
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            r.date, r.side, r.entry_time, r.exit_time, r.grade, r.score, r.lots, r.model_entry, r.stop, r.tp1, r.tp3, r.fills,
+            r.exit_reason, r.model_exit, r.model_r, r.exec_entry, r.gross_lot_points, r.orders, r.costs_rupees, r.net_points, r.net_rupees
         );
     }
     std::fs::write(dir.join("trades.csv"), csv)?;
@@ -352,10 +338,11 @@ pub fn run(config_path: &str, from: &str, to: &str) -> Result<()> {
     let mut text = format!(
         "PRECISION SNIPER {} {}..{} ({} days)  {}\n\
          trades {}  win {:.1}%  net ₹{:.0} ({:.1} pts)  PF {:.2}  avg win ₹{:.0} / loss ₹{:.0}  max DD ₹{:.0}  model {:.2} R (no costs)\n\
-         costs: {} pts round trip + {} pt slippage per fill, {} lot(s) × {} ₹/pt; entries until {}, square-off {}",
+         {} lot(s) (TP1 {} / TP2 {}) × {} ₹/pt; costs {} pts/lot round trip + ₹{} per order + {} pt slippage per fill; entries until {}, square-off {}, blackouts {:?}",
         report.symbol, from, to, report.trading_days, report.preset,
         o.trades, o.win_rate, o.net_rupees, o.net_points, o.profit_factor, o.avg_win_rupees, o.avg_loss_rupees, o.max_drawdown_rupees, o.model_r,
-        c.round_trip_cost_points, c.slippage_points_per_side, c.lots, c.point_value, c.entries_until, c.square_off,
+        c.lots, c.tp1_lots, c.tp2_lots, c.point_value, c.round_trip_cost_points, c.brokerage_per_order, c.slippage_points_per_side,
+        c.entries_until, c.square_off, c.entry_blackouts.iter().map(|w| format!("{}-{}", w.from, w.to)).collect::<Vec<_>>(),
     );
     text.push_str(&table("Daily", &report.daily));
     text.push_str(&table("By side", &report.by_side));
@@ -371,47 +358,57 @@ pub fn run(config_path: &str, from: &str, to: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn config() -> SniperConfig {
+    fn shipped() -> SniperConfig {
         serde_json::from_str(include_str!("../../../../config/sniper-crudeoilm.json")).unwrap()
     }
-    #[test]
-    fn shipped_config_is_valid() {
-        let c = config();
-        c.validate().unwrap();
-        assert_eq!(c.params.resolve().preset, sniper::params::Preset::Scalping);
-        let mut bad = c.clone();
-        bad.params.timeframe_minutes = 15;
-        assert!(bad.validate().is_err(), "chart timeframe must match bar_minutes");
-    }
-    /// Synthetic 5m days 09:00-23:30 IST: every trade pays slippage + costs, no position
-    /// survives the square-off and no entry is taken at/after `entries_until`.
-    #[test]
-    fn replay_charges_costs_and_squares_off_daily() {
-        let c = config();
+    /// 12 synthetic days of 3m bars, 09:00-23:30 IST.
+    fn bars() -> Vec<Bar> {
         let day0 = chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
-        let mut bars = Vec::new();
+        let mut out = Vec::new();
         let mut px = 8000.0_f64;
         let mut n = 0_i64;
         for day in 0..12 {
             let open_ts = (day0 + Duration::days(day)).and_hms_opt(3, 30, 0).unwrap().and_utc().timestamp();
-            for k in 0..174_i64 {
+            for k in 0..290_i64 {
                 let drift = (n as f64 / 23.0).sin() * 7.0 + (n as f64 / 7.0).cos() * 3.0;
                 let o = px;
                 let cl = (px + drift).round();
-                bars.push(Bar { start: open_ts + k * 300, open: o, high: o.max(cl) + 3.0, low: o.min(cl) - 3.0, close: cl, volume: 100.0 + ((n * 31) % 80) as f64 });
+                out.push(Bar { start: open_ts + k * 180, open: o, high: o.max(cl) + 3.0, low: o.min(cl) - 3.0, close: cl, volume: 100.0 + ((n * 31) % 80) as f64 });
                 px = cl;
                 n += 1;
             }
         }
-        let (rows, _) = replay(&c, &bars, day0);
+        out
+    }
+    fn check(c: &SniperConfig, rows: &[Row]) {
         assert!(!rows.is_empty(), "synthetic market should trade");
-        for r in &rows {
-            let d = if r.side == "LONG" { 1.0 } else { -1.0 };
-            assert_eq!(r.exec_entry, r.model_entry + d * c.slippage_points_per_side);
-            assert_eq!(r.exec_exit, r.model_exit - d * c.slippage_points_per_side);
-            assert!((r.net_points - (d * (r.exec_exit - r.exec_entry) - c.round_trip_cost_points)).abs() < 0.011);
+        for r in rows {
+            let costs = c.round_trip_cost_points * c.point_value * c.lots as f64 + c.brokerage_per_order * r.orders as f64;
+            assert!((r.net_rupees - (r.gross_lot_points * c.point_value - costs)).abs() < 0.02);
+            let lots: u32 = r.fills.split(' ').map(|f| f.split('@').next().unwrap().parse::<u32>().unwrap()).sum();
+            assert_eq!(lots, c.lots, "every lot is closed: {}", r.fills);
             assert!(r.entry_time.as_str() < "23:00", "entry at {}", r.entry_time);
+            assert!(!(r.entry_time.as_str() >= "17:30" && r.entry_time.as_str() < "19:30"), "entry in blackout {}", r.entry_time);
             assert!(r.exit_time.as_str() <= "23:30" && r.exit_time.as_str() >= r.entry_time.as_str(), "overnight trade {:?}", r);
         }
+    }
+    #[test]
+    fn three_lots_scale_out_and_every_lot_pays_costs() {
+        let c = shipped();
+        let (rows, _) = replay(&c, &bars(), chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+        check(&c, &rows);
+        assert!(rows.iter().any(|r| r.orders > 2), "some trade should scale out at TP1");
+        assert!(rows.iter().all(|r| (2..=4).contains(&r.orders)));
+    }
+    #[test]
+    fn whole_position_variant_uses_two_orders() {
+        let mut c = shipped();
+        c.lots = 1;
+        c.tp1_lots = 0;
+        c.tp2_lots = 0;
+        c.validate().unwrap();
+        let (rows, _) = replay(&c, &bars(), chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap());
+        check(&c, &rows);
+        assert!(rows.iter().all(|r| r.orders == 2));
     }
 }

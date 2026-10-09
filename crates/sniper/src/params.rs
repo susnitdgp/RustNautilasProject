@@ -71,6 +71,10 @@ pub struct Params {
     pub tp1_r: f64,
     pub tp2_r: f64,
     pub tp3_r: f64,
+    /// Fraction of the ORIGINAL position closed at TP1 / TP2 (script: "Close original
+    /// position at TP1/TP2 (%)" / 100). 0 = whole-position model. Sum must be < 1.
+    pub tp1_close_fraction: f64,
+    pub tp2_close_fraction: f64,
     pub step_stop: bool,
     pub full_tp3: bool,
     pub structure: bool,
@@ -105,6 +109,8 @@ impl Default for Params {
             tp1_r: 1.0,
             tp2_r: 2.0,
             tp3_r: 3.0,
+            tp1_close_fraction: 0.0,
+            tp2_close_fraction: 0.0,
             step_stop: true,
             full_tp3: true,
             structure: true,
@@ -160,6 +166,10 @@ impl Params {
         }
         if !(self.tp1_r < self.tp2_r && self.tp2_r < self.tp3_r) {
             return Err("TP multipliers must satisfy TP1 < TP2 < TP3".into());
+        }
+        let (f1, f2) = (self.tp1_close_fraction, self.tp2_close_fraction);
+        if !(f1 >= 0.0 && f2 >= 0.0 && f1 + f2 < 1.0) {
+            return Err("tp1/tp2 close fractions must be >= 0 and sum to < 1".into());
         }
         if !(self.tick_size.is_finite() && self.tick_size > 0.0) {
             return Err("tick_size must be positive".into());

@@ -59,6 +59,7 @@ fn trades_alternate_and_respect_their_geometry() {
                     open = Some((dir, price, stop, tp3));
                     entries += 1;
                 }
+                Event::Partial { .. } => panic!("no partials with default fractions"),
                 Event::Exit { dir, price, reason, gross_r, .. } => {
                     let (od, entry, stop, tp3) = open.take().expect("exit without entry");
                     assert_eq!(dir, od);
@@ -96,10 +97,54 @@ fn stop_is_checked_before_targets_and_force_close_exits() {
         hit2: false,
         hit3: false,
         ambiguous: false,
+        remaining: 1.0,
+        gross_r: 0.0,
     });
     // bar_index 0 is the entry bar; feed a dummy first bar, then a bar touching both
     let _ = e.on_bar(Bar { start: 0, open: 100.0, high: 101.0, low: 99.0, close: 100.0, volume: 10.0 }, true);
     let ev = e.on_bar(Bar { start: 300, open: 100.0, high: 116.0, low: 94.0, close: 110.0, volume: 10.0 }, true);
-    assert_eq!(ev, vec![Event::Exit { dir: 1, price: 95.0, reason: "SL", gross_r: -1.0, ambiguous: true }]);
+    assert_eq!(ev, vec![Event::Exit { dir: 1, price: 95.0, reason: "SL", fraction: 1.0, gross_r: -1.0, ambiguous: true }]);
     assert!(e.force_close(100.0, "EOD").is_none());
+}
+
+fn open_long(e: &mut Engine) {
+    e.trade = Some(crate::Trade {
+        dir: 1, entry_bar: 0, entry: 100.0, initial_stop: 95.0, stop: 95.0, risk: 5.0,
+        tp1: 105.0, tp2: 110.0, tp3: 115.0, hit1: false, hit2: false, hit3: false,
+        ambiguous: false, remaining: 1.0, gross_r: 0.0,
+    });
+}
+
+#[test]
+fn thirds_close_at_each_target_and_live_marks_match_the_bar_model() {
+    let third = 1.0 / 3.0;
+    let p = Params { tp1_close_fraction: third, tp2_close_fraction: third, ..Params::default() };
+    // bar model: one bar touching TP1 and TP2 books two thirds, stop steps to TP1
+    let mut e = Engine::new(p.clone());
+    open_long(&mut e);
+    let _ = e.on_bar(Bar { start: 0, open: 100.0, high: 101.0, low: 99.0, close: 100.0, volume: 10.0 }, true);
+    let ev = e.on_bar(Bar { start: 300, open: 100.0, high: 111.0, low: 99.0, close: 109.0, volume: 10.0 }, true);
+    assert_eq!(ev.len(), 2);
+    assert!(matches!(ev[0], Event::Partial { level: 1, price: 105.0, .. }));
+    assert!(matches!(ev[1], Event::Partial { level: 2, price: 110.0, .. }));
+    assert_eq!(e.trade.as_ref().unwrap().stop, 105.0, "step stop to TP1 for the next bar");
+    // stopped at the stepped stop: last third, whole trade R = (1 + 2 + 1) / 3
+    let ev = e.on_bar(Bar { start: 600, open: 108.0, high: 108.0, low: 104.0, close: 104.0, volume: 10.0 }, true);
+    match &ev[..] {
+        [Event::Exit { reason: "Step stop", price, fraction, gross_r, .. }] => {
+            assert_eq!(*price, 105.0);
+            assert!((fraction - third).abs() < 1e-9);
+            assert!((gross_r - 4.0 / 3.0).abs() < 1e-9);
+        }
+        other => panic!("{other:?}"),
+    }
+    // live: ticks mark TP1 then TP3 inside a bar; the bar close does not book them again
+    let mut l = Engine::new(p);
+    open_long(&mut l);
+    let _ = l.on_bar(Bar { start: 0, open: 100.0, high: 101.0, low: 99.0, close: 100.0, volume: 10.0 }, true);
+    assert!(matches!(&l.mark_target(1)[..], [Event::Partial { level: 1, .. }]));
+    assert!(l.mark_target(1).is_empty(), "a target is booked once");
+    let ev = l.mark_target(3);
+    assert!(matches!(&ev[..], [Event::Partial { level: 2, .. }, Event::Exit { reason: "TP3", .. }]));
+    assert!(l.trade.is_none());
 }

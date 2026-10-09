@@ -32,7 +32,12 @@ pub struct Bar {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum Event {
     Entry { dir: i32, price: f64, stop: f64, tp1: f64, tp2: f64, tp3: f64, score: f64, score_max: f64, grade: &'static str, origin: &'static str },
-    Exit { dir: i32, price: f64, reason: &'static str, gross_r: f64, ambiguous: bool },
+    /// Part of the position closed at TP1 (`level` 1) or TP2 (`level` 2); `fraction` of
+    /// the original size.
+    Partial { dir: i32, level: u8, price: f64, fraction: f64 },
+    /// The rest of the position closed; `fraction` = what was still open, `gross_r` = the
+    /// whole trade's gross R including earlier partials.
+    Exit { dir: i32, price: f64, reason: &'static str, fraction: f64, gross_r: f64, ambiguous: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +55,47 @@ pub struct Trade {
     pub hit2: bool,
     pub hit3: bool,
     pub ambiguous: bool,
+    /// Open fraction of the original position.
+    pub remaining: f64,
+    /// Realised gross R so far (partials).
+    pub gross_r: f64,
+}
+
+impl Trade {
+    fn take(&mut self, px: f64, fraction: f64) -> f64 {
+        let f = fraction.clamp(0.0, self.remaining);
+        self.gross_r += f * self.dir as f64 * (px - self.entry) / self.risk;
+        self.remaining = (self.remaining - f).max(0.0);
+        f
+    }
+    fn finish(mut self, px: f64, reason: &'static str) -> Event {
+        let fraction = self.remaining;
+        self.take(px, fraction);
+        Event::Exit { dir: self.dir, price: px, reason, fraction, gross_r: self.gross_r, ambiguous: self.ambiguous }
+    }
+    /// Target `level` touched: partial (TP1/TP2) or, for TP3 with `full_tp3`, the exit.
+    fn hit(&mut self, level: u8, p: &Params) -> Option<Event> {
+        let (price, fraction) = match level {
+            1 if !self.hit1 => {
+                self.hit1 = true;
+                (self.tp1, p.tp1_close_fraction)
+            }
+            2 if !self.hit2 => {
+                self.hit2 = true;
+                (self.tp2, p.tp2_close_fraction)
+            }
+            3 if !self.hit3 => {
+                self.hit3 = true;
+                return None;
+            }
+            _ => return None,
+        };
+        if fraction <= 0.0 {
+            return None;
+        }
+        let f = self.take(price, fraction);
+        (f > 0.0).then_some(Event::Partial { dir: self.dir, level, price, fraction: f })
+    }
 }
 
 struct Plan {
@@ -79,8 +125,29 @@ pub fn reject_reason(code: u8) -> &'static str {
     }
 }
 
+/// Model state after the latest bar (dashboard / logs).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Status {
+    pub ready: bool,
+    /// 1 fast > slow and close > trend EMA, -1 the opposite, else 0.
+    pub trend_dir: i32,
+    pub ema_fast: f64,
+    pub ema_slow: f64,
+    pub ema_trend: f64,
+    pub adx: f64,
+    pub rsi: f64,
+    pub bull_score: f64,
+    pub bear_score: f64,
+    pub score_max: f64,
+    pub high_vol: bool,
+    /// "Range", "Trend" or "Mixed" (script regime).
+    pub regime: &'static str,
+}
+
+#[derive(Debug)]
 pub struct Engine {
     p: Params,
+    status: Status,
     r: Resolved,
     bar_index: u64,
     ema_fast: Smoothed,
@@ -113,6 +180,7 @@ impl Engine {
     pub fn new(p: Params) -> Self {
         let r = p.resolve();
         Self {
+            status: Status::default(),
             bar_index: 0,
             ema_fast: Smoothed::ema(r.fast),
             ema_slow: Smoothed::ema(r.slow),
@@ -141,10 +209,40 @@ impl Engine {
         self.r
     }
 
-    /// Closes the open model trade at `price` (e.g. a daily square-off the script does not have).
+    /// Closes the open model trade at `price` (live stop / TP3 on a tick, or a daily
+    /// square-off the script does not have).
     pub fn force_close(&mut self, price: f64, reason: &'static str) -> Option<Event> {
-        let t = self.trade.take()?;
-        Some(Event::Exit { dir: t.dir, price, reason, gross_r: t.dir as f64 * (price - t.entry) / t.risk, ambiguous: t.ambiguous })
+        Some(self.trade.take()?.finish(price, reason))
+    }
+
+    /// Live: a tick reached target `level` (1..=3) before the bar closed. Applies the same
+    /// partial the bar-close model would (TP3 closes the rest when `full_tp3`), so the
+    /// model and the executed position never disagree. Step-stop moves still happen at
+    /// the bar close, exactly as in the script.
+    pub fn mark_target(&mut self, level: u8) -> Vec<Event> {
+        let p = self.p.clone();
+        let Some(t) = self.trade.as_mut() else { return Vec::new() };
+        let mut out = Vec::new();
+        for l in 1..=level {
+            if let Some(ev) = t.hit(l, &p) {
+                out.push(ev);
+            }
+        }
+        if level >= 3 && p.full_tp3 {
+            let tp3 = t.tp3;
+            if let Some(ev) = self.force_close(tp3, "TP3") {
+                out.push(ev);
+            }
+        }
+        out
+    }
+
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
+
+    pub fn params(&self) -> &Params {
+        &self.p
     }
 
     /// Feed one confirmed bar. `entries_allowed` = false acts like the script's date
@@ -210,7 +308,7 @@ impl Engine {
         let (di_plus, di_minus, adx) = dmi.unwrap_or((0.0, 0.0, 0.0));
         let trending = adx >= ADX_TREND;
         let trend_dir = if fast > slow && b.close > trend_ema { 1 } else if fast < slow && b.close < trend_ema { -1 } else { 0 };
-        let _regime = if !trending { 0 } else if trend_dir != 0 { 1 } else { 2 };
+        let regime = if !trending { "Range" } else if trend_dir != 0 { "Trend" } else { "Mixed" };
         let rsi_v = rsi.unwrap_or(50.0);
         let h = hist.unwrap_or(0.0);
         let ph = prev_hist.unwrap_or(0.0);
@@ -222,6 +320,20 @@ impl Engine {
             + b2f(trending && di_plus > di_minus) + b2f(vol_above) + b2f(vwap_on && b.close > vw);
         let bear_score = b2f(b.close < trend_ema) + b2f(rsi_v < 50.0 && rsi_v > RSI_LOWER) + b2f(h < 0.0) + b2f(h < ph)
             + b2f(trending && di_minus > di_plus) + b2f(vol_above) + b2f(vwap_on && b.close < vw);
+        self.status = Status {
+            ready,
+            trend_dir,
+            ema_fast: fast,
+            ema_slow: slow,
+            ema_trend: trend_ema,
+            adx,
+            rsi: rsi_v,
+            bull_score,
+            bear_score,
+            score_max,
+            high_vol,
+            regime,
+        };
         let required = p.required_ratio();
         let swing_low = self.window.iter().map(|w| w.1).fold(f64::MAX, f64::min);
         let swing_high = self.window.iter().map(|w| w.0).fold(f64::MIN, f64::max);
@@ -331,13 +443,13 @@ impl Engine {
                 t.ambiguous |= t1 || t2 || t3;
                 exit = Some((fill, if old_stop == t.initial_stop { "SL" } else { "Step stop" }));
             } else {
-                t.hit1 |= t1;
-                t.hit2 |= t2;
-                if t3 {
-                    t.hit3 = true;
-                    if p.full_tp3 {
-                        exit = Some((t.tp3, "TP3"));
+                for (touched, level) in [(t1, 1u8), (t2, 2), (t3, 3)] {
+                    if touched && let Some(ev) = t.hit(level, &p) {
+                        events.push(ev);
                     }
+                }
+                if t3 && p.full_tp3 {
+                    exit = Some((t.tp3, "TP3"));
                 }
                 if exit.is_none() {
                     if signal == -t.dir {
@@ -351,8 +463,8 @@ impl Engine {
                 }
             }
             if let Some((px, reason)) = exit {
-                events.push(Event::Exit { dir: t.dir, price: px, reason, gross_r: d * (px - t.entry) / t.risk, ambiguous: t.ambiguous });
-                self.trade = None;
+                let t = self.trade.take().expect("open trade");
+                events.push(t.finish(px, reason));
             }
         }
         // ── new entry at the bar close ──
@@ -375,6 +487,8 @@ impl Engine {
                 hit2: false,
                 hit3: false,
                 ambiguous: false,
+                remaining: 1.0,
+                gross_r: 0.0,
             });
             events.push(Event::Entry {
                 dir: signal,

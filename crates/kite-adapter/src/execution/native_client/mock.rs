@@ -38,6 +38,8 @@ pub struct MockConfig {
     pub market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
     /// Redis key space for the ledger and lease (`KeySpace::Legacy` for old tooling).
     pub keys: super::keys::KeySpace,
+    /// Contract cap for the paper dispatcher (same meaning as production `max_lots`).
+    pub max_lots: u32,
 }
 impl ClientConfig for MockConfig {
     fn as_any(&self) -> &dyn Any {
@@ -93,7 +95,8 @@ impl ExecutionClientFactory for MockFactory {
             cfg.instrument_token,
             cfg.instrument_id.clone(),
             cfg.symbol.clone(),
-        ))));
+        )
+        .with_max_lots(cfg.max_lots))));
         client.cache = Some(cache);
         client.stop_signal = Some(cfg.stop_signal.clone());
         Ok(Box::new(client))
