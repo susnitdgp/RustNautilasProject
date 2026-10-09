@@ -24,7 +24,7 @@
         "strategy_id": "crudeoilm-vce",
         "contract_month": "2026-10",
         "expected_expiry": "2026-10-19",
-        "lot_size": 10,
+        "lot_size": 1,
         "next_contract": null
       }
     },
