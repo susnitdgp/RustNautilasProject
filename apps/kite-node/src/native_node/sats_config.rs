@@ -47,6 +47,12 @@ pub struct SatsConfig {
     pub lots: u32,
     /// Rupees per 1.0 price move for one lot (CRUDEOILM 10).
     pub point_value: f64,
+    /// Optional IST window for NEW entries, by signal-bar close time:
+    /// {"from": "20:00:00", "to": "23:00:00"} allows entries on bars closing at
+    /// or after `from` and before `to`. Exits are never blocked. Omit or null
+    /// to allow entries all session.
+    #[serde(default)]
+    pub entry_window: Option<EntryWindow>,
     /// Live-runner settings (calendar, daily square-off, product).
     pub live: LiveSettings,
     pub execution: Execution,
@@ -62,6 +68,13 @@ pub struct LiveSettings {
     pub square_off: chrono::NaiveTime,
     /// Broker product; the production client only accepts MIS.
     pub product: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EntryWindow {
+    pub from: chrono::NaiveTime,
+    pub to: chrono::NaiveTime,
 }
 
 impl LiveSettings {
@@ -195,6 +208,10 @@ impl SatsConfig {
                 "trail.breakeven_offset_points must be zero or positive"
             );
         }
+        if let Some(w) = self.entry_window {
+            ensure!(w.from < w.to, "entry_window.from must be before entry_window.to");
+            ensure!(w.to <= self.live.square_off, "entry_window.to must not be after live.square_off");
+        }
         ensure!(self.live.product == "MIS", "live.product must be MIS (intraday)");
         ensure!(
             chrono::Timelike::second(&self.live.square_off) == 0
@@ -216,6 +233,15 @@ impl SatsConfig {
             )
         })?;
         Interval::built_from(self.bar_minutes, *source)
+    }
+
+    /// Whether a signal on the bar closing at `close_time_ns` may open a trade.
+    pub fn entries_allowed(&self, close_time_ns: i64) -> bool {
+        let Some(w) = self.entry_window else { return true };
+        let t = chrono::DateTime::from_timestamp_nanos(close_time_ns)
+            .with_timezone(&chrono::FixedOffset::east_opt(19_800).expect("IST"))
+            .time();
+        w.from <= t && t < w.to
     }
 
     pub fn bar_ns(&self) -> i64 {
@@ -252,7 +278,9 @@ impl SatsConfig {
     pub fn warm_engine(&self, candles: &[Candle]) -> Result<Engine> {
         let mut engine = self.engine()?;
         for candle in candles {
-            engine.on_bar(&self.bar(candle)?);
+            let bar = self.bar(candle)?;
+            engine.set_entries_enabled(self.entries_allowed(bar.close_time_ns));
+            engine.on_bar(&bar);
         }
         Ok(engine)
     }
@@ -261,6 +289,7 @@ impl SatsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     const SHIPPED: &str = include_str!("../../../../config/sats-crudeoilm.json");
 
@@ -286,6 +315,32 @@ mod tests {
             round_trip_cost_points: 0.0,
             slippage_points_per_side: 0.0,
         }
+    }
+
+    #[test]
+    fn entry_window_gates_by_ist_bar_close() {
+        let mut c: SatsConfig = serde_json::from_str(SHIPPED).unwrap();
+        c.entry_window = None;
+        let ist = |h: u32, m: u32| {
+            chrono::FixedOffset::east_opt(19_800)
+                .unwrap()
+                .with_ymd_and_hms(2026, 10, 9, h, m, 0)
+                .unwrap()
+                .timestamp_nanos_opt()
+                .unwrap()
+        };
+        assert!(c.entries_allowed(ist(10, 0)));
+        c.entry_window = Some(EntryWindow {
+            from: chrono::NaiveTime::from_hms_opt(20, 0, 0).unwrap(),
+            to: chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+        });
+        c.validate().unwrap();
+        assert!(!c.entries_allowed(ist(19, 55)));
+        assert!(c.entries_allowed(ist(20, 0)));
+        assert!(c.entries_allowed(ist(22, 55)));
+        assert!(!c.entries_allowed(ist(23, 0)));
+        c.entry_window = Some(EntryWindow { from: c.entry_window.unwrap().to, to: c.entry_window.unwrap().from });
+        assert!(c.validate().is_err());
     }
 
     #[test]

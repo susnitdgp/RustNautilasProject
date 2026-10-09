@@ -74,6 +74,14 @@ pub struct Engine {
     last_pivot_low_bar: Option<i64>,
     trade: Option<TradeSnapshot>,
     status: Status,
+    /// Host-controlled entry gate (e.g. a trading-hours window). When false a
+    /// flip still closes the open trade but opens no new one. Not a Pine input.
+    #[serde(default = "entries_on")]
+    entries_enabled: bool,
+}
+
+fn entries_on() -> bool {
+    true
 }
 
 impl Engine {
@@ -117,6 +125,7 @@ impl Engine {
             last_pivot_low_bar: None,
             trade: None,
             status: Status { preset: format!("{:?}", r.preset), ..Status::default() },
+            entries_enabled: true,
             bars: 0,
             p,
             r,
@@ -135,6 +144,10 @@ impl Engine {
     }
     pub fn position(&self) -> Option<&TradeSnapshot> {
         self.trade.as_ref()
+    }
+    /// Enables or disables new entries from the next `on_bar` on (exits unaffected).
+    pub fn set_entries_enabled(&mut self, enabled: bool) {
+        self.entries_enabled = enabled;
     }
 
     /// Processes one confirmed bar; returns the bar's events in the script's
@@ -297,7 +310,9 @@ impl Engine {
                 self.trade = None;
             }
         }
-        if (raw_buy || raw_sell) && self.trade.is_none() {
+        if (raw_buy || raw_sell) && self.trade.is_none() && !self.entries_enabled {
+            self.status.last_rejected = Some("Entry skipped: outside the entry window".into());
+        } else if (raw_buy || raw_sell) && self.trade.is_none() {
             let side = if raw_buy { Side::Long } else { Side::Short };
             match atr_value {
                 Some(atr_v) => {

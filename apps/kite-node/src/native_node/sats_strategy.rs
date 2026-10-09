@@ -57,6 +57,8 @@ pub struct SatsStrategy {
     bar_ns: i64,
     lots: u32,
     execution: Execution,
+    /// The slot's strategy file (entry window etc.).
+    config: SatsConfig,
     engine: Engine,
     orders_enabled: bool,
     live: Option<Live>,
@@ -102,6 +104,7 @@ impl SatsStrategy {
             bar_ns: config.bar_ns(),
             lots: config.lots,
             execution: config.execution,
+            config: config.clone(),
             engine,
             orders_enabled,
             live: None,
@@ -491,6 +494,8 @@ impl DataActor for SatsStrategy {
             return Ok(()); // repeated or out-of-order bar; already processed
         }
         self.last_close_ns = input.close_time_ns;
+        // configured entry window (IST, by bar close); exits are never blocked
+        self.engine.set_entries_enabled(self.config.entries_allowed(input.close_time_ns));
         let Some((start_ns, cutoff_minute)) = self.live.as_ref().map(|l| {
             l.market_price.store(input.close.round() as i64, Ordering::Release);
             (l.start_ns, l.square_off_minute)

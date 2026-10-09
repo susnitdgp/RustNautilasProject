@@ -264,6 +264,7 @@ pub fn replay(
                 record(open.take().expect("open"), &mut trades);
             }
         }
+        engine.set_entries_enabled(config.entries_allowed(bar.close_time_ns));
         for ev in engine.on_bar(bar) {
             if ev.kind.is_entry() {
                 // A position that outlived SATS's trade (trail mode) is closed by

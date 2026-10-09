@@ -14,13 +14,14 @@
   "tick_size": 1.0,
   "lots": 1,
   "point_value": 10,
+  "entry_window": null,
   "live": {
     "session_calendar": "config/mcx-session-calendar.json",
     "square_off": "23:15:00",
     "product": "MIS"
   },
   "execution": {
-    "exit_mode": "single",
+    "exit_mode": "trail",
     "single_exit_at": "TP1",
     "trail": {
       "breakeven_offset_points": 0.0,
