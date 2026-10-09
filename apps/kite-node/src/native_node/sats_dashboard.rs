@@ -48,6 +48,8 @@ pub struct Board {
     pub position: f64,
     pub entry_avg: Option<f64>,
     pub sl: Option<f64>,
+    /// Trigger of the SL-M resting at the broker, if any.
+    pub exchange_stop: Option<f64>,
     pub tps: Option<[f64; 3]>,
     pub realized_points: f64,
     pub round_trips: u32,
@@ -158,7 +160,8 @@ impl Board {
         row(format!(" TP1 at      {:.2} R   exit: {}", self.next_r[0], self.exit_rule));
         row(line.clone());
         row(format!(" Position     {pos}    entry {}", px(self.entry_avg)));
-        row(format!(" Stop / TP1   {} / {}", px(self.sl), px(self.tps.map(|t| t[0]))));
+        row(format!(" Stop / TP1   {} / {}{}", px(self.sl), px(self.tps.map(|t| t[0])),
+            self.exchange_stop.map_or(String::new(), |t| format!("   (SL-M {t:.0} at Zerodha)"))));
         row(format!(" Unrealised   {}", self.unrealized_points().map_or("—".into(), money)));
         row(format!(" Realised     {}   ({} round trips, {} fills)", money(self.realized_points), self.round_trips, self.fills));
         row(line.clone());
@@ -283,7 +286,10 @@ pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono:
         Paragraph::new(vec![
             kv("Position", vec![side]),
             kv("Entry", vec![Span::raw(px(b.entry_avg))]),
-            kv("Stop", vec![Span::styled(px(b.sl), red)]),
+            kv("Stop", match b.exchange_stop {
+                Some(t) => vec![Span::styled(px(b.sl), red), Span::styled(format!("  SL-M {t:.0} at Zerodha"), green)],
+                None => vec![Span::styled(px(b.sl), red)],
+            }),
             kv("TP1", vec![Span::styled(
                 px(b.tps.map(|t| t[0])),
                 green,

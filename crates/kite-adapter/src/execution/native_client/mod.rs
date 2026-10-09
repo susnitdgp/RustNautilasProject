@@ -450,9 +450,13 @@ impl ExecutionClient for Client {
         );
         let order = OrderAny::from_events(vec![OrderEventAny::Initialized(cmd.order_init)])?;
         if self.production {
+            // Protected MARKET orders, plus a reduce-only SL-M protective stop for an
+            // open position. The dispatcher still admits one unresolved order at a
+            // time, so an exit must cancel the resting stop (confirmed) first.
             ensure!(
-                order.order_type() == OrderType::Market,
-                "Selected production strategy submits protected market orders only"
+                order.order_type() == OrderType::Market
+                    || (order.order_type() == OrderType::StopMarket && order.is_reduce_only()),
+                "Production accepts protected MARKET orders and reduce-only SL-M stops only"
             );
         }
         if let Some(dispatcher) = &self.dispatcher {

@@ -545,3 +545,40 @@ async fn persisted_stop_modification_requires_broker_observation_and_emits_updat
     );
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
+
+/// SATS `exchange_stop_loss` flow: entry, resting SL-M, an exit is refused while
+/// the stop can still fill, the cancel must be observed, then the exit goes out.
+#[tokio::test]
+async fn resting_stop_blocks_exits_until_its_cancel_is_observed() {
+    let (mut d, calls, _) = fixture(false, false);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    // a protective stop without a position is denied before the broker
+    d.submit(stop_market_order(), 0, &tx).await.unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    // entry fills
+    d.submit(order(OrderSide::Buy, 1, false), 0, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    drain(&mut rx);
+    // SL-M rests at the broker
+    let stop = stop_market_order();
+    d.submit(stop.clone(), 1, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, OrderEventAny::Accepted(_))));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    // an exit while the stop is working is denied without reaching the broker
+    d.submit(order(OrderSide::Sell, 1, true), 1, &tx).await.unwrap();
+    assert!(matches!(&drain(&mut rx)[..], [OrderEventAny::Denied(_)]));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    // cancel: acknowledged first, Canceled only once the broker shows it
+    d.cancel(stop.client_order_id(), UUID4::new(), &tx).await.unwrap();
+    assert!(drain(&mut rx).is_empty());
+    d.refresh(&tx).await.unwrap();
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, OrderEventAny::Canceled(_))));
+    // now the exit is admitted and fills; the run finishes clean
+    d.submit(order(OrderSide::Sell, 1, true), 1, &tx).await.unwrap();
+    d.refresh(&tx).await.unwrap();
+    assert!(drain(&mut rx).iter().any(|e| matches!(e, OrderEventAny::Filled(_))));
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+    d.finish(&tx, false).await.unwrap();
+}

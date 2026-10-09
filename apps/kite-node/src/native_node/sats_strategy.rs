@@ -12,7 +12,10 @@
 //!   blocks new entries for the rest of that day;
 //! * a 1-second guard flattens on a data-feed fault or a stop request and reports
 //!   flatness to the runner through `Control::flat`;
-//! * any order rejection/denial or position mismatch halts new orders.
+//! * any order rejection/denial or position mismatch halts new orders;
+//! * with `exchange_stop_loss`, a reduce-only SL-M rests at the broker at SATS's SL
+//!   once the entry fills; every other exit cancels it (confirmed) and only then
+//!   sends the market exit, so the two can never both fill.
 use super::live_control::Control;
 use super::sats_dashboard::{self, Board, Shared};
 use super::sats_config::{Execution, ExitMode, SatsConfig};
@@ -24,9 +27,10 @@ use nautilus_core::DurationNanos;
 use nautilus_model::{
     data::{Bar, BarType, QuoteTick},
     enums::{OrderSide, TimeInForce},
-    events::{OrderDenied, OrderFilled, OrderRejected},
-    identifiers::ClientId,
-    types::Quantity,
+    events::{OrderCancelRejected, OrderCanceled, OrderDenied, OrderFilled, OrderRejected},
+    identifiers::{ClientId, ClientOrderId},
+    orders::Order,
+    types::{Price, Quantity},
 };
 use nautilus_trading::{
     nautilus_strategy,
@@ -82,7 +86,18 @@ pub struct SatsStrategy {
     trail: Option<Trail>,
     /// Live tick-checked SL / target (`exit_mode: "single"`, `intrabar_exits`).
     bracket: Option<Bracket>,
+    /// Resting reduce-only SL-M at the broker (`exchange_stop_loss`).
+    stop_order: Option<ClientOrderId>,
+    /// Side and SL of the position this run opened (the SL-M trigger).
+    entry_sl: Option<(Side, f64)>,
+    /// An exit waits for the SL-M cancel to be confirmed: (reason, deadline ns).
+    exit_after_cancel: Option<(String, i64)>,
+    /// The broker refused an SL-M; the tick / bar-close SL protects for this run.
+    stop_unavailable: Option<String>,
 }
+
+/// How long an exit waits for the broker to confirm the SL-M cancel before halting.
+const CANCEL_EXIT_NS: i64 = 15_000_000_000;
 
 /// How long a deferred flip entry waits for the closing fill before the strategy halts.
 const PENDING_ENTRY_NS: i64 = 30_000_000_000;
@@ -121,6 +136,10 @@ impl SatsStrategy {
             pending_entry: None,
             trail: None,
             bracket: None,
+            stop_order: None,
+            entry_sl: None,
+            exit_after_cancel: None,
+            stop_unavailable: None,
         }
     }
 
@@ -318,6 +337,8 @@ impl SatsStrategy {
         let px = if b.side == Side::Long { bid } else { ask };
         let target = self.execution.single_exit_at.label();
         match b.on_price(px) {
+            // with a resting SL-M the exchange executes the stop itself
+            Some(BracketExit::Stop) if self.stop_open() => Ok(()),
             Some(BracketExit::Stop) => self.flatten(&format!("SL {:.0} hit at {px:.0} (intrabar)", b.stop)),
             Some(BracketExit::Target) => self.flatten(&format!("{target} {:.0} reached at {px:.0} (intrabar)", b.target)),
             None => Ok(()),
@@ -342,7 +363,9 @@ impl SatsStrategy {
             });
             self.log_json(serde_json::json!({"event":"sats_trail","instance":self.instance_id,"move":m,"stop":stop,"price":px}));
         }
-        if hit {
+        let at_initial_sl = self.trail.as_ref().is_some_and(|t| !t.active);
+        if hit && !(at_initial_sl && self.stop_open()) {
+            // before activation the stop is the SL the resting SL-M already covers
             return self.flatten(&format!("{stage} hit at {px:.0} (stop {stop:.0})"));
         }
         Ok(())
@@ -364,6 +387,79 @@ impl SatsStrategy {
         }
     }
 
+    /// An exit waiting for the SL-M cancel: resolve it if the stop filled (position
+    /// flat), or halt if the broker has not confirmed in time.
+    fn check_cancel_deadline(&mut self, now_ns: i64) {
+        let Some((_, deadline)) = self.exit_after_cancel.as_ref().map(|(w, d)| (w.clone(), *d)) else { return };
+        if self.position() == 0.0 && !self.stop_open() {
+            self.exit_after_cancel = None;
+            self.exiting = false;
+        } else if now_ns > deadline {
+            self.exit_after_cancel = None;
+            self.halt("SL-M cancel not confirmed by the broker within 15 s; check Kite now");
+        }
+    }
+
+    fn exchange_stop_mode(&self) -> bool {
+        self.execution.exchange_stop_loss && self.live.is_some() && self.orders_enabled && self.stop_unavailable.is_none()
+    }
+
+    /// The SL-M this run placed is still working at the broker.
+    fn stop_open(&self) -> bool {
+        self.stop_order.is_some_and(|id| self.cache().order(&id).is_some_and(|o| !o.is_closed()))
+    }
+
+    fn now_ns() -> i64 {
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    }
+
+    /// Entry filled: rest a reduce-only SL-M for the whole position at SATS's SL.
+    fn place_exchange_stop(&mut self) -> Result<()> {
+        let Some((side, sl)) = self.entry_sl else { return Ok(()) };
+        let position = self.position();
+        if position == 0.0 || self.stop_order.is_some() || self.exiting || (side == Side::Long) != (position > 0.0) {
+            return Ok(());
+        }
+        let order_side = if position > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
+        let order = self.order().stop_market(
+            self.bar_type.instrument_id(),
+            order_side,
+            Quantity::new(position.abs(), 0),
+            Price::new(sl.round(), 0),
+            None,
+            Some(TimeInForce::Day),
+            None,
+            Some(true),
+            Some(false),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        self.stop_order = Some(order.client_order_id());
+        self.board(|b| {
+            b.exchange_stop = Some(sl.round());
+            b.event(format!("SL-M {order_side:?} {:.0} lot @ {:.0} sent to Zerodha", position.abs(), sl.round()));
+        });
+        self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"place","trigger":sl.round(),"side":format!("{order_side:?}")}));
+        self.submit_order(order, None, None, None)?;
+        Ok(())
+    }
+
+    /// The broker refused the SL-M: keep trading, protected by the program's own SL.
+    fn exchange_stop_failed(&mut self, reason: &str) {
+        self.stop_order = None;
+        self.stop_unavailable = Some(reason.to_owned());
+        self.board(|b| {
+            b.exchange_stop = None;
+            b.event(format!("SL-M refused by broker ({reason}); program SL protects this run"));
+        });
+        self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"refused","reason":reason}));
+    }
+
     /// Market order closing the whole broker position for this strategy.
     fn flatten(&mut self, why: &str) -> Result<()> {
         let position = self.position();
@@ -371,6 +467,20 @@ impl SatsStrategy {
         self.open_lots = 0;
         self.trail = None;
         self.bracket = None;
+        if self.stop_open() {
+            // Never send the market exit while the SL-M can still fill: cancel it,
+            // wait for the broker's confirmation (on_order_canceled), then exit.
+            if self.exit_after_cancel.is_none() {
+                let id = self.stop_order.expect("open stop");
+                self.exit_after_cancel = Some((why.to_owned(), Self::now_ns() + CANCEL_EXIT_NS));
+                self.exiting = true;
+                self.set_flat(false);
+                self.board(|b| b.event(format!("Cancelling SL-M before exit ({why})")));
+                self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"cancel","reason":why}));
+                self.cancel_order(id, None, None)?;
+            }
+            return Ok(());
+        }
         if position == 0.0 {
             self.exiting = false;
             self.set_flat(true);
@@ -444,6 +554,11 @@ impl SatsStrategy {
             return Ok(());
         }
         let position = self.position();
+        if reduce_only && self.stop_open() {
+            // the resting SL-M must be cancelled (confirmed) before any market exit
+            self.log(&ev, lots, "exit: cancelling the SL-M first");
+            return self.flatten(&format!("{} at bar close", ev.kind.label()));
+        }
         if !reduce_only && self.exiting && self.live.is_some() {
             // Same-bar flip: our closing order is still in flight at the broker. Wait for
             // its fill (guard timer / fill handler), never stack the entry on top of it.
@@ -488,6 +603,9 @@ impl SatsStrategy {
                 b.tps = Some([t.tp1, t.tp2, t.tp3]);
             }
         });
+        if ev.kind.is_entry() {
+            self.entry_sl = Some((t.side, t.sl));
+        }
         if ev.kind.is_entry() && self.trail_mode() {
             // breakeven switches to the real fill price once it is known
             self.trail = Some(Trail::new(t.side, t.entry, t.sl, t.tp1));
@@ -608,8 +726,10 @@ impl DataActor for SatsStrategy {
                 self.halt(&fault.unwrap_or_else(|| "stop requested".into()));
             }
             self.flatten("stop / feed fault")?;
+            self.check_cancel_deadline(e.ts_event.as_u64() as i64);
         } else {
             self.try_pending(e.ts_event.as_u64() as i64)?;
+            self.check_cancel_deadline(e.ts_event.as_u64() as i64);
             self.set_flat(self.position() == 0.0 && !self.exiting);
         }
         Ok(())
@@ -633,6 +753,15 @@ nautilus_strategy!(SatsStrategy, {
             b.apply_fill(signed, px);
             b.event(format!("FILL {:?} {qty:.0} @ {px:.0}", e.order_side));
         });
+        if self.stop_order == Some(e.client_order_id) {
+            // the SL-M executed at the exchange
+            self.stop_order = None;
+            self.exit_after_cancel = None;
+            self.board(|b| {
+                b.exchange_stop = None;
+                b.event(format!("SL-M executed at Zerodha @ {px:.0}"));
+            });
+        }
         // entry fill: breakeven is measured from the real fill price
         if let Some(trail) = self.trail.as_mut()
             && !trail.active
@@ -650,12 +779,52 @@ nautilus_strategy!(SatsStrategy, {
             self.exiting = false;
             self.set_flat(true);
         }
+        // entry filled: protect it at the broker
+        if self.exchange_stop_mode()
+            && self.position() != 0.0
+            && self.stop_order.is_none()
+            && self.entry_sl.is_some_and(|(side, _)| (e.order_side == OrderSide::Buy) == (side == Side::Long))
+            && let Err(err) = self.place_exchange_stop()
+        {
+            self.exchange_stop_failed(&format!("submit failed: {err:#}"));
+        }
+    }
+    fn on_order_canceled(&mut self, e: &OrderCanceled) {
+        if self.stop_order != Some(e.client_order_id) {
+            return;
+        }
+        self.stop_order = None;
+        self.board(|b| {
+            b.exchange_stop = None;
+            b.event("SL-M cancelled at Zerodha".into());
+        });
+        if let Some((why, _)) = self.exit_after_cancel.take() {
+            self.exiting = false;
+            if let Err(err) = self.flatten(&why) {
+                self.halt(&format!("exit after SL-M cancel failed: {err:#}"));
+            }
+        }
+    }
+    fn on_order_cancel_rejected(&mut self, e: OrderCancelRejected) {
+        if self.stop_order == Some(e.client_order_id) {
+            // usually the SL-M has just triggered; its fill flattens the position
+            self.board(|b| b.event(format!("SL-M cancel refused ({}); waiting for its fill", e.reason)));
+            self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"cancel_rejected","reason":e.reason.to_string()}));
+        }
     }
     fn on_order_rejected(&mut self, e: OrderRejected) {
+        if self.stop_order == Some(e.client_order_id) {
+            self.exchange_stop_failed(&format!("rejected: {}", e.reason));
+            return;
+        }
         self.exiting = false;
         self.halt(&format!("order rejected: {}", e.reason));
     }
     fn on_order_denied(&mut self, e: OrderDenied) {
+        if self.stop_order == Some(e.client_order_id) {
+            self.exchange_stop_failed(&format!("denied: {}", e.reason));
+            return;
+        }
         self.exiting = false;
         self.halt(&format!("order denied: {}", e.reason));
     }

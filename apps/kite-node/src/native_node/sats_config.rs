@@ -113,6 +113,12 @@ pub struct Execution {
     /// on the closed bar's high/low and exited at the bar close.
     #[serde(default)]
     pub intrabar_exits: bool,
+    /// Live/paper: after the entry fills, rest a reduce-only SL-M order at the
+    /// broker at SATS's SL, so the position is protected even if this program,
+    /// the server or the network fails. Any other exit cancels it (confirmed)
+    /// before the market exit. Not allowed with "thirds".
+    #[serde(default)]
+    pub exchange_stop_loss: bool,
     /// Settings for `exit_mode: "trail"` (ignored otherwise).
     #[serde(default)]
     pub trail: TrailSettings,
@@ -244,6 +250,10 @@ impl SatsConfig {
             "exit_mode \"thirds\" needs lots divisible by 3 (use \"single\" for {} lot(s))",
             self.lots
         );
+        ensure!(
+            !(e.exchange_stop_loss && e.exit_mode == ExitMode::Thirds),
+            "exchange_stop_loss needs exit_mode \"single\" or \"trail\" (whole-position exits)"
+        );
         if e.exit_mode == ExitMode::Trail {
             ensure!(
                 e.trail.breakeven_offset_points.is_finite() && e.trail.breakeven_offset_points >= 0.0,
@@ -359,6 +369,7 @@ mod tests {
             exit_mode: mode,
             single_exit_at: at,
             intrabar_exits: false,
+            exchange_stop_loss: false,
             trail: TrailSettings::default(),
             round_trip_cost_points: 0.0,
             slippage_points_per_side: 0.0,
