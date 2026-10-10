@@ -1,6 +1,6 @@
 # Rust NautilusTrader / Zerodha Kite Research Workspace
 
-Reusable Rust Kite integration, NautilusTrader components and read-only multi-asset portfolio validation. The discarded ILRC strategy, its runners and its research files were removed from the active tree. Older Git history remains available. No strategy is approved for live trading.
+NautilusTrader 0.64 workspace for Zerodha Kite Connect: the Kite adapter (market data, instruments, history, native execution client), Precision Sniper (the main strategy, CRUDEOILM) and SATS, with backtests, paper runs and gated live runs. Real orders need a `live-orders` build, the slot and broker-settings gates and a typed `LIVE` (see `doc/PORTFOLIO_SLOTS.md`).
 
 ## SATS v1.13.1 (Rust port)
 

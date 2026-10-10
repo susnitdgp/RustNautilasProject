@@ -7,7 +7,8 @@
 #   * DNS lookup, TCP connect and TLS handshake to api.kite.trade
 #   * Kite REST round trips on one kept-alive connection for the calls the
 #     pre-order safety check makes (orders, trades, positions, margins)
-#   * Redis WAITAOF (disk-sync wait used before every order is sent)
+#   * Redis WAITAOF (disk-sync wait; since 2.21.1 only at start-up, token save and
+#     cooldown, never on the order path)
 # Usage: ./network-utility/kite-latency.py [rounds]   (default 5 rounds)
 import http.client, json, socket, ssl, statistics, subprocess, sys, time
 
@@ -62,7 +63,7 @@ def main():
     snapshot = sum(statistics.median(v) for v in results.values()) + statistics.median(results["/orders"])
     print(f"  pre-order safety check (5 calls back to back) ~ {snapshot:.0f} ms")
 
-    # Redis disk-sync wait (WAITAOF), done before each order is sent.
+    # Redis disk-sync wait (WAITAOF): start-up, token save and cooldown only.
     s = socket.create_connection(("127.0.0.1", 6379))
 
     def cmd(*a):

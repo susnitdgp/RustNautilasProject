@@ -12,23 +12,9 @@ use serde::Deserialize;
 use std::{
     any::Any,
     cell::RefCell,
-    collections::BTreeMap,
     rc::Rc,
     sync::{Arc, atomic::AtomicBool},
 };
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SandboxWebhooks {
-    pub enabled: bool,
-    pub strategies: BTreeMap<String, SandboxWebhook>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SandboxWebhook {
-    pub url: String,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,8 +28,6 @@ pub struct Settings {
     /// Default 1; raising it is a reviewed setting (1..=10).
     #[serde(default = "one_lot")]
     pub max_lots: u32,
-    #[serde(default)]
-    pub sandbox_webhooks: SandboxWebhooks,
 }
 fn one_lot() -> u32 {
     1
@@ -169,7 +153,6 @@ mod tests {
             live_orders_enabled: false,
             market_protection: -1,
             max_lots: 1,
-            sandbox_webhooks: SandboxWebhooks::default(),
         };
         assert!(s.validate().is_err());
         s.live_orders_enabled = true;

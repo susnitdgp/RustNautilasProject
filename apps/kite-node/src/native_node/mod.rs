@@ -1,34 +1,14 @@
 pub mod backtest_report;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
 mod bar_timing;
 pub mod cli;
 mod portfolio;
-#[allow(dead_code)]
 pub mod data;
-mod execution_session;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
-pub mod lifecycle;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
 mod live_bars;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
 mod live_control;
 mod ws_candles;
 mod live_backfill;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
 mod session_calendar;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
-mod slack_alerts;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
 pub mod status;
-// Legacy shared infrastructure kept for historical tooling and tests.
-#[allow(dead_code)]
 mod synthetic;
 #[cfg(test)]
 mod test_support;

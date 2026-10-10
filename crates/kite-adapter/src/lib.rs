@@ -1,17 +1,11 @@
-//! Read-only foundation. No broker order submission is implemented.
-pub mod account;
+//! NautilusTrader adapter for Zerodha Kite Connect: market data, instruments, history and
+//! the native execution client (real orders only with the `live-orders` feature).
 pub mod auth;
-pub mod config;
 pub mod credentials;
 pub mod data;
 pub mod execution;
-pub mod factories;
 pub mod http;
 pub mod instruments;
 pub mod mapping;
-pub mod orders;
-pub mod positions;
 pub mod preflight;
-pub mod reconciliation;
-pub mod trades;
 pub mod websocket;

@@ -90,7 +90,7 @@ def sniper_slot(day):
     board = {
         "mode": "LIVE (real Zerodha orders)", "slot": "crudeoilm-sniper-202610", "instrument": "CRUDEOILM26OCTFUT.MCX",
         "square_off": "23:15", "exit_rule": "TP1 1 / TP2 1 / TP3 1 lot, step stop",
-        "redis_namespace": "kite-demo:v1:{crudeoilm-sniper-202610}:commands:20261010-5f2a9c1e",
+        "redis_namespace": "20261010-5f2a9c1e",
         "point_value": 10.0, "lots": 3, "title": "SNIPER v2.1.0 · 3m Conservative", "model_title": "Precision Sniper",
         "model_rows": [["EMA 12/26", "5871 / 5862  (trend 5848)"], ["Score", "bull 6 · bear 1 of 7"], ["ADX / RSI", "27 / 61  Trend"]],
         "last_price": 5884.0, "last_bar": ["10 Oct 14:30", 5882.0], "live_bars": 96, "history_bars": 1297,
@@ -129,7 +129,7 @@ def sats_slot(day):
     board = {
         "mode": "PAPER (Kite mock execution)", "slot": "crudeoilm-sats-202610", "instrument": "CRUDEOILM26OCTFUT.MCX",
         "square_off": "23:15", "exit_rule": "Trail: BE@TP1 + SuperTrend",
-        "redis_namespace": "kite-demo:v1:{crudeoilm-sats-202610}:commands:20261010-0b7d33aa",
+        "redis_namespace": "20261010-0b7d33aa",
         "point_value": 10.0, "lots": 1, "title": "", "model_title": "", "model_rows": [],
         "last_price": 5884.0, "last_bar": ["10 Oct 14:30", 5882.0], "live_bars": 57, "history_bars": 1104,
         "bar_ns": 300_000_000_000, "feed_fault": None, "warmed": True, "trend": 1,

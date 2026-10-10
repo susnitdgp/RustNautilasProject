@@ -1,7 +1,6 @@
 //! Names for a slot's shared state (kite-adapter 0.4.0: no order journal, no lease).
 //!
-//! `Legacy` keeps the historical single-account names. `Portfolio` scopes a strategy
-//! slot under the manifest's naming scheme `<prefix>:v1:{<slot>}:<kind>` (the `{…}`
+//! `Portfolio` scopes a strategy slot under the manifest's naming scheme `<prefix>:v1:{<slot>}:<kind>` (the `{…}`
 //! is a Redis Cluster hash tag, so one slot's keys stay together):
 //!
 //! | kind          | name                                                  |
@@ -17,7 +16,6 @@ use anyhow::{Result, ensure};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeySpace {
-    Legacy,
     Portfolio { prefix: String, slot: String },
 }
 
@@ -51,7 +49,6 @@ impl KeySpace {
     pub fn lock(&self, user: &str) -> Result<String> {
         account(user)?;
         Ok(match self {
-            Self::Legacy => format!("native-kite-{user}"),
             Self::Portfolio { prefix, slot } => format!("{prefix}-{slot}-{user}"),
         })
     }
@@ -60,18 +57,15 @@ impl KeySpace {
     /// trading one); the writer appends `:state`, `:events` and `:live`.
     pub fn dashboard(&self) -> String {
         match self {
-            Self::Legacy => "susanta:nautilus:native-kite:dash".into(),
             Self::Portfolio { prefix, slot } => format!("{prefix}:v1:{{{slot}}}:dash"),
         }
     }
 
-    /// Full order-budget key for portfolio key spaces; `None` for legacy, which
-    /// keeps the rate limiter's own `native-account-<user>` scope.
-    pub fn order_budget(&self, user: &str) -> Result<Option<String>> {
+    /// Order-budget key, shared by every slot on the account.
+    pub fn order_budget(&self, user: &str) -> Result<String> {
         account(user)?;
         Ok(match self {
-            Self::Legacy => None,
-            Self::Portfolio { prefix, .. } => Some(format!("{prefix}:v1:{{account-{user}}}:order-budget")),
+            Self::Portfolio { prefix, .. } => format!("{prefix}:v1:{{account-{user}}}:order-budget"),
         })
     }
 }
@@ -81,19 +75,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_names_are_unchanged() {
-        let k = KeySpace::Legacy;
-        assert_eq!(k.lock("NVC171").unwrap(), "native-kite-NVC171");
-        assert_eq!(k.order_budget("NVC171").unwrap(), None);
-    }
-
-    #[test]
     fn portfolio_names_follow_the_manifest_scheme() {
         let k = KeySpace::portfolio("kite-prod", "crudeoilm-sats-202610").unwrap();
         assert_eq!(k.dashboard(), "kite-prod:v1:{crudeoilm-sats-202610}:dash");
         assert_eq!(k.lock("NVC171").unwrap(), "kite-prod-crudeoilm-sats-202610-NVC171");
         assert_eq!(
-            k.order_budget("NVC171").unwrap().unwrap(),
+            k.order_budget("NVC171").unwrap(),
             "kite-prod:v1:{account-NVC171}:order-budget",
             "budget is shared by every slot on the account"
         );

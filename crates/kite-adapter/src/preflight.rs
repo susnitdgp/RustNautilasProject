@@ -1,8 +1,4 @@
-use crate::{
-    config::Config,
-    instruments::{master, resolver},
-    mapping::identity,
-};
+use crate::{instruments::master, mapping::identity};
 use anyhow::{Context, Result, ensure};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -21,12 +17,6 @@ pub struct Report {
     pub live_orders_enabled: bool,
     pub contract_multiplier_verified: bool,
     pub engine_started: bool,
-}
-
-pub fn run(config: &Config, csv: impl Read, as_of: NaiveDate) -> Result<Report> {
-    let rows = master::parse(csv)?;
-    let row = resolver::resolve(&rows, config, as_of)?;
-    report(row, as_of)
 }
 
 /// Resolves one exact live contract from the JSON-selected symbol and Kite token.

@@ -11,16 +11,16 @@ pub fn url_from_env() -> Result<Zeroizing<String>> {
 }
 pub fn connect(url: &str) -> Result<redis::Connection> {
     let client =
-        redis::Client::open(url).map_err(|_| anyhow!("Invalid Redis journal configuration"))?;
+        redis::Client::open(url).map_err(|_| anyhow!("Invalid Redis configuration"))?;
     let mut connection = client
         .get_connection_with_timeout(Duration::from_secs(3))
-        .map_err(|_| anyhow!("Redis journal connection failed"))?;
+        .map_err(|_| anyhow!("Redis connection failed"))?;
     connection
         .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|_| anyhow!("Redis journal timeout setup failed"))?;
+        .map_err(|_| anyhow!("Redis timeout setup failed"))?;
     connection
         .set_write_timeout(Some(Duration::from_secs(3)))
-        .map_err(|_| anyhow!("Redis journal timeout setup failed"))?;
+        .map_err(|_| anyhow!("Redis timeout setup failed"))?;
     let policy: Vec<String> = redis::cmd("CONFIG")
         .arg("GET")
         .arg("maxmemory-policy")
@@ -28,7 +28,7 @@ pub fn connect(url: &str) -> Result<redis::Connection> {
         .map_err(|_| anyhow!("Cannot verify Redis eviction policy"))?;
     ensure!(
         policy.get(1).map(String::as_str) == Some("noeviction"),
-        "Redis journal requires noeviction"
+        "Redis requires noeviction"
     );
     sync(&mut connection)?;
     Ok(connection)

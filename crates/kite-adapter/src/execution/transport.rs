@@ -49,10 +49,6 @@ impl KiteOrderTransport {
         );
         self.send_at(command, "https://api.kite.trade").await
     }
-    pub(crate) async fn execute_sandbox(&self, command: &Command) -> Result<Outcome> {
-        self.send_at(command, "https://sandbox.kite.trade/oms")
-            .await
-    }
     async fn send_at(&self, command: &Command, base: &str) -> Result<Outcome> {
         command.validate()?;
         let (method, path, fields) = command.wire();
@@ -238,14 +234,6 @@ mod tests {
                     tag: "Test1".into(),
                 },
                 "post /orders/regular ",
-            ),
-            (
-                Command::Modify {
-                    order_id: "123".into(),
-                    quantity: 1,
-                    price_rupees: 6000,
-                },
-                "put /orders/regular/123 ",
             ),
             (
                 Command::Cancel {

@@ -1,4 +1,4 @@
-use kite_execution::rate_limit::{Decision, Limiter, policy::Policy, verification};
+use kite_execution::rate_limit::{Decision, Limiter, policy::Policy};
 #[path = "../../kite-journal/test-support/redis.rs"]
 mod support;
 use std::sync::{Arc, Barrier};
@@ -172,57 +172,5 @@ fn corrupt_state_and_backward_clock_block_requests() {
             .unwrap_err()
             .to_string()
             .contains("private-sentinel")
-    );
-}
-#[test]
-fn cli_scenario_gates_mock_submission() {
-    let server = TestRedis::new();
-    let summary = verification::run_at(&server.url, "check").unwrap();
-    assert_eq!(summary.admitted, 1);
-    assert_eq!(summary.blocked_mock_calls, 0);
-    assert!(summary.deferred_intent_stays_prepared);
-}
-#[test]
-fn mock_429_updates_shared_cooldown() {
-    use kite_execution::{
-        coordinator,
-        mock::{MockBroker, Outcome},
-    };
-    use kite_journal::{
-        model::{Event, Intent, Product, Side},
-        state::Status,
-        store::Journal,
-    };
-    let server = TestRedis::new();
-    let mut limiter = Limiter::create_at(&server.url, "account", Policy::default()).unwrap();
-    let mut journal = Journal::create_at(&server.url, "test").unwrap();
-    for id in ["One", "Two"] {
-        journal
-            .append(Event::Intent {
-                intent: Intent {
-                    id: id.into(),
-                    symbol: "CRUDEOIL26SEPFUT".into(),
-                    side: Side::Buy,
-                    product: Product::Nrml,
-                    quantity: 1,
-                    limit_price_paise: 600000,
-                },
-            })
-            .unwrap();
-    }
-    let mut broker = MockBroker::new(Outcome::RateLimited {
-        retry_after_ms: 60000,
-    });
-    coordinator::submit(&mut journal, &mut broker, "One", &mut limiter).unwrap();
-    assert_eq!(
-        journal.state().order("One").unwrap().status,
-        Status::Unknown
-    );
-    let mut other = Limiter::open_at(&server.url, "account", Policy::default()).unwrap();
-    assert!(coordinator::submit(&mut journal, &mut broker, "Two", &mut other).is_err());
-    assert_eq!(broker.calls, 1);
-    assert_eq!(
-        journal.state().order("Two").unwrap().status,
-        Status::Prepared
     );
 }

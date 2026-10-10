@@ -408,22 +408,3 @@ pub async fn observe_connected(
     )
     .await
 }
-
-pub async fn observe_sandbox_connected(
-    credentials: &KiteCredentials,
-    user_id: &str,
-    token: u32,
-    duration: Duration,
-    on_event: impl FnMut(FeedEvent),
-    socket: transport::Socket,
-) -> Result<Summary> {
-    observe_impl(
-        credentials,
-        token,
-        duration,
-        on_event,
-        &transport::sandbox_endpoint(user_id)?,
-        Some(socket),
-    )
-    .await
-}

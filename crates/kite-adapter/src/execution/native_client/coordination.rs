@@ -123,11 +123,8 @@ impl OrderBudget {
                 && account.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
             "Invalid account"
         );
-        let key = match keys.order_budget(account)? {
-            // Portfolio budgets are shared by every slot on the account.
-            Some(key) => key,
-            None => Limiter::key(&format!("native-account-{account}"))?,
-        };
+        // Shared by every slot on the account.
+        let key = keys.order_budget(account)?;
         // Opened at start-up: a run does not start without a working budget.
         let limiter = Limiter::open_or_create_key(url, &key, ORDER_POLICY)?;
         Ok(Self {

@@ -1,6 +1,4 @@
-use std::rc::Rc;
 pub mod coordination;
-pub mod custom_sandbox;
 pub mod keys;
 mod dispatch;
 mod fees;
@@ -9,21 +7,19 @@ pub mod mock;
 mod order_stream;
 pub(crate) mod outage;
 pub mod production;
-pub mod sandbox;
 mod shutdown;
 // Native Kite client. Real mutations remain disabled at this boundary.
 mod broker;
 pub mod margins;
 mod reports;
 
-use self::broker::{Broker, KiteBroker, Snapshot};
+use self::broker::{Broker, Snapshot};
 use anyhow::{Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use nautilus_common::{
     cache::CacheView,
     clients::ExecutionClient,
-    clock::Clock,
-    factories::{ClientConfig, ExecutionClientFactory, OrderEventFactory},
+    factories::{ClientConfig, OrderEventFactory},
     live::runner::try_get_exec_event_sender,
     messages::{ExecutionEvent, execution::*},
 };
@@ -71,37 +67,6 @@ impl Config {
             "Native Kite instrument ID and symbol disagree"
         );
         Ok(())
-    }
-}
-#[derive(Debug, Default)]
-pub struct Factory;
-impl ExecutionClientFactory for Factory {
-    fn name(&self) -> &str {
-        "KITE"
-    }
-    fn config_type(&self) -> &str {
-        "KiteNativeExecutionConfig"
-    }
-    fn create(
-        &self,
-        trader_id: TraderId,
-        name: &str,
-        config: &dyn ClientConfig,
-        _cache: CacheView,
-        _clock: Rc<RefCell<dyn Clock>>,
-    ) -> Result<Box<dyn ExecutionClient>> {
-        let config = config
-            .as_any()
-            .downcast_ref::<Config>()
-            .ok_or_else(|| anyhow!("Invalid native Kite execution config"))?
-            .clone();
-        config.validate()?;
-        let broker = Box::new(KiteBroker::new(
-            &config.credentials,
-            config.user_id.clone(),
-            config.product.clone(),
-        )?);
-        Ok(Box::new(Client::new(trader_id, name, config, broker)?))
     }
 }
 pub struct Client {

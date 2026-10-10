@@ -200,7 +200,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         Mode::Paper => None,
     };
     let run_id = UUID4::new();
-    // Paper runs use a fixed pseudo-account so their lease/budget never touch the real account's.
+    // Paper runs use a fixed pseudo-account so their order budget and lock never touch the real account's.
     let account_id = match &settings {
         Some(s) => s.expected_user_id.clone(),
         None => "PAPER".to_owned(),
@@ -213,8 +213,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
     // One process per slot and account; the OS frees the lock when this process ends.
     let lock = kite_adapter::execution::native_client::coordination::lock_instance(&p.keys, &account_id)?;
     let interval = p.config.interval();
-    let mut control = Control::new(false).with_bar_ns(interval.nanoseconds());
-    control.real = mode == Mode::Live;
+    let control = Control::new();
     let market_price = Arc::new(AtomicI64::new(0));
     let credentials = Arc::new(kite_adapter::credentials::redis::load_from_env()?);
     let symbol = p.inst.instrument.trim_end_matches(".MCX").to_owned();
@@ -267,7 +266,6 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
                     seconds: p.run_seconds + 120,
                     synthetic_tick_ms: 500,
                     short_fixture: false,
-                    sandbox_user: None,
                     credentials: Some(credentials),
                     live_bars: Some((p.warmup.clone(), p.start_ns, control.clone())),
                     interval,

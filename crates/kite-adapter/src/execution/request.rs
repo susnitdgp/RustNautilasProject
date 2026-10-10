@@ -32,11 +32,6 @@ pub enum Command {
         price_rupees: i64,
         tag: String,
     },
-    Modify {
-        order_id: String,
-        quantity: u32,
-        price_rupees: i64,
-    },
     Cancel {
         order_id: String,
     },
@@ -122,14 +117,6 @@ impl Command {
                         && tag.bytes().all(|b| b.is_ascii_alphanumeric()),
                     "Invalid order tag"
                 );
-                terms(*quantity, *price_rupees)?;
-            }
-            Self::Modify {
-                order_id,
-                quantity,
-                price_rupees,
-            } => {
-                broker_id(order_id)?;
                 terms(*quantity, *price_rupees)?;
             }
             Self::Cancel { order_id } => broker_id(order_id)?,
@@ -222,20 +209,6 @@ impl Command {
                     ("validity", "DAY".into()),
                 ],
             ),
-            Self::Modify {
-                order_id,
-                quantity,
-                price_rupees,
-            } => (
-                reqwest::Method::PUT,
-                format!("/orders/regular/{order_id}"),
-                vec![
-                    ("quantity", quantity.to_string()),
-                    ("price", price_rupees.to_string()),
-                    ("order_type", "LIMIT".into()),
-                    ("validity", "DAY".into()),
-                ],
-            ),
             Self::Cancel { order_id } => (
                 reqwest::Method::DELETE,
                 format!("/orders/regular/{order_id}"),
@@ -245,8 +218,7 @@ impl Command {
     }
     pub(crate) fn expected_id(&self) -> Option<&str> {
         match self {
-            Self::Modify { order_id, .. }
-            | Self::ModifyProtectiveStop { order_id, .. }
+            Self::ModifyProtectiveStop { order_id, .. }
             | Self::Cancel { order_id } => Some(order_id),
             _ => None,
         }

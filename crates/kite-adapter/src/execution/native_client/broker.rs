@@ -77,31 +77,13 @@ pub(crate) struct KiteBroker {
     orders: KiteOrderTransport,
     user_id: String,
     product: String,
-    sandbox: bool,
     verified_mcx: std::sync::atomic::AtomicBool,
 }
 impl KiteBroker {
-    pub(crate) fn sandbox(
-        credentials: &KiteCredentials,
-        user_id: String,
-        product: String,
-    ) -> Result<Self> {
-        // One client: reads keep the order connection warm (HTTP/2, multiplexed).
-        let client = crate::http::client::kite_client()?;
-        Ok(Self {
-            read: ReadClient::with_client(credentials, client.clone())?.into_sandbox(),
-            orders: KiteOrderTransport::with_client(credentials, client)?,
-            user_id,
-            product,
-            sandbox: true,
-            verified_mcx: std::sync::atomic::AtomicBool::new(false),
-        })
-    }
     pub fn new(credentials: &KiteCredentials, user_id: String, product: String) -> Result<Self> {
         // One client: reads keep the order connection warm (HTTP/2, multiplexed).
         let client = crate::http::client::kite_client()?;
         Ok(Self {
-            sandbox: false,
             verified_mcx: std::sync::atomic::AtomicBool::new(false),
             read: ReadClient::with_client(credentials, client.clone())?,
             orders: KiteOrderTransport::with_client(credentials, client)?,
@@ -119,24 +101,11 @@ impl Broker for KiteBroker {
         token: u32,
         symbol: &str,
     ) -> Result<super::fees::Fees> {
-        if self.sandbox {
-            // Explicit sandbox estimate: the sandbox has no virtual contract notes.
-            let mut result = super::fees::Fees::new();
-            for trades in super::fees::groups_for(snapshot, product, token, symbol)?.values() {
-                result.extend(super::fees::allocate(Decimal::ZERO, trades)?);
-            }
-            Ok(result)
-        } else {
-            super::fees::calculate(&self.read, snapshot, product, token, symbol).await
-        }
+        super::fees::calculate(&self.read, snapshot, product, token, symbol).await
     }
 
     async fn execute(&self, command: &Command) -> Result<Outcome> {
-        if self.sandbox {
-            self.orders.execute_sandbox(command).await
-        } else {
-            self.orders.execute(command).await
-        }
+        self.orders.execute(command).await
     }
 
     async fn verify(&self) -> Result<()> {
@@ -167,16 +136,10 @@ impl Broker for KiteBroker {
             net: Vec<BrokerPosition>,
         }
         let positions: Positions = self.read.get(Endpoint::Positions).await?;
-        let funds = if self.sandbox {
-            let mut funds: Funds = self.read.get(Endpoint::CommodityMargins).await?;
-            funds.ledger = Some("sandbox_commodity");
-            funds
-        } else {
-            super::margins::select(
-                self.read.get(Endpoint::Margins).await?,
-                self.verified_mcx.load(std::sync::atomic::Ordering::Acquire),
-            )?
-        };
+        let funds = super::margins::select(
+            self.read.get(Endpoint::Margins).await?,
+            self.verified_mcx.load(std::sync::atomic::Ordering::Acquire),
+        )?;
         let orders: Vec<BrokerOrder> = self.read.get(Endpoint::Orders).await?;
         let mut first = first;
         let mut orders = orders;

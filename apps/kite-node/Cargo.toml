@@ -1,6 +1,6 @@
 [package]
 name = "kite-node"
-version = "2.24.1"
+version = "2.25.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
@@ -13,17 +13,13 @@ live-orders = ["kite-adapter/live-orders"]
 anyhow.workspace = true
 nautilus-common.workspace = true
 nautilus-core.workspace = true
-nautilus-data.workspace = true
 nautilus-model.workspace = true
 chrono.workspace = true
 kite-adapter = { path = "../../crates/kite-adapter" }
 serde_json.workspace = true
-reqwest.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-zeroize.workspace = true
 tokio.workspace = true
 
-kite-journal = { path = "../../crates/kite-journal" }
 sats = { path = "../../crates/sats" }
 sniper = { path = "../../crates/sniper" }
 
@@ -32,15 +28,10 @@ nautilus-trading.workspace = true
 nautilus-live.workspace = true
 async-trait.workspace = true
 
-
-nautilus-sandbox.workspace = true
-
 serde.workspace = true
 redis.workspace = true
 rtrb.workspace = true
-indexmap = "2"
 log = "0.4"
-
 
 [dev-dependencies]
 tempfile = "3"

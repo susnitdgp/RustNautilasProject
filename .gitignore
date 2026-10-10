@@ -34,12 +34,8 @@ target
 
 # Local Kite operational settings
 /config/kite-production.json
-/config/kite-sandbox.toml
 # Live dashboard Redis URL (contains a password)
 /config/dashboard.json
-# Private/manual ILRC live execution profiles (keep local to broker server)
-/config/production-ilrc-live.json
-/config/kite-ilrc-live.json
 
 # Streamlit dashboard virtualenv (tools/dashboard/run.sh)
 /tools/dashboard/.venv/

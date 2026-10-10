@@ -1,6 +1,5 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use kite_adapter::{
-    config::Config,
     instruments::contract,
     mapping::{market_data::Snapshot, quotes},
     preflight,
@@ -8,10 +7,10 @@ use kite_adapter::{
 use nautilus_model::instruments::FuturesContract;
 
 fn instrument() -> FuturesContract {
-    let config = Config::parse(include_str!("fixtures/crudeoil-september.toml")).unwrap();
     let csv = "instrument_token,tradingsymbol,name,expiry,tick_size,lot_size,instrument_type,segment,exchange\n144870151,CRUDEOIL26SEPFUT,CRUDEOIL,2026-09-21,1,1,FUT,MCX-FUT,MCX\n";
-    let report = preflight::run(
-        &config,
+    let report = preflight::run_selected(
+        "CRUDEOIL26SEPFUT",
+        144870151,
         csv.as_bytes(),
         NaiveDate::from_ymd_opt(2026, 9, 15).unwrap(),
     )

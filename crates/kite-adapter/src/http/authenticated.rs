@@ -15,7 +15,6 @@ pub(crate) enum Endpoint {
     Positions,
     Orders,
     Trades,
-    CommodityMargins,
     Margins,
 }
 impl Endpoint {
@@ -25,7 +24,6 @@ impl Endpoint {
             Self::Positions => "/portfolio/positions",
             Self::Orders => "/orders",
             Self::Trades => "/trades",
-            Self::CommodityMargins => "/user/margins/commodity",
             Self::Margins => "/user/margins",
         }
     }
@@ -106,27 +104,11 @@ impl ReadClient {
         self.authorization = authorization;
         Ok(())
     }
-    pub(crate) fn sandbox(credentials: &KiteCredentials) -> Result<Self> {
-        Self::new(credentials).map(Self::into_sandbox)
-    }
-    /// Points this reader at the sandbox OMS root.
-    pub(crate) fn into_sandbox(mut self) -> Self {
-        self.root = "https://sandbox.kite.trade/oms";
-        self
-    }
     /// Points this reader at a local fake Kite server (tests only).
     #[cfg(test)]
     pub(crate) fn with_test_root(mut self, root: &'static str) -> Self {
         self.root = root;
         self
-    }
-    pub(crate) async fn sandbox_quote<T: DeserializeOwned>(&self) -> Result<T> {
-        ensure!(
-            self.root == "https://sandbox.kite.trade/oms",
-            "Sandbox quote requires sandbox client"
-        );
-        self.get_at("https://sandbox.kite.trade/oms/quote?i=MCX%3ACRUDEOIL26SEPFUT")
-            .await
     }
     pub(crate) async fn historical<T: DeserializeOwned>(
         &self,
@@ -297,13 +279,8 @@ mod tests {
         }
     }
     #[test]
-    fn sandbox_read_root_is_fixed_and_separate_from_production() {
-        let c = KiteCredentials::new(Some("sandbox-only".into()), Some("sandbox-token".into()))
-            .unwrap();
-        assert_eq!(
-            ReadClient::sandbox(&c).unwrap().root,
-            "https://sandbox.kite.trade/oms"
-        );
+    fn read_root_is_the_fixed_production_host() {
+        let c = KiteCredentials::new(Some("key".into()), Some("token".into())).unwrap();
         assert_eq!(ReadClient::new(&c).unwrap().root, "https://api.kite.trade");
     }
     #[test]

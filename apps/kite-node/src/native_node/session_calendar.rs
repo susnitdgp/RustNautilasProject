@@ -3,6 +3,9 @@ use anyhow::{Result, ensure};
 use chrono::{Datelike, FixedOffset, NaiveDate, NaiveTime, TimeZone, Timelike, Weekday};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+// Keep the process alive through the confirmed square-off bar while retaining a
+// safety window before the MCX close.
+pub const EXIT_BUFFER_SECONDS: u64 = 10 * 60;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,7 +18,7 @@ impl Hours {
         ensure!(
             self.open < self.close
                 && (self.close - self.open).num_seconds()
-                    > super::execution_session::EXIT_BUFFER_SECONDS as i64
+                    > EXIT_BUFFER_SECONDS as i64
                 && [self.open, self.close]
                     .iter()
                     .all(|t| t.second() == 0 && t.nanosecond() == 0 && t.minute() % 5 == 0),

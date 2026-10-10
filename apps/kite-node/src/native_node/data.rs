@@ -42,7 +42,6 @@ pub struct Config {
     pub seconds: u64,
     pub synthetic_tick_ms: u64,
     pub short_fixture: bool,
-    pub sandbox_user: Option<String>,
     pub credentials: Option<Arc<KiteCredentials>>,
     pub live_bars: Option<(
         Vec<kite_adapter::http::historical::Candle>,
@@ -340,26 +339,14 @@ impl Client {
                     }
                 };
                 let socket = socket.expect("live socket connected");
-                let outcome = if let Some(user) = config.sandbox_user {
-                    supervisor::observe_sandbox_connected(
-                        &credentials,
-                        &user,
-                        config.token,
-                        Duration::from_secs(config.seconds),
-                        on_event,
-                        socket,
-                    )
-                    .await
-                } else {
-                    supervisor::observe_connected(
-                        &credentials,
-                        config.token,
-                        Duration::from_secs(config.seconds),
-                        on_event,
-                        socket,
-                    )
-                    .await
-                };
+                let outcome = supervisor::observe_connected(
+                    &credentials,
+                    config.token,
+                    Duration::from_secs(config.seconds),
+                    on_event,
+                    socket,
+                )
+                .await;
                 // The strategies never read the status event: a feed that ends with an error
                 // (Kite error frame, bad packet, foreign token, stale stream) must fault the
                 // run, or quotes and bars just stop while a position is open.
@@ -444,17 +431,10 @@ impl DataClient for Client {
     }
     async fn connect(&mut self) -> Result<()> {
         if let Some(credentials) = &self.config.credentials {
-            self.socket = Some(if let Some(user) = &self.config.sandbox_user {
-                transport::connect_sandbox(
-                    credentials,
-                    user,
-                    Instant::now() + Duration::from_secs(10),
-                )
-                .await?
-            } else {
-                kite_adapter::auth::session::validate(credentials, "MCX").await?;
-                transport::connect(credentials, Instant::now() + Duration::from_secs(10)).await?
-            });
+            kite_adapter::auth::session::validate(credentials, "MCX").await?;
+            self.socket = Some(
+                transport::connect(credentials, Instant::now() + Duration::from_secs(10)).await?,
+            );
         }
         get_data_event_sender()
             .send(DataEvent::Instrument(InstrumentAny::FuturesContract(

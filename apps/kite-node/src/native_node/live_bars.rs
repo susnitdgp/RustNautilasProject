@@ -24,6 +24,7 @@ pub fn close_for(c: &Candle, interval: Interval) -> Result<u64> {
 pub fn completed(candles: Vec<Candle>, now: u64) -> Result<Vec<Candle>> {
     completed_for(candles, now, Interval::FiveMinute)
 }
+#[cfg(test)]
 pub fn completed_for(candles: Vec<Candle>, now: u64, interval: Interval) -> Result<Vec<Candle>> {
     kite_adapter::http::historical::validate_for(&candles, interval)?;
     let mut out = Vec::new();
@@ -137,6 +138,7 @@ pub fn validate_warmup(
 ) -> Result<()> {
     validate_warmup_for(candles, date, now, calendar, Interval::FiveMinute)
 }
+#[cfg(test)]
 pub fn validate_warmup_for(
     candles: &[Candle],
     date: chrono::NaiveDate,

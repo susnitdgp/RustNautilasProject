@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.24.1 / kite-adapter 0.7.1.
+Written for kite-node 2.25.0 / kite-adapter 0.8.0.
 
 ---
 

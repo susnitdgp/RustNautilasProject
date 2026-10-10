@@ -381,7 +381,6 @@ impl Broker for MockBroker {
                     order_id: order_id.clone(),
                 })
             }
-            Command::Modify { .. } => anyhow::bail!("Native Kite mock modification unsupported"),
         }
     }
 }

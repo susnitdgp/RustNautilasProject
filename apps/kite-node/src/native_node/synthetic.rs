@@ -1,31 +1,4 @@
 //! Synthetic market-data fixtures used only by offline tests and simulations.
-use anyhow::Result;
-use nautilus_core::UnixNanos;
-use nautilus_model::instruments::FuturesContract;
-
-pub fn fixture() -> Result<(FuturesContract, UnixNanos)> {
-    let ts = UnixNanos::from(1_789_450_000_000_000_000_u64);
-    let report = kite_adapter::preflight::Report {
-        mode: "data_only",
-        instrument_id: "CRUDEOIL26SEPFUT.MCX".into(),
-        instrument_token: 144_870_151,
-        expiry: "2026-09-21".into(),
-        tick_size: "1".into(),
-        broker_lot_size: 1,
-        validation_date_ist: chrono::NaiveDate::from_ymd_opt(2026, 9, 15).unwrap(),
-        live_orders_enabled: false,
-        contract_multiplier_verified: false,
-        engine_started: false,
-    };
-    Ok((kite_adapter::instruments::contract::build(&report, ts)?, ts))
-}
-
-pub fn live_clock_fixture() -> Result<(FuturesContract, UnixNanos)> {
-    let (mut instrument, _) = fixture()?;
-    let now = nautilus_core::time::get_atomic_clock_realtime().get_time_ns();
-    instrument.expiration_ns = (now.as_u64() + 86_400_000_000_000).into();
-    Ok((instrument, now))
-}
 
 pub fn full_snapshot(
     price: i32,
