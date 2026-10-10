@@ -40,3 +40,6 @@ target
 # Private/manual ILRC live execution profiles (keep local to broker server)
 /config/production-ilrc-live.json
 /config/kite-ilrc-live.json
+
+# Streamlit dashboard virtualenv (tools/dashboard/run.sh)
+/tools/dashboard/.venv/
