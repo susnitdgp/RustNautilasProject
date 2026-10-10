@@ -8,7 +8,7 @@ use nautilus_common::messages::ExecutionEvent;
 use serde::Deserialize;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::{
     sync::{Mutex, Notify, mpsc::UnboundedSender, watch},
@@ -113,13 +113,16 @@ impl Monitor {
         timing: Timing,
     ) -> Result<()> {
         let notify = Notify::new(); // One pending notification coalesces bursts.
+        // Bumped on every order update / connection change, without the dispatcher lock,
+        // so an order admitted from cached state sees it immediately.
+        let doorbell = self.dispatcher.lock().await.doorbell();
         let (connection_tx, connection_rx) = watch::channel(Connection {
             generation: 1,
             connected: true,
         });
         // Both futures belong to this task: no detached reader on stop/failure.
         let result = tokio::select! {
-            result = self.read(&mut socket, endpoint, timing, &notify, connection_tx) => result,
+            result = self.read(&mut socket, endpoint, timing, &notify, &doorbell, connection_tx) => result,
             result = self.reconcile(timing, &notify, connection_rx) => result,
             _ = async {
                 while self.active.load(Ordering::Acquire) {
@@ -141,6 +144,7 @@ impl Monitor {
         endpoint: &str,
         timing: Timing,
         notify: &Notify,
+        doorbell: &AtomicU64,
         connection: watch::Sender<Connection>,
     ) -> Result<()> {
         let mut generation = 1;
@@ -151,6 +155,7 @@ impl Monitor {
                 Err(_) => continue,
                 Ok(Some(Ok(Message::Text(text)))) => {
                     if is_order(&text, &self.user_id)? {
+                        doorbell.fetch_add(1, Ordering::AcqRel);
                         notify.notify_one();
                     }
                 }
@@ -168,6 +173,9 @@ impl Monitor {
                 }
                 Ok(Some(Ok(Message::Pong(_)))) => {}
                 Ok(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => {
+                    // Updates may be missed while disconnected: no cached admission until
+                    // a reconciliation started after the reconnect.
+                    doorbell.fetch_add(1, Ordering::AcqRel);
                     connection.send_replace(Connection {
                         generation,
                         connected: false,
@@ -188,6 +196,7 @@ impl Monitor {
                     )
                     .await?;
                     generation += 1;
+                    doorbell.fetch_add(1, Ordering::AcqRel);
                     connection.send_replace(Connection {
                         generation,
                         connected: true,

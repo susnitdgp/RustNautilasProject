@@ -28,6 +28,49 @@ pub(crate) trait Store: Send {
         Ok(())
     }
 }
+/// Retention of a run's command journal once the run ended clean (or, for earlier runs, once
+/// a later run acquired the reviewed, Clean account lease). Unclean runs keep no TTL.
+pub(crate) const FINISHED_JOURNAL_TTL_SECS: u64 = 30 * 24 * 3600;
+
+/// Put the retention TTL on this slot's earlier run journals that still have none.
+/// Housekeeping only: called after the lease was acquired from a Clean state, which means
+/// every earlier run either finished clean or was reviewed. Returns the keys changed.
+pub(crate) fn expire_previous_journals(
+    connection: &mut redis::Connection,
+    current_key: &str,
+    namespace: &str,
+) -> Result<usize> {
+    let Some(at) = current_key.rfind(namespace) else {
+        return Ok(0);
+    };
+    let pattern = format!("{}*", &current_key[..at]);
+    let mut cursor = 0_u64;
+    let mut changed = 0;
+    loop {
+        let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(500)
+            .query(connection)
+            .map_err(|_| anyhow!("Journal retention scan failed"))?;
+        for key in keys.iter().filter(|k| k.as_str() != current_key) {
+            // EXPIRE ... NX: only keys without a TTL; never shortens an existing one.
+            let set: i32 = redis::cmd("EXPIRE")
+                .arg(key)
+                .arg(FINISHED_JOURNAL_TTL_SECS)
+                .arg("NX")
+                .query(connection)
+                .map_err(|_| anyhow!("Journal retention update failed"))?;
+            changed += set as usize;
+        }
+        if next == 0 {
+            return Ok(changed);
+        }
+        cursor = next;
+    }
+}
 pub(crate) struct RedisStore {
     account: Option<super::coordination::Account>,
     connection: redis::Connection,
@@ -44,6 +87,14 @@ impl RedisStore {
             account,
             namespace,
         )?);
+        match expire_previous_journals(&mut store.connection, &store.key, namespace) {
+            Ok(n) if n > 0 => eprintln!(
+                "{}",
+                serde_json::json!({"event":"native_journal_retention","expired_runs":n,"ttl_days":FINISHED_JOURNAL_TTL_SECS / 86400})
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!("Journal retention skipped: {e:#}"),
+        }
         Ok(store)
     }
     pub fn create(keys: &super::keys::KeySpace, namespace: &str) -> Result<Self> {
@@ -92,6 +143,17 @@ impl Store for RedisStore {
     fn finish(&mut self, clean: bool, u: usize, p: i64) -> Result<()> {
         if let Some(a) = &mut self.account {
             a.finish(clean, u, p)?;
+            if clean {
+                // Clean run: keep the journal for review, then let Redis drop it.
+                let set: redis::RedisResult<i32> = redis::cmd("EXPIRE")
+                    .arg(&self.key)
+                    .arg(FINISHED_JOURNAL_TTL_SECS)
+                    .arg("NX")
+                    .query(&mut self.connection);
+                if set.is_err() {
+                    eprintln!("Journal retention TTL not set; it will be set at the next start");
+                }
+            }
         }
         Ok(())
     }

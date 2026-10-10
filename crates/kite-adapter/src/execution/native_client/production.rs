@@ -154,7 +154,10 @@ impl ExecutionClientFactory for Factory {
             c.instrument_id.clone(),
             c.symbol.clone(),
         )
-        .with_max_lots(c.settings.max_lots))));
+        .with_max_lots(c.settings.max_lots)
+        // The order stream keeps the account observation current; orders are admitted
+        // from it while fresh, with a full REST preflight as the fallback.
+        .with_cached_admission(true))));
         client.cache = Some(cache);
         client.stop_signal = Some(c.stop_signal.clone());
         client.production = true;

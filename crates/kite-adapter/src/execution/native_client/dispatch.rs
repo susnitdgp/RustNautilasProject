@@ -17,8 +17,18 @@ use nautilus_model::{
     identifiers::ClientOrderId,
     orders::{Order, OrderAny},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc::UnboundedSender;
+/// Longest a clean reconciliation may back an order without a fresh REST read. The order
+/// stream's fallback refresh runs every 15 s, so a healthy session always stays inside it.
+pub(crate) const CACHED_ADMISSION_MAX_AGE: Duration = Duration::from_secs(20);
 struct PreparedObservation {
     position: i64,
     records: BTreeMap<String, Record>,
@@ -37,8 +47,46 @@ pub(crate) struct Dispatcher {
     position: i64,
     /// Per-order and per-position contract cap (broker settings `max_lots`, default 1).
     max_lots: i64,
+    /// Bumped by the order stream on every account order update and connection change.
+    doorbell: Arc<AtomicU64>,
+    /// Opt-in (production): admit orders from the last clean reconciliation, no REST.
+    cached_admission: bool,
+    /// When the last clean reconciliation started and the doorbell value it covered.
+    clean: Option<(Instant, u64)>,
+    /// Orders admitted from cached state / from a full REST preflight.
+    admitted_cached: u64,
+    admitted_full: u64,
 }
 impl Dispatcher {
+    /// Shared counter the order stream bumps; any change invalidates cached admission.
+    pub fn doorbell(&self) -> Arc<AtomicU64> {
+        self.doorbell.clone()
+    }
+    /// Admit orders from the last clean reconciliation instead of a REST preflight.
+    pub fn with_cached_admission(mut self, enabled: bool) -> Self {
+        self.cached_admission = enabled;
+        self
+    }
+    /// Record a clean account observation started at `at`, covering doorbell value `bell`.
+    pub fn mark_clean(&mut self, at: Instant, bell: u64) {
+        if !self.poisoned {
+            self.clean = Some((at, bell));
+        }
+    }
+    /// (cached, full) preflight admissions so far.
+    pub fn admissions(&self) -> (u64, u64) {
+        (self.admitted_cached, self.admitted_full)
+    }
+    /// True while the last clean reconciliation still describes the account: recent, and
+    /// no order update or connection change has arrived since it started.
+    fn cached_fresh(&self) -> bool {
+        self.cached_admission
+            && !self.poisoned
+            && self.clean.is_some_and(|(at, bell)| {
+                at.elapsed() < CACHED_ADMISSION_MAX_AGE
+                    && self.doorbell.load(Ordering::Acquire) == bell
+            })
+    }
     pub fn unresolved(&self) -> usize {
         self.records
             .values()
@@ -47,6 +95,7 @@ impl Dispatcher {
     }
     pub fn fault(&mut self) {
         self.poisoned = true;
+        self.clean = None;
         let _ = self
             .store
             .health("ReviewRequired", self.unresolved(), self.position);
@@ -71,6 +120,13 @@ impl Dispatcher {
             self.fault();
         }
         let clean = !failed && !self.poisoned && !self.has_unresolved() && self.position == 0;
+        if self.cached_admission {
+            let (cached, full) = self.admissions();
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"native_admissions","cached":cached,"full_preflight":full})
+            );
+        }
         self.store.finish(clean, self.unresolved(), self.position)?;
         if !clean {
             self.poisoned = true;
@@ -132,6 +188,11 @@ impl Dispatcher {
             poisoned: false,
             position: 0,
             max_lots: 1,
+            doorbell: Arc::new(AtomicU64::new(0)),
+            cached_admission: false,
+            clean: None,
+            admitted_cached: 0,
+            admitted_full: 0,
         }
     }
     /// Raises the contract cap from 1 (reviewed `max_lots` setting, 1..=10).
@@ -185,44 +246,53 @@ impl Dispatcher {
                     .all(|r| OrderAny::from_events(r.events.clone()).is_ok_and(|o| o.is_closed())),
                 "Another native order remains unresolved"
             );
-            let snapshot = self.snapshot().await?;
-            ensure!(
-                snapshot
-                    .positions
-                    .iter()
-                    .filter(|p| p.quantity != 0)
-                    .all(|p| p.exchange == "MCX"
-                        && p.tradingsymbol == self.symbol
-                        && p.product == self.product
-                        && p.instrument_token == self.token),
-                "Unmanaged account exposure"
-            );
-            let reports = super::reports::positions_for(
-                &snapshot,
-                self.factory.account_id(),
-                &self.product,
-                self.token,
-                &self.instrument_id,
-                &self.symbol,
-                Self::now(),
-            )?;
-            let actual = reports[0].quantity.as_decimal();
-            let signed = if reports[0].position_side == nautilus_model::enums::PositionSide::Short {
-                -actual
-            } else {
-                actual
-            };
-            ensure!(
-                signed == rust_decimal::Decimal::from(position),
-                "Broker and native position differ"
-            );
-            ensure!(
-                snapshot
-                    .orders
-                    .iter()
-                    .all(|b| matches!(b.status.as_str(), "COMPLETE" | "CANCELLED" | "REJECTED")),
-                "Broker has an unresolved order for this contract"
-            );
+            // Cached admission: the last clean reconciliation already proved no unmanaged
+            // exposure, no unowned open order and the broker position. It still holds while
+            // it is recent, no order update/reconnect arrived since, nothing owned is
+            // unresolved and the native position matches it. Otherwise read REST as before.
+            let cached =
+                stream_ready.is_some() && self.cached_fresh() && self.position == position;
+            if !cached {
+                let snapshot = self.snapshot().await?;
+                ensure!(
+                    snapshot
+                        .positions
+                        .iter()
+                        .filter(|p| p.quantity != 0)
+                        .all(|p| p.exchange == "MCX"
+                            && p.tradingsymbol == self.symbol
+                            && p.product == self.product
+                            && p.instrument_token == self.token),
+                    "Unmanaged account exposure"
+                );
+                let reports = super::reports::positions_for(
+                    &snapshot,
+                    self.factory.account_id(),
+                    &self.product,
+                    self.token,
+                    &self.instrument_id,
+                    &self.symbol,
+                    Self::now(),
+                )?;
+                let actual = reports[0].quantity.as_decimal();
+                let signed =
+                    if reports[0].position_side == nautilus_model::enums::PositionSide::Short {
+                        -actual
+                    } else {
+                        actual
+                    };
+                ensure!(
+                    signed == rust_decimal::Decimal::from(position),
+                    "Broker and native position differ"
+                );
+                ensure!(
+                    snapshot.orders.iter().all(|b| matches!(
+                        b.status.as_str(),
+                        "COMPLETE" | "CANCELLED" | "REJECTED"
+                    )),
+                    "Broker has an unresolved order for this contract"
+                );
+            }
             use nautilus_model::enums::OrderSide;
             let qty = order.quantity().as_decimal();
             let held = rust_decimal::Decimal::from(position.unsigned_abs());
@@ -254,11 +324,23 @@ impl Dispatcher {
             );
             // Recheck after awaited broker reads: the stream may have disconnected.
             admission()?;
+            ensure!(
+                !cached || self.cached_fresh(),
+                "Account changed during cached admission"
+            );
             native::submit_with_position(&order, &self.product, &tag, position)
+                .map(|command| (command, cached))
         }
         .await;
         let command = match preflight {
-            Ok(c) => c,
+            Ok((c, cached)) => {
+                if cached {
+                    self.admitted_cached += 1;
+                } else {
+                    self.admitted_full += 1;
+                }
+                c
+            }
             Err(e) => {
                 if e.downcast_ref::<super::outage::ReadFailure>().is_some() {
                     self.fault();
@@ -289,9 +371,11 @@ impl Dispatcher {
         self.poisoned = true;
         self.store.save(&id, &record)?;
         self.records.insert(id.clone(), record.clone());
+        // The account state changes from here; the next order needs a new reconciliation.
+        self.clean = None;
         Self::emit(tx, submitted)?;
-        self.store
-            .health("Dispatching", self.unresolved(), self.position)?;
+        // No lease write here: the lease is already non-Clean for the whole run, so a crash
+        // blocks restart without it, and every fsynced write delays the order (~2.7 ms).
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(6),
             self.broker.execute(&command),
@@ -339,6 +423,10 @@ impl Dispatcher {
     }
     pub async fn refresh(&mut self, tx: &UnboundedSender<ExecutionEvent>) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
+        // Read the doorbell before any REST read: an update arriving during the reads
+        // leaves this observation unable to back cached admission.
+        let observed = (Instant::now(), self.doorbell.load(Ordering::Acquire));
+        self.clean = None;
         let broker = self.broker.clone();
         let result = super::outage::snapshot_checked(broker.as_ref(), |snapshot| {
             // Retain the exclusive dispatcher borrow across retries; Store is Send,
@@ -372,6 +460,7 @@ impl Dispatcher {
         self.store
             .health("Running", self.unresolved(), self.position)?;
         self.poisoned = false;
+        self.clean = Some(observed);
         Ok(())
     }
     fn prepare_observation(
@@ -616,14 +705,18 @@ impl Dispatcher {
             .broker_id
             .clone()
             .ok_or_else(|| anyhow!("Protective stop broker identity unknown"))?;
-        let snapshot = self.snapshot().await?;
-        ensure!(
-            snapshot.orders.iter().any(|o| o.order_id == broker_id
-                && o.status == "TRIGGER PENDING"
-                && o.tag.as_deref() == Some(record.tag.as_str())
-                && o.trigger_price == Some(rust_decimal::Decimal::from(old))),
-            "Protective stop not confirmed at broker"
-        );
+        // A fresh clean reconciliation already confirmed this stop (accepted, owned, at the
+        // recorded trigger) and nothing has changed at the broker since; otherwise ask REST.
+        if !self.cached_fresh() {
+            let snapshot = self.snapshot().await?;
+            ensure!(
+                snapshot.orders.iter().any(|o| o.order_id == broker_id
+                    && o.status == "TRIGGER PENDING"
+                    && o.tag.as_deref() == Some(record.tag.as_str())
+                    && o.trigger_price == Some(rust_decimal::Decimal::from(old))),
+                "Protective stop not confirmed at broker"
+            );
+        }
         let command = Command::ModifyProtectiveStop {
             order_id: broker_id.clone(),
             quantity: 1,
@@ -638,7 +731,7 @@ impl Dispatcher {
             .insert(key.clone(), format!("StopModify:{new_trigger}:Dispatching"));
         self.poisoned = true;
         self.store.save(id.as_str(), record)?;
-        self.store.health("Dispatching", 1, self.position)?;
+        self.clean = None;
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(6),
             self.broker.execute(&command),
@@ -691,7 +784,7 @@ impl Dispatcher {
         record.management.insert(key.clone(), "Dispatching".into());
         self.poisoned = true;
         self.store.save(id.as_str(), record)?;
-        self.store.health("Dispatching", 1, self.position)?;
+        self.clean = None;
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(6),
             self.broker.execute(&command),

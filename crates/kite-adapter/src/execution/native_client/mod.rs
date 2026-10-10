@@ -313,6 +313,18 @@ impl ExecutionClient for Client {
         } else {
             None
         };
+        // Taken before the startup reads; the stream monitor has not started, so no update
+        // can be counted yet (buffered ones bump the doorbell once it reads them).
+        let observed = match &self.dispatcher {
+            Some(d) => Some((
+                std::time::Instant::now(),
+                d.lock()
+                    .await
+                    .doorbell()
+                    .load(std::sync::atomic::Ordering::Acquire),
+            )),
+            None => None,
+        };
         let snapshot = outage::snapshot(self.broker.as_ref()).await?;
         reports::positions_for(
             &snapshot,
@@ -335,6 +347,11 @@ impl ExecutionClient for Client {
                     .all(|o| matches!(o.status.as_str(), "COMPLETE" | "CANCELLED" | "REJECTED")),
                 "Production startup requires no open broker orders"
             );
+            // A flat account with no open orders is a clean observation: the first order
+            // can be admitted from it (cached admission) while it stays fresh.
+            if let (Some(d), Some((at, bell))) = (&self.dispatcher, observed) {
+                d.lock().await.mark_clean(at, bell);
+            }
         }
         let state = reports::account(&snapshot, &self.factory, Self::now())?;
         Self::emit(ExecutionEvent::Account(state.clone()))?;
@@ -874,6 +891,9 @@ mod tests;
 
 #[cfg(test)]
 mod dispatch_tests;
+
+#[cfg(test)]
+mod cached_admission_tests;
 
 #[cfg(test)]
 mod fee_tests;

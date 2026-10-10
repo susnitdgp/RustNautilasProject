@@ -212,6 +212,15 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         run_id.to_string().split('-').next().unwrap_or("run")
     );
     kite_adapter::execution::native_client::coordination::check_startup_in(&p.keys, &account_id)?;
+    // Earlier runs' Nautilus caches are never read again: give them a retention TTL.
+    match persistence::expire_previous_runs(&p.trader_id) {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "{}",
+            serde_json::json!({"event":"nautilus_cache_retention","keys_expiring":n,"ttl_days":persistence::PREVIOUS_RUN_CACHE_TTL_SECS / 86400})
+        ),
+        Err(e) => eprintln!("Nautilus cache retention skipped: {e:#}"),
+    }
     let interval = p.config.interval();
     let mut control = Control::new(false).with_bar_ns(interval.nanoseconds());
     control.real = mode == Mode::Live;

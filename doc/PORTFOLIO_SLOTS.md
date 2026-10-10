@@ -109,6 +109,45 @@ market data, simulated fills, never Zerodha's order API).
   lease marked for review: the next start is refused until you check the account and the
   journal (`native-<strategy>-review`, `redis-utility/*-redis-status.sh`). There is no timeout
   takeover and no automatic unlock.
+* A run never resumes an earlier run: each start begins from a flat account with no open
+  orders and a fresh namespace. The journal of the run is what the review reads.
+
+### 3.5 Retention (kite-node 2.19.0)
+
+Run state is never read by a later run, so it expires instead of piling up:
+
+| State | When it gets a TTL | TTL |
+|---|---|---|
+| Command ledger of a run that finished **clean** | at that clean finish | 30 days |
+| Earlier command ledgers of the slot | when a new run takes the slot lease (only possible from `Clean`, so every earlier run is finished or reviewed) | 30 days |
+| Nautilus cache of earlier runs (`trader-kite-prod-<slot>:<uuid>:…`) | at the start of a new run, after the lease check | 7 days |
+
+A run that ends unclean keeps its ledger without a TTL until the review is done and a later
+run starts. `EXPIRE … NX` never shortens a TTL that is already set.
+
+### 3.6 Order admission (kite-adapter 0.2.9)
+
+The account is reconciled at startup (flat, no open orders) and then kept current: every
+Kite order-stream update, plus a 15 s fallback, triggers a REST reconciliation (orders, trades,
+positions, margins). An order is admitted **from that observation, without new REST reads**,
+when all of these hold:
+
+* the order stream is connected and has not reconnected since the observation;
+* no order update arrived since the observation started (any order on the account, manual ones
+  included);
+* the observation is under 20 s old;
+* no owned order is unresolved, and the strategy's position equals the observed position.
+
+Otherwise the full REST preflight runs as before. Contract cap and exposure-shape checks run on
+every order either way. A protective-stop modify skips its REST confirmation under the same
+rule. A manual order placed just before an admitted order is still caught by the
+reconciliation it triggers, which stops the run for review. The run log ends with
+`{"event":"native_admissions","cached":N,"full_preflight":M}`.
+
+Per order, the lease is no longer written before sending (it is non-`Clean` for the whole run,
+so a crash still blocks the next start). The remaining writes before sending are the lease's
+attempt counter, the shared order-rate budget and the journal record: three writes of about
+2.7 ms each with `appendfsync always` (Redis replies only after the disk fsync).
 
 ---
 
