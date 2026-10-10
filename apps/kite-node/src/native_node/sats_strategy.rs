@@ -19,7 +19,7 @@
 use super::live_control::Control;
 use super::{
     dash_writer::Feed,
-    sats_dashboard::{self, Board},
+    dashboard::{self, Board},
 };
 use super::sats_config::{Execution, ExitMode, SatsConfig};
 use super::sats_trail::{Bracket, BracketExit, Trail};
@@ -306,7 +306,7 @@ impl SatsStrategy {
     }
 
     fn log_json(&self, value: serde_json::Value) {
-        sats_dashboard::emit(value);
+        dashboard::emit(value);
     }
 
     fn log(&self, ev: &Event, lots: u32, note: &str) {
@@ -764,7 +764,7 @@ impl DataActor for SatsStrategy {
 
 nautilus_strategy!(SatsStrategy, {
     fn on_order_filled(&mut self, e: &OrderFilled) {
-        sats_dashboard::emit(serde_json::json!({
+        dashboard::emit(serde_json::json!({
             "event": "sats_fill",
             "instance": self.instance_id,
             "client_order_id": e.client_order_id.to_string(),

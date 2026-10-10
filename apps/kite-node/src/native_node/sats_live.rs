@@ -14,7 +14,7 @@
 use super::{
     data, live_bars, live_control::Control,
     dash_writer::{self, DashboardConfig},
-    sats_dashboard::{Board, emit, note},
+    dashboard::{Board, emit, note},
     portfolio::{Instance, Portfolio},
     sats_config::{self, SatsConfig},
     sats_strategy::SatsStrategy,
@@ -206,6 +206,8 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
     let square_off_ns = ist_ns(chrono::Utc::now().with_timezone(&ist()).date_naive(), p.config.live.square_off)? as i64;
     let board = Board {
         mode: mode_label.into(),
+        title: format!("SATS v{}", sats::PORT_VERSION),
+        model_title: "SATS".into(),
         slot: p.inst.id.clone(),
         instrument: p.inst.instrument.clone(),
         square_off: p.config.live.square_off.format("%H:%M").to_string(),

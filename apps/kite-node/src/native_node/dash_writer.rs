@@ -15,7 +15,7 @@
 //! `<base>` = `<prefix>:v1:{<slot>}:dash` (the portfolio key scheme). Redis being slow
 //! or down only delays the dashboard: the writer retries every 5 s and keeps the
 //! latest state and up to 500 unsent events. Nothing here can stall an order.
-use super::sats_dashboard::{Board, note};
+use super::dashboard::{Board, note};
 use anyhow::{Context, Result, ensure};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::Deserialize;

@@ -24,7 +24,7 @@
 use super::live_control::Control;
 use super::{
     dash_writer::Feed,
-    sats_dashboard::{self, Board},
+    dashboard::{self, Board},
 };
 use super::sniper_config::SniperConfig;
 use anyhow::Result;
@@ -209,7 +209,7 @@ impl SniperStrategy {
 
     fn log_json(&self, mut value: serde_json::Value) {
         value["instance"] = serde_json::Value::String(self.instance_id.clone());
-        sats_dashboard::emit(value);
+        dashboard::emit(value);
     }
 
     fn now_ns() -> i64 {
@@ -594,7 +594,7 @@ nautilus_strategy!(SniperStrategy, {
         let qty = e.last_qty.as_f64();
         let signed = if e.order_side == OrderSide::Buy { qty } else { -qty };
         let px = e.last_px.as_f64();
-        sats_dashboard::emit(serde_json::json!({"event":"sniper_fill","instance":self.instance_id,
+        dashboard::emit(serde_json::json!({"event":"sniper_fill","instance":self.instance_id,
             "client_order_id":e.client_order_id.to_string(),"side":format!("{:?}", e.order_side),"qty":qty,"price":px}));
         let side = e.order_side;
         self.exit_cancels = 0;

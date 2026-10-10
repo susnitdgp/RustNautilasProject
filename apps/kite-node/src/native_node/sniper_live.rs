@@ -14,7 +14,7 @@
 use super::{
     data, live_bars, live_control::Control,
     dash_writer::{self, DashboardConfig},
-    sats_dashboard::{Board, emit, note},
+    dashboard::{Board, emit, note},
     portfolio::{Instance, Portfolio},
     sniper_config::{self, SniperConfig},
     sniper_strategy::SniperStrategy,

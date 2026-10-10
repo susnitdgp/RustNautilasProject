@@ -166,7 +166,7 @@ fn spawn_backfill(
     state: super::live_backfill::Shared,
 ) {
     use super::live_backfill::State;
-    super::sats_dashboard::emit(serde_json::json!({
+    super::dashboard::emit(serde_json::json!({
         "event": "sats_backfill_scheduled", "from_epoch_s": gap.0, "to_epoch_s": gap.1,
     }));
     tokio::spawn(async move {
@@ -179,7 +179,7 @@ fn spawn_backfill(
             Ok(c) => c,
             Err(e) => {
                 *s = State::Abandoned;
-                super::sats_dashboard::emit(serde_json::json!({
+                super::dashboard::emit(serde_json::json!({
                     "event": "sats_backfill_failed", "reason": format!("{e:#}"),
                 }));
                 return;
@@ -193,7 +193,7 @@ fn spawn_backfill(
                     sent.push(c.timestamp.clone());
                 }
                 Err(e) => {
-                    super::sats_dashboard::emit(serde_json::json!({
+                    super::dashboard::emit(serde_json::json!({
                         "event": "sats_backfill_failed", "reason": format!("bar conversion: {e:#}"),
                     }));
                     break;
@@ -201,7 +201,7 @@ fn spawn_backfill(
             }
         }
         *s = State::Done;
-        super::sats_dashboard::emit(serde_json::json!({
+        super::dashboard::emit(serde_json::json!({
             "event": "sats_backfill_done", "bars": sent.len(), "bar_starts": sent,
         }));
     });
@@ -288,7 +288,7 @@ impl Client {
                                         let emitted = now() / 1_000_000;
                                         let close = b.ts_event.as_u64() / 1_000_000;
                                         let received = s.received_at_utc.timestamp_millis();
-                                        super::sats_dashboard::emit(serde_json::json!({
+                                        super::dashboard::emit(serde_json::json!({
                                             "event": "latency_bar",
                                             "instrument": config.instrument.id.to_string(),
                                             "bar_close_ms": close,
@@ -305,7 +305,7 @@ impl Client {
                                             let mut s = state.lock().unwrap_or_else(|p| p.into_inner());
                                             if *s == super::live_backfill::State::Pending {
                                                 *s = super::live_backfill::State::Abandoned;
-                                                super::sats_dashboard::emit(serde_json::json!({
+                                                super::dashboard::emit(serde_json::json!({
                                                     "event": "sats_backfill_abandoned",
                                                     "reason": "first live bar arrived before the backfill",
                                                 }));

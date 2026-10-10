@@ -1,4 +1,6 @@
-//! Live state of one slot run (Sniper or SATS) for the web dashboard.
+//! Live state of one slot run (any strategy: Sniper, SATS) for the web dashboard.
+//! Strategy-specific content comes from the strategy: the header `title`, and either
+//! its own `model_title` / `model_rows` panel or (SATS) the trend-model fields.
 //!
 //! The strategy never touches a `Board` directly: it pushes small updates through a
 //! lock-free queue ([`super::dash_writer`]) and one writer thread owns the board,
@@ -38,9 +40,9 @@ pub struct Board {
     pub redis_namespace: String,
     pub point_value: f64,
     pub lots: u32,
-    /// Header title; empty = "SATS v…".
+    /// Header title, set by the strategy runner (e.g. "SNIPER v2.1.0 · 3m Conservative").
     pub title: String,
-    /// Model panel: title and rows. Empty rows = the SATS panel.
+    /// Model panel: title and rows. Empty rows = the trend-model fields below.
     pub model_title: String,
     pub model_rows: Vec<(String, String)>,
     // feed
@@ -51,7 +53,7 @@ pub struct Board {
     /// Bar length (ns) for the next-bar countdown; 0 hides it.
     pub bar_ns: i64,
     pub feed_fault: Option<String>,
-    // SATS
+    // trend model (SATS fills SuperTrend / TQI; `warmed` and `trend` are shared)
     pub warmed: bool,
     pub trend: i8,
     pub supertrend: Option<f64>,
@@ -101,7 +103,7 @@ impl Board {
             let cost = self.entry_avg.unwrap_or(price) * before.abs() + price * signed_qty.abs();
             self.entry_avg = Some(cost / after.abs());
         } else {
-            // reducing / closing (no reversals: SATS flattens before re-entering)
+            // reducing, closing, or a flip (one order through zero, e.g. +2 → −3)
             let closed = signed_qty.abs().min(before.abs());
             if let Some(entry) = self.entry_avg {
                 self.realized_points += before.signum() * (price - entry) * closed;
@@ -111,6 +113,10 @@ impl Board {
                 self.round_trips += 1;
                 self.sl = None;
                 self.tps = None;
+            } else if after.signum() != before.signum() {
+                // flip: the old trade is closed; the remainder opens the new one here
+                self.entry_avg = Some(price);
+                self.round_trips += 1;
             }
         }
         self.position = after;
@@ -129,7 +135,7 @@ impl Board {
     }
 
     fn title(&self) -> String {
-        if self.title.is_empty() { format!("SATS v{}", sats::PORT_VERSION) } else { self.title.clone() }
+        if self.title.is_empty() { "Kite bot".into() } else { self.title.clone() }
     }
 
     pub fn unrealized_points(&self) -> Option<f64> {
@@ -238,6 +244,19 @@ mod tests {
         b.apply_fill(-1.0, 8800.0); // short
         b.apply_fill(1.0, 8810.0); // covered higher: loss
         assert_eq!(b.realized_points, 5.0);
+    }
+
+    #[test]
+    fn a_flip_closes_the_old_trade_and_opens_the_new_one_at_the_flip_price() {
+        let mut b = Board::default();
+        b.apply_fill(3.0, 8800.0);
+        b.apply_fill(-1.0, 8820.0); // TP1: +20 on 1 lot
+        b.apply_fill(-5.0, 8810.0); // flip +2 → −3: +10 on 2 lots, short 3 from 8810
+        assert_eq!(b.realized_points, 40.0);
+        assert_eq!((b.position, b.entry_avg, b.round_trips), (-3.0, Some(8810.0), 1));
+        b.apply_fill(3.0, 8790.0); // cover lower: +20 on 3 lots
+        assert_eq!(b.realized_points, 100.0);
+        assert_eq!((b.position, b.entry_avg, b.round_trips), (0.0, None, 2));
     }
 
     #[test]
