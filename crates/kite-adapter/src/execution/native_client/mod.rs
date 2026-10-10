@@ -387,6 +387,10 @@ impl ExecutionClient for Client {
                     }
                     tick = tick.wrapping_add(1);
                     let mut service = dispatcher.lock().await;
+                    service.note_trigger(
+                        nautilus_core::time::get_atomic_clock_realtime().get_time_ns().as_u64(),
+                        "paper_poll_1s",
+                    );
                     let result = match service.refresh(&tx).await {
                         Ok(()) if tick % 15 == 0 => service.audit().await,
                         other => other,

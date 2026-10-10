@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.24.0 / kite-adapter 0.7.0.
+Written for kite-node 2.24.1 / kite-adapter 0.7.1.
 
 ---
 
@@ -171,6 +171,24 @@ before the next order; an open manual order is still found by the next reconcili
 Per order this is: 0 reads + 1 place call; then one reconciliation (2 reads) when Kite's
 order update arrives. Until 0.6.0 it was two snapshots of 5 reads each; in 0.6.0 one snapshot
 of 4 reads.
+
+### 3.6b Latency log (kite-node 2.24.1)
+
+Each run writes three kinds of JSON line to its log (stdout):
+
+* `latency_bar`, one per live bar: `after_close_ms` (candle close to the bar reaching the
+  strategy) and `tick_age_ms` (age of the tick that closed it; exchange time has 1 s
+  resolution);
+* `latency_order_sent`, one per order: `strategy_to_send_ms` (order created to place call
+  out), `admission_ms`, `place_call_ms` (Kite round trip) and `outcome`;
+* `latency_fill`, one per fill: `trigger` (`order_update`, `pending_timer`, `fallback_15s`,
+  `reconnect`, `paper_poll_1s`, `direct`), `trigger_after_ack_ms` (for `order_update`: when
+  Kite's update arrived), `read_ms`, `applied_after_trigger_ms`, `send_to_applied_ms` and
+  `applied_after_kite_fill_ms` (approximate, 1 s resolution).
+
+`python3 tools/latency-report.py logs/<run>.jsonl` prints count, median, p90 and max per
+stage, plus candle close to fill applied. Paper runs use the simulated broker, so only the
+bar and strategy stages are real there; the order and fill stages need a live run.
 
 ---
 

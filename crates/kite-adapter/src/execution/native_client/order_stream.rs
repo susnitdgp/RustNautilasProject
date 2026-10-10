@@ -13,7 +13,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tokio::{
@@ -137,6 +137,10 @@ fn is_order(text: &str, user_id: &str) -> Result<Option<Postback>> {
     }
 }
 
+fn wall_ns() -> u64 {
+    nautilus_core::time::get_atomic_clock_realtime().get_time_ns().as_u64()
+}
+
 pub(super) async fn connect(credentials: &KiteCredentials) -> Result<transport::Socket> {
     transport::connect(credentials, Instant::now() + Duration::from_secs(10)).await
 }
@@ -161,14 +165,16 @@ impl Monitor {
         timing: Timing,
     ) -> Result<()> {
         let notify = Notify::new(); // One pending notification coalesces bursts.
+        // Wall-clock arrival (ns) of the latest order update, for the latency log.
+        let update_at = AtomicU64::new(0);
         let (connection_tx, connection_rx) = watch::channel(Connection {
             generation: 1,
             connected: true,
         });
         // Both futures belong to this task: no detached reader on stop/failure.
         let result = tokio::select! {
-            result = self.read(&mut socket, endpoint, timing, &notify, connection_tx) => result,
-            result = self.reconcile(timing, &notify, connection_rx) => result,
+            result = self.read(&mut socket, endpoint, timing, &notify, &update_at, connection_tx) => result,
+            result = self.reconcile(timing, &notify, &update_at, connection_rx) => result,
             _ = async {
                 while self.active.load(Ordering::Acquire) {
                     sleep(Duration::from_millis(100)).await;
@@ -189,6 +195,7 @@ impl Monitor {
         endpoint: &str,
         timing: Timing,
         notify: &Notify,
+        update_at: &AtomicU64,
         connection: watch::Sender<Connection>,
     ) -> Result<()> {
         let mut generation = 1;
@@ -200,6 +207,7 @@ impl Monitor {
                 Err(_) => continue,
                 Ok(Some(Ok(Message::Text(text)))) => {
                     if is_order(&text, &self.user_id)?.is_some() {
+                        update_at.store(wall_ns(), Ordering::Release);
                         notify.notify_one();
                     }
                 }
@@ -273,6 +281,7 @@ impl Monitor {
         &self,
         timing: Timing,
         notify: &Notify,
+        update_at: &AtomicU64,
         mut connection: watch::Receiver<Connection>,
     ) -> Result<()> {
         let mut fallback = interval_at(Instant::now() + timing.fallback, timing.fallback);
@@ -280,15 +289,19 @@ impl Monitor {
         fallback.set_missed_tick_behavior(MissedTickBehavior::Skip);
         pending.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            // (pending tick, account audit)
-            let (pending_check, audit) = tokio::select! {
-                _ = notify.notified() => (false, false),
-                _ = fallback.tick() => (false, true),
-                _ = pending.tick() => (true, false),
+            // (pending tick, account audit, what triggered this pass)
+            let (pending_check, audit, trigger) = tokio::select! {
+                _ = notify.notified() => (false, false, "order_update"),
+                _ = fallback.tick() => (false, true, "fallback_15s"),
+                _ = pending.tick() => (true, false, "pending_timer"),
                 changed = connection.changed() => {
                     changed.map_err(|_| anyhow!("Kite order-stream monitor closed"))?;
-                    (false, true)
+                    (false, true, "reconnect")
                 },
+            };
+            let triggered_at = match trigger {
+                "order_update" => update_at.load(Ordering::Acquire),
+                _ => wall_ns(),
             };
             if !self.active.load(Ordering::Acquire) {
                 return Ok(());
@@ -299,6 +312,7 @@ impl Monitor {
                 continue;
             }
             let before = *connection.borrow_and_update();
+            service.note_trigger(triggered_at, trigger);
             service.refresh(&self.tx).await?;
             if audit {
                 service.audit().await?;

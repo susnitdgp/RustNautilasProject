@@ -283,6 +283,23 @@ impl Client {
                                     config.interval,
                                 ) {
                                     Ok(b) => {
+                                        // Latency (2.24.1): how long after the candle's close
+                                        // the bar reaches the strategy, and the age of the
+                                        // tick that closed it (exchange time has 1 s resolution).
+                                        let emitted = now() / 1_000_000;
+                                        let close = b.ts_event.as_u64() / 1_000_000;
+                                        let received = s.received_at_utc.timestamp_millis();
+                                        super::sats_dashboard::emit(serde_json::json!({
+                                            "event": "latency_bar",
+                                            "instrument": config.instrument.id.to_string(),
+                                            "bar_close_ms": close,
+                                            "emitted_ms": emitted,
+                                            "after_close_ms": emitted as i64 - close as i64,
+                                            "tick_exchange_s": s.exchange_timestamp,
+                                            "tick_received_ms": received,
+                                            "tick_age_ms": s.exchange_timestamp
+                                                .map(|t| received - i64::from(t) * 1000),
+                                        }));
                                         // A backfill still pending now would arrive after
                                         // this bar: drop it so bars stay in order.
                                         if let Some(state) = backfill.take() {

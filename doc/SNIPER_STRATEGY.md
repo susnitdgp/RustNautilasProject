@@ -15,7 +15,7 @@ strategy through the native Kite execution client.
 | Shipped config | `config/sniper-crudeoilm.json` |
 | Launch scripts | `deploy/run-sniper-paper.sh`, `deploy/run-sniper-live.sh` |
 
-Written for kite-node 2.24.0 / kite-adapter 0.7.0 / sniper 2.1.0+3.
+Written for kite-node 2.24.1 / kite-adapter 0.7.1 / sniper 2.1.0+3.
 
 ---
 

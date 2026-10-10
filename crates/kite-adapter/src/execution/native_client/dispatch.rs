@@ -45,6 +45,30 @@ pub(crate) const AUDIT_GRACE: Duration = Duration::from_secs(20);
 /// (order update, 2 s pending timer) reads again.
 const BOOK_READS: u32 = 3;
 const BOOK_LAG_PAUSE: Duration = Duration::from_millis(150);
+/// Order-path wall-clock timestamps (ns) for the latency log (kite-adapter 0.7.1).
+#[derive(Clone, Copy, Debug, Default)]
+struct Timing {
+    /// The strategy created the order (`ts_init`).
+    created: u64,
+    /// Admission started (the dispatcher had the order).
+    admitting: u64,
+    /// The place call went out / came back.
+    sent: u64,
+    acked: u64,
+}
+fn wall_ns() -> u64 {
+    nautilus_core::time::get_atomic_clock_realtime().get_time_ns().as_u64()
+}
+fn ms(later: u64, earlier: u64) -> f64 {
+    (later as f64 - earlier as f64) / 1e6
+}
+/// One latency JSON line on stdout (the run log), never panicking.
+fn latency(value: serde_json::Value) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{value}");
+    let _ = out.flush();
+}
 struct PreparedObservation {
     position: i64,
     records: BTreeMap<String, Record>,
@@ -68,6 +92,11 @@ pub(crate) struct Dispatcher {
     audit_mismatch: Option<Instant>,
     /// `AUDIT_GRACE`, shortened only by tests.
     audit_grace: Duration,
+    /// Latency log: per client order id, until the order is closed.
+    timings: BTreeMap<String, Timing>,
+    /// What started the next reconciliation and when (ns): an order-stream update, the
+    /// pending or fallback timer, a reconnect, the paper poll. Taken by `refresh`.
+    trigger: Option<(u64, &'static str)>,
 }
 impl Dispatcher {
     #[cfg(test)]
@@ -179,7 +208,13 @@ impl Dispatcher {
             max_lots: 1,
             audit_mismatch: None,
             audit_grace: AUDIT_GRACE,
+            timings: BTreeMap::new(),
+            trigger: None,
         }
+    }
+    /// Records what is about to start the next reconciliation (latency log).
+    pub fn note_trigger(&mut self, at_ns: u64, kind: &'static str) {
+        self.trigger = Some((at_ns, kind));
     }
     /// Raises the contract cap from 1 (reviewed `max_lots` setting, 1..=10).
     pub fn with_max_lots(mut self, lots: u32) -> Self {
@@ -278,6 +313,11 @@ impl Dispatcher {
         stream_ready: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher stopped after a fault");
+        let mut timing = Timing {
+            created: order.ts_init().as_u64(),
+            admitting: wall_ns(),
+            ..Timing::default()
+        };
         let id = order.client_order_id().to_string();
         ensure!(
             !self.records.contains_key(&id),
@@ -332,12 +372,14 @@ impl Dispatcher {
         self.store.save(&id, &record)?;
         self.records.insert(id.clone(), record.clone());
         Self::emit(tx, submitted)?;
+        timing.sent = wall_ns();
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(6),
             self.broker.execute(&command),
         )
         .await
         .unwrap_or(Ok(Outcome::Unknown));
+        timing.acked = wall_ns();
         match response {
             Ok(Outcome::Acknowledged { order_id }) => {
                 record.broker_id = Some(order_id);
@@ -365,6 +407,15 @@ impl Dispatcher {
             }
         }
         self.store.save(&id, &record)?;
+        latency(serde_json::json!({"event":"latency_order_sent","order":id,
+            "instrument":self.instrument_id,"outcome":record.outcome,
+            "created_ms":timing.created / 1_000_000,
+            "strategy_to_send_ms":ms(timing.sent, timing.created),
+            "admission_ms":ms(timing.sent, timing.admitting),
+            "place_call_ms":ms(timing.acked, timing.sent)}));
+        if record.outcome == "Acknowledged" || record.outcome == "Unknown" {
+            self.timings.insert(id.clone(), timing);
+        }
         self.records.insert(id, record.clone());
         self.poisoned = false;
         if record.outcome == "Rejected" {
@@ -381,9 +432,13 @@ impl Dispatcher {
     /// events for every owned order.
     pub async fn refresh(&mut self, tx: &UnboundedSender<ExecutionEvent>) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher stopped after a fault");
+        let started = wall_ns();
+        let (trigger_at, trigger) = self.trigger.take().unwrap_or((started, "direct"));
         let broker = self.broker.clone();
         let mut prepared = None;
+        let mut reads = 0_u32;
         for read in 1..=BOOK_READS {
+            reads = read;
             let (orders, trades) = match outage::read(|| broker.book()).await {
                 Ok(book) => book,
                 Err(e) => {
@@ -420,10 +475,43 @@ impl Dispatcher {
             self.store.save(id, record)?;
         }
         self.records.extend(prepared.records);
+        let read_done = wall_ns();
+        let fills: Vec<(String, f64, u64)> = prepared
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                OrderEventAny::Filled(f) => Some((
+                    f.client_order_id.to_string(),
+                    f.last_qty.as_f64(),
+                    f.ts_event.as_u64(),
+                )),
+                _ => None,
+            })
+            .collect();
         for event in prepared.events {
             Self::emit(tx, event)?;
         }
         self.poisoned = false;
+        let applied = wall_ns();
+        for (id, qty, kite_fill) in fills {
+            let Some(t) = self.timings.get(&id).copied() else { continue };
+            // Kite's fill time has 1 s resolution: `after_kite_fill_ms` is approximate.
+            latency(serde_json::json!({"event":"latency_fill","order":id,
+                "instrument":self.instrument_id,"qty":qty,"trigger":trigger,
+                "trigger_after_ack_ms":ms(trigger_at, t.acked),
+                "reads":reads,"read_ms":ms(read_done, started),
+                "applied_after_trigger_ms":ms(applied, trigger_at),
+                "send_to_applied_ms":ms(applied, t.sent),
+                "strategy_to_applied_ms":ms(applied, t.created),
+                "kite_fill_s":kite_fill / 1_000_000_000,
+                "applied_after_kite_fill_ms":ms(applied, kite_fill)}));
+        }
+        let records = &self.records;
+        self.timings.retain(|id, _| {
+            records
+                .get(id)
+                .is_some_and(|r| OrderAny::from_events(r.events.clone()).is_ok_and(|o| !o.is_closed()))
+        });
         Ok(())
     }
     /// Background account audit (every 15 s): see `audit_once`. A mismatch of this
