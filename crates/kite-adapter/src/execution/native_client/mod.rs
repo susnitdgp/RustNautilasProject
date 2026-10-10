@@ -902,3 +902,6 @@ mod outage_tests;
 
 #[cfg(test)]
 mod postback_fill_tests;
+
+#[cfg(test)]
+mod budget_tests;

@@ -314,22 +314,25 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         let handle = node.handle();
         let watcher_control = control.clone();
         let seconds = p.run_seconds;
-        // Ctrl+C, SIGTERM (systemd/kill) and SIGHUP (SSH/terminal closed) all take the
-        // same path: flatten, wait for flat, stop. A dropped session never leaves a position.
+        // Ctrl+C, SIGTERM (systemd/kill), SIGHUP (SSH/terminal closed) and any run fault
+        // (feed gap or feed stopped, Kite order client stopped) all take the same path:
+        // flatten, wait for flat, stop. Without the fault branch a faulted run flattened
+        // but then sat idle, holding the slot lock, until the square-off window passed.
         use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sighup = signal(SignalKind::hangup())?;
         let watcher = tokio::spawn(async move {
-            let why = tokio::select! {
-                _ = tokio::signal::ctrl_c() => "Ctrl+C received: flattening and stopping SNIPER",
-                _ = sigterm.recv() => "SIGTERM received: flattening and stopping SNIPER",
-                _ = sighup.recv() => "Terminal/SSH closed (SIGHUP): flattening and stopping SNIPER",
-                _ = tokio::time::sleep(Duration::from_secs(seconds)) => "Square-off window passed: stopping SNIPER",
+            let why: String = tokio::select! {
+                _ = tokio::signal::ctrl_c() => "Ctrl+C received: flattening and stopping SNIPER".into(),
+                _ = sigterm.recv() => "SIGTERM received: flattening and stopping SNIPER".into(),
+                _ = sighup.recv() => "Terminal/SSH closed (SIGHUP): flattening and stopping SNIPER".into(),
+                reason = watcher_control.wait_fault() => format!("FAULT: {reason}. Flattening and stopping SNIPER"),
+                _ = tokio::time::sleep(Duration::from_secs(seconds)) => "Square-off window passed: stopping SNIPER".into(),
             };
-            emit(serde_json::json!({"event":"sniper_stop_requested","reason":why}));
+            emit(serde_json::json!({"event":"sniper_stop_requested","reason":&why}));
             watcher_feed.push(move |b| {
                 b.status = "STOPPING".into();
-                b.event(why.into());
+                b.event(why);
             });
             watcher_control.stopping.store(true, std::sync::atomic::Ordering::Release);
             for _ in 0..240 {

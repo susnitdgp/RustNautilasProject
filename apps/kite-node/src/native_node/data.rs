@@ -103,6 +103,18 @@ struct Client {
 pub fn now() -> u64 {
     chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default() as u64
 }
+/// Why the end of the live market-data stream must fault the run, if it must.
+/// An error always faults; a stream that ended stale faults unless the run is already
+/// stopping. A clean end (duration reached, last packet fresh) does not.
+fn feed_end_fault(outcome: &Result<supervisor::Summary>, stopping: bool) -> Option<String> {
+    match outcome {
+        Err(e) => Some(format!("Kite market-data feed stopped: {e:#}")),
+        Ok(s) if !s.final_source_fresh && !stopping => {
+            Some("Kite market-data feed ended without fresh data".into())
+        }
+        Ok(_) => None,
+    }
+}
 fn status(tx: &tokio::sync::mpsc::UnboundedSender<DataEvent>, kind: &str, generation: u32) {
     let event = FeedStatus {
         kind: kind.into(),
@@ -231,7 +243,11 @@ impl Client {
                             let _ = tx.send(DataEvent::Data(Data::Bar(v)));
                         }
                         Err(e) => {
-                            eprintln!("Warmup bar failed: {e}");
+                            let reason = format!("Warm-up bar could not be converted: {e}");
+                            if let Some((_, _, control)) = &config.live_bars {
+                                control.fail(&reason);
+                            }
+                            eprintln!("{reason}");
                             return;
                         }
                     }
@@ -327,6 +343,15 @@ impl Client {
                     )
                     .await
                 };
+                // The strategies never read the status event: a feed that ends with an error
+                // (Kite error frame, bad packet, foreign token, stale stream) must fault the
+                // run, or quotes and bars just stop while a position is open.
+                if let Some((_, _, control)) = &config.live_bars {
+                    let stopping = control.stopping.load(std::sync::atomic::Ordering::Acquire);
+                    if let Some(reason) = feed_end_fault(&outcome, stopping) {
+                        control.fail(&reason);
+                    }
+                }
                 status(
                     &tx,
                     if outcome.is_ok_and(|s| s.final_source_fresh) {
@@ -460,5 +485,24 @@ impl DataClient for Client {
     }
     fn unsubscribe_quotes(&mut self, _: &UnsubscribeQuotes) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod feed_end_tests {
+    use super::*;
+    #[test]
+    fn feed_errors_and_stale_ends_fault_the_run_clean_ends_do_not() {
+        let err: Result<supervisor::Summary> = Err(anyhow!("Kite WebSocket reported an error"));
+        assert!(feed_end_fault(&err, false).unwrap().contains("feed stopped"));
+        // an error faults even while stopping (the reason is recorded once by Control::fail)
+        assert!(feed_end_fault(&err, true).is_some());
+        let stale: Result<supervisor::Summary> = Ok(supervisor::Summary::default());
+        assert!(feed_end_fault(&stale, false).unwrap().contains("without fresh data"));
+        assert!(feed_end_fault(&stale, true).is_none(), "a stopping run ends stale normally");
+        let mut summary = supervisor::Summary::default();
+        summary.final_source_fresh = true;
+        let fresh: Result<supervisor::Summary> = Ok(summary);
+        assert!(feed_end_fault(&fresh, false).is_none());
     }
 }

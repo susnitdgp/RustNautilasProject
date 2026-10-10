@@ -1,7 +1,7 @@
 //! Production order notifications trigger REST reconciliation; payloads never create fills.
-//! A COMPLETE notification for an owned order first takes the postback fast path: that
-//! order and its trades are read over REST (one round trip) and its fills emitted with
-//! real Kite trade IDs; the full account snapshot follows and must confirm them.
+//! A COMPLETE notification is also offered to the postback fast path
+//! (`Dispatcher::fast_fill`), which is switched off since kite-adapter 0.5.0 and then
+//! returns at once without any REST read; the full account snapshot handles every fill.
 //! Dedicated socket: no market-data subscription and no broker mutations.
 use super::dispatch::Dispatcher;
 use crate::{credentials::KiteCredentials, websocket::transport};
@@ -9,9 +9,12 @@ use anyhow::{Result, anyhow, bail, ensure};
 use futures_util::{SinkExt, StreamExt};
 use nautilus_common::messages::ExecutionEvent;
 use serde::Deserialize;
-use std::sync::{
-    Arc, Mutex as StdMutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 use tokio::{
     sync::{Mutex, Notify, mpsc::UnboundedSender, watch},
@@ -26,7 +29,10 @@ struct Timing {
     fallback: Duration,
     pending: Duration,
     idle: Duration,
+    /// Base delay before a reconnect attempt (multiplied by the attempt number).
     reconnect: Duration,
+    /// Sliding window for `MAX_RECONNECTS_PER_WINDOW`.
+    window: Duration,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -35,8 +41,34 @@ impl Default for Timing {
             pending: Duration::from_secs(5),
             idle: Duration::from_secs(10),
             reconnect: Duration::from_millis(500),
+            window: Duration::from_secs(600),
         }
     }
+}
+
+/// Drops allowed inside `Timing::window` before the run stops (kite-adapter 0.5.0; until
+/// then it was 2 reconnects per run, so the 3rd drop of a 14-hour session ended it).
+const MAX_RECONNECTS_PER_WINDOW: usize = 3;
+/// Connection attempts per drop, with a growing delay, before the run stops.
+const CONNECT_ATTEMPTS: u32 = 3;
+
+/// Records a reconnect at `now` if fewer than `MAX_RECONNECTS_PER_WINDOW` happened in the
+/// last `window`; returns whether it is allowed.
+fn reconnect_allowed(history: &mut VecDeque<Instant>, now: Instant, window: Duration) -> bool {
+    while history.front().is_some_and(|t| now.duration_since(*t) >= window) {
+        history.pop_front();
+    }
+    if history.len() >= MAX_RECONNECTS_PER_WINDOW {
+        return false;
+    }
+    history.push_back(now);
+    true
+}
+
+/// A stderr line that never panics (unlike `eprintln!` once the terminal is gone).
+fn note(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -165,6 +197,7 @@ impl Monitor {
         connection: watch::Sender<Connection>,
     ) -> Result<()> {
         let mut generation = 1;
+        let mut reconnects = VecDeque::new();
         loop {
             match timeout_at(Instant::now() + timing.idle, socket.next()).await {
                 // A quiet order stream is healthy. REST fallback/pending timers continue
@@ -206,27 +239,46 @@ impl Monitor {
                         connected: false,
                     });
                     self.ready.store(false, Ordering::Release);
-                    eprintln!("Kite order stream disconnected; new entries paused, reconciling");
+                    note("Kite order stream disconnected; new entries paused, reconciling");
                     transport::close(socket).await;
                     ensure!(
-                        generation < 3,
-                        "Kite order-stream reconnect budget exhausted"
+                        reconnect_allowed(&mut reconnects, Instant::now(), timing.window),
+                        "Kite order stream dropped {MAX_RECONNECTS_PER_WINDOW} times within {} min",
+                        timing.window.as_secs() / 60
                     );
-                    sleep(timing.reconnect * generation).await;
-                    // Authentication/handshake failure is terminal, never retried blindly.
-                    *socket = transport::connect_at(
-                        &self.credentials,
-                        Instant::now() + Duration::from_secs(10),
-                        endpoint,
-                    )
-                    .await?;
+                    // A few spaced attempts, then give up: a bad session (expired token)
+                    // fails every attempt and must not be hammered.
+                    let mut attempt = 0;
+                    *socket = loop {
+                        attempt += 1;
+                        sleep(timing.reconnect * attempt).await;
+                        match transport::connect_at(
+                            &self.credentials,
+                            Instant::now() + Duration::from_secs(10),
+                            endpoint,
+                        )
+                        .await
+                        {
+                            Ok(fresh) => break fresh,
+                            Err(e) if attempt < CONNECT_ATTEMPTS => {
+                                note(&format!(
+                                    "Kite order-stream reconnect attempt {attempt}/{CONNECT_ATTEMPTS} failed: {e:#}"
+                                ));
+                            }
+                            Err(e) => {
+                                return Err(e.context(format!(
+                                    "Kite order stream: reconnect failed {CONNECT_ATTEMPTS} times"
+                                )));
+                            }
+                        }
+                    };
                     generation += 1;
                     doorbell.fetch_add(1, Ordering::AcqRel);
                     connection.send_replace(Connection {
                         generation,
                         connected: true,
                     });
-                    eprintln!("Kite order stream reconnected; validating broker state");
+                    note("Kite order stream reconnected; validating broker state");
                 }
                 Ok(Some(Ok(_))) => {}
             }

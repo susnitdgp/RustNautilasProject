@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.21.2 / kite-adapter 0.4.0.
+Written for kite-node 2.22.0 / kite-adapter 0.5.0.
 
 ---
 
@@ -146,7 +146,17 @@ one round trip of about 0.06 ms with `appendfsync everysec` (2.21.1; it was ~2.8
 `always` plus a disk confirmation). The journal record and the lease attempt counter are gone
 (2.21.0). A Redis crash can lose at most the last second of budget counts.
 
-### 3.7 Postback fills (kite-adapter 0.3.1)
+### 3.7 Postback fills (kite-adapter 0.3.1; switched off since 0.5.0)
+
+**Switched off in kite-adapter 0.5.0 / kite-node 2.22.0.** Two problems found in review:
+(1) after a fast-path fill, a full snapshot whose positions still lag the trades was treated
+as a fatal mismatch instead of being retried, stopping the run with the position open, and an
+order sent right after was denied for the same reason; (2) a MARKET order's own post-submit
+refresh holds the dispatcher and usually sees the fill first, so the gain was small. The code
+and its tests stay; `Dispatcher::fast_fill` returns at once without any REST read. Every fill
+reaches the strategy through the full reconciliation, as before 0.3.1. What follows describes
+the switched-off path.
+
 
 A fill used to reach the strategy only through the full REST reconciliation: five sequential
 reads (orders, trades, positions, margins, orders again), retried after 250 ms and 500 ms
@@ -202,7 +212,18 @@ than `max_lots` as long as the resulting position is within it.
 
 The order budget is the program's own cap on Kite order calls (placements, modifications,
 cancellations, failed attempts): **5 per second, 100 per minute, 1000 per day per Kite
-account**, shared by every slot on that account.
+account**, shared by every slot on that account. Since kite-adapter 0.5.0, when the budget is
+exhausted or Redis fails:
+* a **new entry** (or flip) is denied (`OrderDenied`, the strategy decides what follows);
+* an **exit** (reduce-only), a stop modification or a cancel still goes out, with a
+  `native_budget_bypassed` line in the log (Kite's own limits are higher than this budget);
+* after a Redis error the budget reconnects on the next order instead of refusing every order
+  for the rest of the run. Before 0.5.0 either case stopped the whole run, open position
+  included.
+
+The Kite order stream (order updates) may drop and reconnect **3 times in any 10 minutes**,
+with up to 3 connection attempts per drop (0.5 s, 1 s, 1.5 s apart). Beyond that the run
+faults, flattens and stops. Before 0.5.0 it was 2 reconnects per run and a single attempt.
 
 ---
 

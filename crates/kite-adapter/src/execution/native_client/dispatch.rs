@@ -70,8 +70,18 @@ pub(crate) struct Dispatcher {
     postback_fills: u64,
     /// `POSTBACK_VERIFY_GRACE`, shortened only by tests.
     verify_grace: Duration,
+    /// Postback fast path (2.20.1). OFF since 2.22.0: a fill it emits can be followed by a
+    /// snapshot whose positions still lag, which the checks below treat as fatal, and a
+    /// MARKET order's own post-submit refresh usually sees the fill first anyway. Kept,
+    /// with its tests, until it is reworked; nothing in production turns it on.
+    postback_fast_fill: bool,
 }
 impl Dispatcher {
+    /// Enables the postback fast path (tests only until it is reworked).
+    #[cfg(test)]
+    pub fn set_postback_fast_fill(&mut self, enabled: bool) {
+        self.postback_fast_fill = enabled;
+    }
     /// Shared counter the order stream bumps; any change invalidates cached admission.
     pub fn doorbell(&self) -> Arc<AtomicU64> {
         self.doorbell.clone()
@@ -207,6 +217,7 @@ impl Dispatcher {
             verifying: BTreeMap::new(),
             postback_fills: 0,
             verify_grace: POSTBACK_VERIFY_GRACE,
+            postback_fast_fill: false,
         }
     }
     /// Raises the contract cap from 1 (reviewed `max_lots` setting, 1..=10).
@@ -221,6 +232,12 @@ impl Dispatcher {
     }
     fn now() -> UnixNanos {
         nautilus_core::time::get_atomic_clock_realtime().get_time_ns()
+    }
+    /// One JSON line on stderr. Unlike `eprintln!`, never panics when stderr is gone
+    /// (e.g. the terminal closed): a log line must not kill the order path.
+    fn warn(value: serde_json::Value) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{value}");
     }
     fn emit(tx: &UnboundedSender<ExecutionEvent>, event: OrderEventAny) -> Result<()> {
         tx.send(ExecutionEvent::Order(event))
@@ -375,7 +392,24 @@ impl Dispatcher {
                 );
             }
         };
-        self.store.reserve()?;
+        // Order-rate budget: a Redis error or an exhausted budget denies a new entry, but
+        // never blocks an exit (Kite's own limits are higher than this budget). Until 0.5.0
+        // either case stopped the whole run, open position included.
+        if let Err(e) = self.store.reserve() {
+            if order.is_reduce_only() {
+                Self::warn(serde_json::json!({"event":"native_budget_bypassed",
+                    "client_order_id":id,"reduce_only":true,"reason":format!("{e:#}")}));
+            } else {
+                return Self::emit(
+                    tx,
+                    self.factory.generate_order_denied(
+                        &order,
+                        &format!("Order-rate budget: {e:#}"),
+                        Self::now(),
+                    ),
+                );
+            }
+        }
         let submitted = self.factory.generate_order_submitted(&order, Self::now());
         let mut record = Record {
             events: order.events().iter().map(|e| (*e).clone()).collect(),
@@ -509,7 +543,7 @@ impl Dispatcher {
     ) -> Result<bool> {
         use nautilus_model::enums::{OrderSide, OrderStatus};
         use rust_decimal::prelude::ToPrimitive;
-        if self.poisoned {
+        if !self.postback_fast_fill || self.poisoned {
             return Ok(false);
         }
         let Some((id, record)) = self
@@ -862,7 +896,11 @@ impl Dispatcher {
         use rust_decimal::prelude::ToPrimitive;
         ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
         ensure!(new_trigger > 0, "Invalid protective stop trigger");
-        self.store.reserve()?;
+        // Protective: never blocked by the order-rate budget (see `submit_guarded`).
+        if let Err(e) = self.store.reserve() {
+            Self::warn(serde_json::json!({"event":"native_budget_bypassed",
+                "client_order_id":id.to_string(),"command":"modify_stop","reason":format!("{e:#}")}));
+        }
         let record = self
             .records
             .get(id.as_str())
@@ -954,7 +992,12 @@ impl Dispatcher {
         tx: &UnboundedSender<ExecutionEvent>,
     ) -> Result<()> {
         ensure!(!self.poisoned, "Native dispatcher requires manual recovery");
-        self.store.reserve()?;
+        // A cancel precedes an exit (SATS cancels its SL-M first): never blocked by the
+        // order-rate budget (see `submit_guarded`).
+        if let Err(e) = self.store.reserve() {
+            Self::warn(serde_json::json!({"event":"native_budget_bypassed",
+                "client_order_id":id.to_string(),"command":"cancel","reason":format!("{e:#}")}));
+        }
         let record = self
             .records
             .get_mut(id.as_str())

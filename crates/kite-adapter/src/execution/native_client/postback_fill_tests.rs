@@ -158,7 +158,7 @@ fn fixture(inner: MockBroker, grace: Duration) -> Fixture {
         AccountType::Margin,
         Some(Currency::INR()),
     );
-    let d = Dispatcher::new(
+    let mut d = Dispatcher::new(
         broker.clone(),
         Box::new(Memory(records.clone())),
         factory,
@@ -168,6 +168,8 @@ fn fixture(inner: MockBroker, grace: Duration) -> Fixture {
         "CRUDEOIL26SEPFUT".into(),
     )
     .with_verify_grace(grace);
+    // Off by default since 2.22.0; these tests exercise the path itself.
+    d.set_postback_fast_fill(true);
     let (tx, rx) = unbounded_channel();
     Fixture {
         d,
@@ -195,6 +197,25 @@ async fn submitted(f: &mut Fixture) -> (OrderAny, String) {
     }
     let id = f.records.lock().unwrap().last().unwrap().broker_id.clone().unwrap();
     (o, id)
+}
+
+#[tokio::test]
+async fn fast_path_is_off_by_default_and_reads_nothing() {
+    let mut f = fixture(MockBroker::new(144870151, "NRML"), Duration::from_secs(30));
+    f.d.set_postback_fast_fill(false);
+    let (_, id) = submitted(&mut f).await;
+    let before = f.records.lock().unwrap().len();
+    assert!(!f.d.fast_fill(&id, &f.tx).await.unwrap());
+    assert_eq!(f.broker.detail_reads.load(SeqCst), 0, "no REST reads when off");
+    assert!(drain(&mut f.rx).is_empty());
+    assert_eq!(f.records.lock().unwrap().len(), before);
+    assert!(!f.d.needs_refresh() || f.d.has_unresolved());
+    // the full reconciliation fills it as before
+    f.d.refresh(&f.tx).await.unwrap();
+    assert!(matches!(
+        &drain(&mut f.rx)[..],
+        [OrderEventAny::Accepted(_), OrderEventAny::Filled(_)]
+    ));
 }
 
 #[tokio::test]

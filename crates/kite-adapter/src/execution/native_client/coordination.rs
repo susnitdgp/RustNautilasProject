@@ -101,8 +101,16 @@ const ORDER_POLICY: Policy = Policy {
 };
 
 /// The account's Kite order-rate budget in Redis, shared by every process on the account.
+///
+/// A failed Redis call leaves the outcome unknown (the count may or may not have been
+/// taken), which is harmless for a rate budget. So instead of staying unusable for the
+/// rest of the run (the limiter refuses everything after one error), the connection is
+/// dropped and reopened on the next call (kite-adapter 0.5.0). The caller decides what an
+/// error means for the order: see `Dispatcher` (entries are denied, exits still go out).
 pub(crate) struct OrderBudget {
-    limiter: Limiter,
+    url: String,
+    key: String,
+    limiter: Option<Limiter>,
 }
 impl OrderBudget {
     pub fn open(keys: &super::keys::KeySpace, account: &str) -> Result<Self> {
@@ -120,19 +128,42 @@ impl OrderBudget {
             Some(key) => key,
             None => Limiter::key(&format!("native-account-{account}"))?,
         };
+        // Opened at start-up: a run does not start without a working budget.
+        let limiter = Limiter::open_or_create_key(url, &key, ORDER_POLICY)?;
         Ok(Self {
-            limiter: Limiter::open_or_create_key(url, &key, ORDER_POLICY)?,
+            url: url.to_owned(),
+            key,
+            limiter: Some(limiter),
         })
     }
+    fn limiter(&mut self) -> Result<&mut Limiter> {
+        if self.limiter.is_none() {
+            self.limiter = Some(
+                Limiter::open_or_create_key(&self.url, &self.key, ORDER_POLICY)
+                    .context("Order-rate budget: Redis reopen failed")?,
+            );
+        }
+        Ok(self.limiter.as_mut().expect("limiter just set"))
+    }
     pub fn reserve(&mut self) -> Result<()> {
-        ensure!(
-            matches!(self.limiter.reserve()?, Decision::Allowed),
-            "Account command rate budget exhausted; no dispatch"
-        );
-        Ok(())
+        let decision = self.limiter()?.reserve();
+        match decision {
+            Ok(Decision::Allowed) => Ok(()),
+            Ok(Decision::Deferred { retry_after_ms }) => {
+                anyhow::bail!("order-rate budget exhausted (free again in {retry_after_ms} ms)")
+            }
+            Err(e) => {
+                self.limiter = None;
+                Err(e.context("order-rate budget unavailable (Redis); will reconnect"))
+            }
+        }
     }
     pub fn cooldown(&mut self, ms: u64) -> Result<()> {
-        self.limiter.cooldown(ms.clamp(10_000, 86_400_000))
+        let result = self.limiter()?.cooldown(ms.clamp(10_000, 86_400_000));
+        if result.is_err() {
+            self.limiter = None;
+        }
+        result
     }
 }
 

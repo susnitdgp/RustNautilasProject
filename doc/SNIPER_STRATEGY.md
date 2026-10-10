@@ -15,7 +15,7 @@ strategy through the native Kite execution client.
 | Shipped config | `config/sniper-crudeoilm.json` |
 | Launch scripts | `deploy/run-sniper-paper.sh`, `deploy/run-sniper-live.sh` |
 
-Written for kite-node 2.21.2 / kite-adapter 0.4.0 / sniper 2.1.0+3.
+Written for kite-node 2.22.0 / kite-adapter 0.5.0 / sniper 2.1.0+3.
 
 ---
 
@@ -334,11 +334,27 @@ stop still moves only at the bar close, exactly as in the Pine script.
 
 ### 8.5 Safety stops (halt and flatten)
 
-Any of these halts new entries, sets the target to flat and flattens (up to 3 attempts):
+Any of these halts new entries, sets the target to flat and flattens:
 * an order **rejected** by Kite or **denied** by the adapter's pre-order check;
-* an order not resolved by the broker within **30 s**;
+* an order not resolved by the broker within **30 s** (the run is not reported flat while that
+  order may still be live at Kite);
 * the model wanting more lots on the same side than are open (for example, a partly filled flip);
-* a feed fault (gap, invalid packet, reconnect) or a stop request (Ctrl+C, SIGTERM, SIGHUP).
+* an exit order cancelled by Kite 5 times in a row;
+* a run fault or a stop request (Ctrl+C, SIGTERM, SIGHUP). Run faults: a feed gap or invalid
+  packet, the market-data feed stopping with an error or going stale, or the Kite order client
+  stopping itself (order stream lost, session expired, failed reconciliation). On a fault the
+  runner flattens, waits up to 60 s for flat and **stops the process** (2.22.0; before that a
+  faulted run sat idle, holding the slot lock, until the square-off window passed).
+
+Flattening never gives up (2.22.0): the first 3 attempts go out on consecutive guard ticks,
+then one every 10 s until flat. Until 2.22.0 it stopped after 3 attempts for the rest of the
+day, which denials caused by an unresolved earlier order could use up in about 3 s.
+
+**Orders cancelled by Kite** (for example when market protection cannot be met), 2.22.0:
+* an entry or flip is **not** re-sent: that trade is abandoned and anything that filled is
+  flattened; later signals still trade;
+* an exit is re-sent on the next tick, up to 5 times in a row, then the strategy halts and
+  keeps flattening. Until 2.22.0 any cancelled order was silently re-sent on every tick.
 
 The adapter also refuses any order if the Zerodha account holds another position or an open
 order it does not own (see `PORTFOLIO_SLOTS.md`).

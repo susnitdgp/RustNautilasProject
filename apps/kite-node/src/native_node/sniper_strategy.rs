@@ -34,7 +34,7 @@ use nautilus_core::DurationNanos;
 use nautilus_model::{
     data::{Bar, BarType, QuoteTick},
     enums::{OrderSide, TimeInForce},
-    events::{OrderDenied, OrderFilled, OrderRejected},
+    events::{OrderCanceled, OrderDenied, OrderExpired, OrderFilled, OrderRejected},
     identifiers::{ClientId, ClientOrderId},
     orders::Order,
     types::Quantity,
@@ -56,8 +56,38 @@ const IN_FLIGHT_NS: i64 = 30_000_000_000;
 const BACKFILLED_NS: i64 = 10_000_000_000;
 /// No new entries on a bar delivered later than this after its close.
 const MAX_ENTRY_LATENESS_NS: i64 = 90_000_000_000;
-/// After a halt, how many flatten attempts before waiting for the operator.
-const MAX_FLATTEN_ATTEMPTS: u32 = 3;
+/// After a halt the first flatten attempts go out on every guard tick, then one every
+/// `FLATTEN_RETRY_NS` until flat. It never gives up: until 2.22.0 it stopped for the rest
+/// of the day after 3 attempts, which an unresolved earlier order (each attempt denied at
+/// once) could use up in ~3 s.
+const FLATTEN_FAST_ATTEMPTS: u32 = 3;
+const FLATTEN_RETRY_NS: i64 = 10_000_000_000;
+/// Consecutive broker-cancelled exit orders before the strategy halts (it keeps flattening).
+const MAX_EXIT_CANCELS: u32 = 5;
+
+/// Whether a halted strategy may send its next flatten order now.
+pub fn flatten_due(attempts: u32, last_ns: i64, now_ns: i64) -> bool {
+    attempts < FLATTEN_FAST_ATTEMPTS || now_ns.saturating_sub(last_ns) >= FLATTEN_RETRY_NS
+}
+
+/// What to do when the broker cancels or expires one of our orders without filling it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BrokerClosed {
+    /// An exit (reduce-only): leave the target; the next tick sends it again.
+    RetryExit,
+    /// An entry or flip (or an order the cache does not know): give up this trade
+    /// (target 0, flatten whatever filled) without re-sending; later signals still trade.
+    AbandonTrade,
+    /// Too many cancelled exits in a row: halt (it keeps flattening, with backoff).
+    Halt,
+}
+pub fn on_broker_closed(reduce_only: Option<bool>, exit_cancels: u32) -> BrokerClosed {
+    match reduce_only {
+        Some(true) if exit_cancels < MAX_EXIT_CANCELS => BrokerClosed::RetryExit,
+        Some(true) => BrokerClosed::Halt,
+        _ => BrokerClosed::AbandonTrade,
+    }
+}
 
 fn ist() -> FixedOffset {
     FixedOffset::east_opt(19_800).expect("IST")
@@ -113,6 +143,12 @@ pub struct SniperStrategy {
     last_close_ns: i64,
     halted: Option<String>,
     flatten_attempts: u32,
+    last_flatten_ns: i64,
+    /// Orders that passed `IN_FLIGHT_NS` unresolved: they may still be live at Kite, so the
+    /// run is never reported flat while any of them is open.
+    timed_out: Vec<ClientOrderId>,
+    /// Exit orders the broker cancelled in a row (reset by any fill).
+    exit_cancels: u32,
     board: Option<Feed>,
     live_started: bool,
 }
@@ -141,6 +177,9 @@ impl SniperStrategy {
             last_close_ns: 0,
             halted: None,
             flatten_attempts: 0,
+            last_flatten_ns: 0,
+            timed_out: Vec::new(),
+            exit_cancels: 0,
             board: None,
             live_started: false,
         }
@@ -297,18 +336,21 @@ impl SniperStrategy {
             } else {
                 if Self::now_ns() - sent > IN_FLIGHT_NS {
                     self.in_flight = None;
+                    self.timed_out.push(id);
                     self.halt("order not resolved by the broker within 30 s; check Kite");
                 }
                 return Ok(());
             }
         }
+        self.forget_closed_timed_out();
         let pos = self.position();
         let target = if self.halted.is_some() || self.stopping() { 0 } else { self.target };
         if pos == target {
-            self.set_flat(pos == 0);
+            self.set_flat(pos == 0 && self.timed_out.is_empty());
             return Ok(());
         }
-        if self.halted.is_some() && self.flatten_attempts >= MAX_FLATTEN_ATTEMPTS {
+        let now = Self::now_ns();
+        if self.halted.is_some() && !flatten_due(self.flatten_attempts, self.last_flatten_ns, now) {
             self.set_flat(false);
             return Ok(());
         }
@@ -318,6 +360,7 @@ impl SniperStrategy {
         };
         if self.halted.is_some() {
             self.flatten_attempts += 1;
+            self.last_flatten_ns = now;
         }
         let order = self.order().market(
             self.bar_type.instrument_id(),
@@ -337,6 +380,54 @@ impl SniperStrategy {
         self.board(move |b| b.event(format!("ORDER {side:?} {qty} lot{} (position {pos} → target {target})", if reduce { " reduce-only" } else { "" })));
         self.submit_order(order, None, None, None)?;
         Ok(())
+    }
+
+    /// Drops timed-out orders the cache now shows as closed.
+    fn forget_closed_timed_out(&mut self) {
+        if self.timed_out.is_empty() {
+            return;
+        }
+        let still_open: Vec<ClientOrderId> = {
+            let cache = self.cache();
+            self.timed_out
+                .iter()
+                .filter(|id| !cache.order(id).is_some_and(|o| o.is_closed()))
+                .copied()
+                .collect()
+        };
+        self.timed_out = still_open;
+    }
+
+    /// The broker cancelled or expired one of our orders (no fill, or only part of it).
+    /// An entry or flip is never re-sent (it would chase the price away from the model's
+    /// levels): this trade is abandoned and whatever filled is flattened; later signals
+    /// still trade. An exit is re-sent by the next tick, up to `MAX_EXIT_CANCELS` in a
+    /// row, then the strategy halts (and keeps flattening).
+    fn closed_by_broker(&mut self, id: ClientOrderId, how: &str) {
+        if self.in_flight.is_some_and(|(i, _)| i == id) {
+            self.in_flight = None;
+        }
+        let reduce_only = self.cache().order(&id).map(|o| o.is_reduce_only());
+        self.log_json(serde_json::json!({"event":"sniper_order_closed_by_broker","client_order_id":id.to_string(),
+            "how":how,"reduce_only":reduce_only,"exit_cancels":self.exit_cancels}));
+        match on_broker_closed(reduce_only, self.exit_cancels) {
+            BrokerClosed::RetryExit => {
+                self.exit_cancels += 1;
+                let n = self.exit_cancels;
+                let how = how.to_owned();
+                self.board(move |b| b.event(format!("Exit order {how} by Kite; retrying ({n}/{MAX_EXIT_CANCELS})")));
+            }
+            BrokerClosed::AbandonTrade => {
+                self.target = 0;
+                self.ours = false;
+                let how = how.to_owned();
+                self.board(move |b| b.event(format!("Entry/flip order {how} by Kite: trade abandoned, not re-sent")));
+                self.show_levels();
+            }
+            BrokerClosed::Halt => {
+                self.halt(&format!("exit order {how} by Kite {MAX_EXIT_CANCELS} times in a row; flattening"));
+            }
+        }
     }
 
     /// Every quote: stop first, then TP1 / TP2 / TP3 on the executable price.
@@ -492,7 +583,7 @@ impl DataActor for SniperStrategy {
         }
         self.reconcile()?;
         if self.in_flight.is_none() {
-            self.set_flat(self.position() == 0);
+            self.set_flat(self.position() == 0 && self.timed_out.is_empty());
         }
         Ok(())
     }
@@ -506,6 +597,7 @@ nautilus_strategy!(SniperStrategy, {
         sats_dashboard::emit(serde_json::json!({"event":"sniper_fill","instance":self.instance_id,
             "client_order_id":e.client_order_id.to_string(),"side":format!("{:?}", e.order_side),"qty":qty,"price":px}));
         let side = e.order_side;
+        self.exit_cancels = 0;
         self.board(move |b| {
             b.apply_fill(signed, px);
             b.event(format!("FILL {side:?} {qty:.0} @ {px:.0}"));
@@ -513,6 +605,12 @@ nautilus_strategy!(SniperStrategy, {
         if let Err(err) = self.reconcile() {
             self.halt(&format!("order after fill failed: {err:#}"));
         }
+    }
+    fn on_order_canceled(&mut self, e: &OrderCanceled) {
+        self.closed_by_broker(e.client_order_id, "cancelled");
+    }
+    fn on_order_expired(&mut self, e: OrderExpired) {
+        self.closed_by_broker(e.client_order_id, "expired");
     }
     fn on_order_rejected(&mut self, e: OrderRejected) {
         if self.in_flight.is_some_and(|(id, _)| id == e.client_order_id) {
@@ -550,5 +648,25 @@ mod tests {
         assert_eq!(next_order(1, 3), None);
         assert_eq!(next_order(-1, -3), None);
         assert_eq!(next_order(2, 2), None);
+    }
+    #[test]
+    fn flattening_after_a_halt_never_gives_up() {
+        let s = 1_000_000_000_i64;
+        // the first attempts go out on every guard tick
+        assert!(flatten_due(0, 0, 0));
+        assert!(flatten_due(2, 100 * s, 100 * s));
+        // then one every 10 s, for as long as it takes (it used to stop after 3)
+        assert!(!flatten_due(3, 100 * s, 105 * s));
+        assert!(flatten_due(3, 100 * s, 110 * s));
+        assert!(!flatten_due(500, 100 * s, 109 * s));
+        assert!(flatten_due(500, 100 * s, 3600 * s));
+    }
+    #[test]
+    fn broker_cancels_never_re_send_entries_and_retry_exits_a_bounded_number_of_times() {
+        assert_eq!(on_broker_closed(Some(false), 0), BrokerClosed::AbandonTrade, "entry/flip");
+        assert_eq!(on_broker_closed(None, 0), BrokerClosed::AbandonTrade, "unknown order");
+        assert_eq!(on_broker_closed(Some(true), 0), BrokerClosed::RetryExit);
+        assert_eq!(on_broker_closed(Some(true), MAX_EXIT_CANCELS - 1), BrokerClosed::RetryExit);
+        assert_eq!(on_broker_closed(Some(true), MAX_EXIT_CANCELS), BrokerClosed::Halt);
     }
 }

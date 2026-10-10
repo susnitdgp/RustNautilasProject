@@ -175,6 +175,25 @@ fn timing() -> Timing {
         pending: Duration::from_secs(30),
         idle: Duration::from_secs(3),
         reconnect: Duration::from_millis(20),
+        window: Duration::from_secs(600),
+    }
+}
+
+#[test]
+fn reconnect_budget_is_per_window_not_per_run() {
+    let mut history = std::collections::VecDeque::new();
+    let t0 = Instant::now();
+    let window = Duration::from_secs(600);
+    // three drops in quick succession are allowed, a fourth inside 10 min is not
+    for i in 0..3 {
+        assert!(reconnect_allowed(&mut history, t0 + Duration::from_secs(i), window));
+    }
+    assert!(!reconnect_allowed(&mut history, t0 + Duration::from_secs(60), window));
+    // spread over a long session they never run out (until 2.22.0 the 3rd drop of the
+    // day stopped the run)
+    let mut spread = std::collections::VecDeque::new();
+    for i in 0..20 {
+        assert!(reconnect_allowed(&mut spread, t0 + Duration::from_secs(i * 300), window));
     }
 }
 async fn until(mut predicate: impl FnMut() -> bool) {
