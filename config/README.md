@@ -10,3 +10,5 @@
 | `kite-production.example.json` | Template for the broker settings |
 | `kite-sandbox.example.toml` | Template for Kite sandbox runs |
 | `mcx-session-calendar.json` | MCX holidays and special sessions |
+| `dashboard.json` | Dashboard Redis URL (`redis_dashboard_url`); gitignored, holds a password (see `doc/LIVE_DASHBOARD.md`) |
+| `dashboard.example.json` | Template for the dashboard settings |

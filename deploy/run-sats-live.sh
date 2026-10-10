@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# run-sats-live.sh v1.1.0
 # SATS CRUDEOILM LIVE run: places REAL Zerodha orders (1 lot, MIS, square-off 23:15 IST).
 # Gates: --features live-orders build, slot enabled + live_orders_enabled in
 # config/portfolio-production.json, live_orders_enabled in config/kite-production.json,
@@ -17,7 +18,8 @@ read -r -p 'Type LIVE to proceed: ' CONFIRM
 [[ "$CONFIRM" == 'LIVE' ]] || { echo 'Cancelled.'; exit 1; }
 mkdir -p logs
 LOG="logs/sats-live-$(TZ=Asia/Kolkata date +%F).jsonl"
-echo "Dashboard starting; JSON events -> $LOG"
+echo "Live state -> dashboard Redis (config/dashboard.json); JSON events -> $LOG"
 # stdout (JSON) goes straight to the file: no pipe, so Ctrl+C reaches only the
-# runner, which flattens and stops cleanly. The dashboard draws on stderr.
+# runner, which flattens and stops cleanly. Short notes go to stderr; the live
+# state is published to the dashboard Redis by a background thread.
 exec "$BIN" native-sats-live "$PORTFOLIO" "$SLOT" "$BROKER" >> "$LOG"

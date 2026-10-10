@@ -17,7 +17,10 @@
 //!   once the entry fills; every other exit cancels it (confirmed) and only then
 //!   sends the market exit, so the two can never both fill.
 use super::live_control::Control;
-use super::sats_dashboard::{self, Board, Shared};
+use super::{
+    dash_writer::Feed,
+    sats_dashboard::{self, Board},
+};
 use super::sats_config::{Execution, ExitMode, SatsConfig};
 use super::sats_trail::{Bracket, BracketExit, Trail};
 use anyhow::Result;
@@ -77,7 +80,7 @@ pub struct SatsStrategy {
     exiting: bool,
     last_close_ns: i64,
     halted: Option<String>,
-    board: Option<Shared>,
+    board: Option<Feed>,
     /// The "warm-up finished" dashboard event was shown.
     warm_reported: bool,
     /// Same-bar entry waiting for this run's closing order to fill (event, deadline ns).
@@ -158,17 +161,16 @@ impl SatsStrategy {
         self
     }
 
-    /// Live terminal dashboard state, updated on every bar, quote, order and fill.
-    pub fn with_dashboard(mut self, board: Shared) -> Self {
+    /// Live dashboard feed (see `dash_writer`), updated on every bar, quote, order and fill.
+    pub fn with_dashboard(mut self, board: Feed) -> Self {
         self.board = Some(board);
         self
     }
 
-    fn board(&self, f: impl FnOnce(&mut Board)) {
-        if let Some(b) = &self.board
-            && let Ok(mut b) = b.lock()
-        {
-            f(&mut b);
+    /// Queues a dashboard update; never blocks (see `dash_writer`).
+    fn board(&self, f: impl FnOnce(&mut Board) + Send + 'static) {
+        if let Some(feed) = &self.board {
+            feed.push(f);
         }
     }
 
@@ -177,7 +179,7 @@ impl SatsStrategy {
         let status = self.engine.status().clone();
         let label = close_ist.format("%d %b %H:%M").to_string();
         let open_lots = self.open_lots;
-        self.board(|b| {
+        self.board(move |b| {
             b.last_bar = Some((label, close));
             if live_bar {
                 b.live_bars += 1;
@@ -214,7 +216,7 @@ impl SatsStrategy {
         // full stream bar.
         let now_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let gap_close = DateTime::from_timestamp_nanos((now_ns / self.bar_ns + 1) * self.bar_ns).with_timezone(&ist());
-        self.board(|b| {
+        self.board(move |b| {
             let msg = format!(
                 "Warm-up done on {} history bars · trend {trend} · warmed {} · bar closing {} is backfilled from Kite history ~45s later",
                 b.history_bars,
@@ -265,10 +267,11 @@ impl SatsStrategy {
 
     fn halt(&mut self, reason: &str) {
         self.log_json(serde_json::json!({"event":"sats_halted","instance":self.instance_id,"reason":reason}));
-        self.board(|b| {
-            b.halted = Some(reason.to_owned());
+        let why = reason.to_owned();
+        self.board(move |b| {
+            b.event(format!("HALTED: {why}"));
+            b.halted = Some(why);
             b.status = "HALTED".into();
-            b.event(format!("HALTED: {reason}"));
         });
         self.halted = Some(reason.to_owned());
         if self.pending_entry.take().is_some() {
@@ -362,9 +365,10 @@ impl SatsStrategy {
         let stage = trail.stage_label();
         self.trail = Some(trail);
         if let Some(m) = moved {
-            self.board(|b| {
+            let text = format!("TRAIL {m}");
+            self.board(move |b| {
                 b.sl = Some(stop);
-                b.event(format!("TRAIL {m}"));
+                b.event(text);
             });
             self.log_json(serde_json::json!({"event":"sats_trail","instance":self.instance_id,"move":m,"stop":stop,"price":px}));
         }
@@ -384,7 +388,7 @@ impl SatsStrategy {
         let status = self.engine.status().clone();
         let Some(trail) = self.trail.as_mut() else { return };
         if let Some(stop) = trail.on_bar_close(&self.execution.trail, status.trend, status.supertrend) {
-            self.board(|b| {
+            self.board(move |b| {
                 b.sl = Some(stop);
                 b.event(format!("TRAIL stop -> SuperTrend {stop:.0}"));
             });
@@ -445,7 +449,7 @@ impl SatsStrategy {
             None,
         );
         self.stop_order = Some(order.client_order_id());
-        self.board(|b| {
+        self.board(move |b| {
             b.exchange_stop = Some(sl.round());
             b.event(format!("SL-M {order_side:?} {:.0} lot @ {:.0} sent to Zerodha", position.abs(), sl.round()));
         });
@@ -458,9 +462,10 @@ impl SatsStrategy {
     fn exchange_stop_failed(&mut self, reason: &str) {
         self.stop_order = None;
         self.stop_unavailable = Some(reason.to_owned());
-        self.board(|b| {
+        let text = format!("SL-M refused by broker ({reason}); program SL protects this run");
+        self.board(move |b| {
             b.exchange_stop = None;
-            b.event(format!("SL-M refused by broker ({reason}); program SL protects this run"));
+            b.event(text);
         });
         self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"refused","reason":reason}));
     }
@@ -480,7 +485,8 @@ impl SatsStrategy {
                 self.exit_after_cancel = Some((why.to_owned(), Self::now_ns() + CANCEL_EXIT_NS));
                 self.exiting = true;
                 self.set_flat(false);
-                self.board(|b| b.event(format!("Cancelling SL-M before exit ({why})")));
+                let text = format!("Cancelling SL-M before exit ({why})");
+                self.board(move |b| b.event(text));
                 self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"cancel","reason":why}));
                 self.cancel_order(id, None, None)?;
             }
@@ -509,7 +515,8 @@ impl SatsStrategy {
         );
         self.exiting = true;
         self.set_flat(false);
-        self.board(|b| b.event(format!("FLATTEN {side:?} {:.0} lot ({why})", position.abs())));
+        let text = format!("FLATTEN {side:?} {:.0} lot ({why})", position.abs());
+        self.board(move |b| b.event(text));
         self.log_json(serde_json::json!({"event":"sats_flatten","instance":self.instance_id,"reason":why,"qty":position.abs(),"side":format!("{side:?}")}));
         self.submit_order(order, None, None, None)?;
         Ok(())
@@ -525,7 +532,7 @@ impl SatsStrategy {
             }
             if !entries_allowed {
                 self.log(&ev, 0, "entry blocked (square-off reached, stopping, or halted)");
-                self.board(|b| b.event(format!("{} signal blocked (cut-off/stopping/halted)", ev.kind.label())));
+                self.board(move |b| b.event(format!("{} signal blocked (cut-off/stopping/halted)", ev.kind.label())));
                 return Ok(());
             }
             self.live_entry_bar = Some(ev.trade.entry_bar);
@@ -569,7 +576,7 @@ impl SatsStrategy {
             // its fill (guard timer / fill handler), never stack the entry on top of it.
             let deadline = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) + PENDING_ENTRY_NS;
             self.log(&ev, lots, "entry deferred until the closing order fills");
-            self.board(|b| b.event(format!("{} waiting for exit fill before entering", ev.kind.label())));
+            self.board(move |b| b.event(format!("{} waiting for exit fill before entering", ev.kind.label())));
             self.pending_entry = Some((ev, deadline));
             return Ok(());
         }
@@ -601,7 +608,7 @@ impl SatsStrategy {
         }
         self.log(&ev, lots, "order submitted");
         let t = ev.trade.clone();
-        self.board(|b| {
+        self.board(move |b| {
             b.event(format!("{} {side:?} {lots} lot  (model {:.0}, SL {:.0}, TP1 {:.0})", ev.kind.label(), ev.fill, t.sl, t.tp1));
             if ev.kind.is_entry() {
                 b.sl = Some(t.sl);
@@ -671,7 +678,7 @@ impl DataActor for SatsStrategy {
         if at_or_after_cutoff && self.squared_off_on != Some(close_ist.date_naive()) {
             self.squared_off_on = Some(close_ist.date_naive());
             self.log_json(serde_json::json!({"event":"sats_square_off","instance":self.instance_id,"bar_close_ist":close_ist.format("%Y-%m-%d %H:%M").to_string()}));
-            self.board(|b| {
+            self.board(move |b| {
                 b.status = "SQUARED OFF".into();
                 b.event("Daily square-off: flattening, no new entries today".into());
             });
@@ -683,7 +690,7 @@ impl DataActor for SatsStrategy {
         let too_late = late_ns > MAX_ENTRY_LATENESS_NS;
         if late_ns > BACKFILLED_NS {
             let secs = late_ns / 1_000_000_000;
-            self.board(|b| b.event(format!(
+            self.board(move |b| b.event(format!(
                 "Backfilled bar {} from Kite history ({secs}s after close){}",
                 close_ist.format("%H:%M"),
                 if too_late { " · too late for an entry, exits only" } else { "" }
@@ -720,7 +727,7 @@ impl DataActor for SatsStrategy {
             let (bid, ask) = (quote.bid_price.as_f64(), quote.ask_price.as_f64());
             let mid = (bid + ask) / 2.0;
             live.market_price.store(mid.round() as i64, Ordering::Release);
-            self.board(|b| b.last_price = Some(mid));
+            self.board(move |b| b.last_price = Some(mid));
             if self.trail_mode() {
                 self.check_trail(bid, ask)?;
             } else if self.bracket_mode() {
@@ -738,7 +745,7 @@ impl DataActor for SatsStrategy {
             if self.halted.is_none() {
                 let fault = self.live.as_ref().and_then(|l| l.control.fault.lock().ok().and_then(|f| f.clone()));
                 let shown = fault.clone();
-                self.board(|b| {
+                self.board(move |b| {
                     b.feed_fault = shown;
                     b.status = "STOPPING".into();
                 });
@@ -768,15 +775,16 @@ nautilus_strategy!(SatsStrategy, {
         let qty = e.last_qty.as_f64();
         let signed = if e.order_side == OrderSide::Buy { qty } else { -qty };
         let px = e.last_px.as_f64();
-        self.board(|b| {
+        let side = e.order_side;
+        self.board(move |b| {
             b.apply_fill(signed, px);
-            b.event(format!("FILL {:?} {qty:.0} @ {px:.0}", e.order_side));
+            b.event(format!("FILL {side:?} {qty:.0} @ {px:.0}"));
         });
         if self.stop_order == Some(e.client_order_id) {
             // the SL-M executed at the exchange
             self.stop_order = None;
             self.exit_after_cancel = None;
-            self.board(|b| {
+            self.board(move |b| {
                 b.exchange_stop = None;
                 b.event(format!("SL-M executed at Zerodha @ {px:.0}"));
             });
@@ -813,7 +821,7 @@ nautilus_strategy!(SatsStrategy, {
             return;
         }
         self.stop_order = None;
-        self.board(|b| {
+        self.board(move |b| {
             b.exchange_stop = None;
             b.event("SL-M cancelled at Zerodha".into());
         });
@@ -827,7 +835,7 @@ nautilus_strategy!(SatsStrategy, {
     fn on_order_cancel_rejected(&mut self, e: OrderCancelRejected) {
         if self.stop_order == Some(e.client_order_id) {
             // usually the SL-M has just triggered; its fill flattens the position
-            self.board(|b| b.event(format!("SL-M cancel refused ({}); waiting for its fill", e.reason)));
+            self.board(move |b| b.event(format!("SL-M cancel refused ({}); waiting for its fill", e.reason)));
             self.log_json(serde_json::json!({"event":"sats_exchange_stop","instance":self.instance_id,"action":"cancel_rejected","reason":e.reason.to_string()}));
         }
     }

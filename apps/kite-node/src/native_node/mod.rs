@@ -41,6 +41,7 @@ mod sniper_config;
 mod sniper_live;
 mod sniper_strategy;
 pub mod sats_config;
+mod dash_writer;
 mod sats_dashboard;
 mod sats_live;
 mod sats_strategy;

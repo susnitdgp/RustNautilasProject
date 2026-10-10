@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-sniper-live.sh v1.0.0
+# run-sniper-live.sh v1.1.0
 # Precision Sniper CRUDEOILM LIVE run: places REAL Zerodha orders (lots, TP1/TP2 lots,
 # timeframe, blackouts all from config/sniper-crudeoilm.json; MIS, square-off from the same file).
 # Gates: --features live-orders build, slot enabled + live_orders_enabled in
@@ -20,7 +20,8 @@ read -r -p 'Type LIVE to proceed: ' CONFIRM
 [[ "$CONFIRM" == 'LIVE' ]] || { echo 'Cancelled.'; exit 1; }
 mkdir -p logs
 LOG="logs/sniper-live-$(TZ=Asia/Kolkata date +%F).jsonl"
-echo "Dashboard starting; JSON events -> $LOG"
+echo "Live state -> dashboard Redis (config/dashboard.json); JSON events -> $LOG"
 # stdout (JSON) goes straight to the file: no pipe, so Ctrl+C reaches only the
-# runner, which flattens and stops cleanly. The dashboard draws on stderr.
+# runner, which flattens and stops cleanly. Short notes go to stderr; the live
+# state is published to the dashboard Redis by a background thread.
 exec "$BIN" native-sniper-live "$PORTFOLIO" "$SLOT" "$BROKER" >> "$LOG"

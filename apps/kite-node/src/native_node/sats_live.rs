@@ -13,7 +13,8 @@
 //! and stops. Any feed gap or invalid packet fails closed (flatten, stop).
 use super::{
     data, live_bars, live_control::Control, persistence,
-    sats_dashboard::{self, Board, emit, note},
+    dash_writer::{self, DashboardConfig},
+    sats_dashboard::{Board, emit, note},
     portfolio::{Instance, Portfolio},
     sats_config::{self, SatsConfig},
     sats_strategy::SatsStrategy,
@@ -223,8 +224,12 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         lots: p.config.lots,
         bar_ns: p.config.bar_ns(),
         ..Board::default()
-    }
-    .shared();
+    };
+    // Dashboard: strategy and stop watcher push into their own lock-free queues; one
+    // thread owns the board and publishes it to the dashboard Redis (never the trading one).
+    let dash_url = DashboardConfig::load(dash_writer::CONFIG_PATH)?.map(|c| c.redis_dashboard_url);
+    let dash_keys = dash_writer::Keys::new(&p.keys.dashboard());
+    let (dashboard, [strategy_feed, watcher_feed]) = dash_writer::start::<2>(board, dash_url.clone(), dash_keys.clone())?;
 
     tokio::runtime::Runtime::new()?.block_on(async {
         let mut cfg = LiveNodeConfig {
@@ -293,12 +298,11 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         node.add_strategy(
             SatsStrategy::new(&p.inst.id, bar_type, &p.config, p.config.engine()?, true)
                 .with_data_client("KITE".into())
-                .with_dashboard(board.clone())
+                .with_dashboard(strategy_feed)
                 .with_live(p.start_ns as i64, p.config.live.square_off_minute(), control.clone(), market_price.clone()),
         )?;
         let handle = node.handle();
         let watcher_control = control.clone();
-        let watcher_board = board.clone();
         let seconds = p.run_seconds;
         // Ctrl+C, SIGTERM (systemd/kill) and SIGHUP (SSH/terminal closed) all take the
         // same path: flatten, wait for flat, stop. A dropped session never leaves a position.
@@ -313,10 +317,10 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
                 _ = tokio::time::sleep(Duration::from_secs(seconds)) => "Square-off window passed: stopping SATS",
             };
             emit(serde_json::json!({"event":"sats_stop_requested","reason":why}));
-            if let Ok(mut b) = watcher_board.lock() {
+            watcher_feed.push(move |b| {
                 b.status = "STOPPING".into();
                 b.event(why.into());
-            }
+            });
             watcher_control.stopping.store(true, std::sync::atomic::Ordering::Release);
             for _ in 0..240 {
                 if watcher_control.flat.load(std::sync::atomic::Ordering::Acquire) {
@@ -324,10 +328,8 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            if !watcher_control.flat.load(std::sync::atomic::Ordering::Acquire)
-                && let Ok(mut b) = watcher_board.lock()
-            {
-                b.event("SHUTDOWN WARNING: position not confirmed flat; check Kite immediately".into());
+            if !watcher_control.flat.load(std::sync::atomic::Ordering::Acquire) {
+                watcher_feed.push(|b| b.event("SHUTDOWN WARNING: position not confirmed flat; check Kite immediately".into()));
             }
             handle.stop();
         });
@@ -337,18 +339,16 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
                 "redis_commands": p.keys.commands(&namespace)?, "redis_lease": p.keys.lease(&account_id)?,
                 "redis_order_budget": p.keys.order_budget(&account_id)?,
                 "nautilus_cache": format!("trader-{}:{}:*", p.trader_id, run_id),
+                "dashboard_redis": dash_url.is_some(), "dashboard_state": &dash_keys.state,
+                "dashboard_events": &dash_keys.events, "dashboard_live": &dash_keys.live,
                 "instance": p.inst.id, "instrument": p.instrument.id.to_string(), "bar_type": bar_type.to_string(),
                 "warmup_bars": p.warmup.len(), "square_off": p.config.live.square_off.to_string(),
                 "runs_for_seconds": seconds, "lots": p.config.lots, "exit": p.config.execution,
             }),
         );
-        let renderer = sats_dashboard::spawn(board.clone(), square_off_ns);
         let result = node.run_with_mode(NodeRunMode::Hosted).await;
         watcher.abort();
-        if let Some(d) = renderer {
-            d.close();
-        }
-        let final_board = board.lock().map(|b| b.render(chrono::Utc::now().with_timezone(&ist()), square_off_ns)).unwrap_or_default();
+        let final_board = dashboard.close().render(chrono::Utc::now().with_timezone(&ist()), square_off_ns);
         note(&final_board);
         let fault = control.fault.lock().ok().and_then(|f| f.clone());
         if let Err(err) = result {

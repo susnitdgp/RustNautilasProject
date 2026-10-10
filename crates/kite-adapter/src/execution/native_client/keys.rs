@@ -10,6 +10,7 @@
 //! | command ledger| `<prefix>:v1:{<slot>}:commands:<run namespace>`       |
 //! | slot lease    | `<prefix>:v1:{<slot>}:lease:<kite user>`              |
 //! | order budget  | `<prefix>:v1:{account-<kite user>}:order-budget`      |
+//! | live dashboard| `<prefix>:v1:{<slot>}:dash` (+ `:state`, `:events`, `:live`) |
 //!
 //! The order budget is per Kite account (Kite's limits are per API key), so all
 //! slots of a portfolio trading the same account share it; leases are per slot,
@@ -72,6 +73,15 @@ impl KeySpace {
         })
     }
 
+    /// Base key of the live dashboard data (written to the dashboard Redis, not the
+    /// trading one); the writer appends `:state`, `:events` and `:live`.
+    pub fn dashboard(&self) -> String {
+        match self {
+            Self::Legacy => "susanta:nautilus:native-kite:dash".into(),
+            Self::Portfolio { prefix, slot } => format!("{prefix}:v1:{{{slot}}}:dash"),
+        }
+    }
+
     /// Full order-budget key for portfolio key spaces; `None` for legacy, which
     /// keeps the rate limiter's own `native-account-<user>` scope.
     pub fn order_budget(&self, user: &str) -> Result<Option<String>> {
@@ -98,6 +108,7 @@ mod tests {
     #[test]
     fn portfolio_names_follow_the_manifest_scheme() {
         let k = KeySpace::portfolio("kite-prod", "crudeoilm-sats-202610").unwrap();
+        assert_eq!(k.dashboard(), "kite-prod:v1:{crudeoilm-sats-202610}:dash");
         assert_eq!(
             k.commands("20261009-f03e92db").unwrap(),
             "kite-prod:v1:{crudeoilm-sats-202610}:commands:20261009-f03e92db"

@@ -1,11 +1,20 @@
-//! Live terminal dashboard for one `sats` slot run, drawn on stderr once a second.
+//! Live state of one slot run (Sniper or SATS) for the web dashboard.
+//!
+//! The strategy never touches a `Board` directly: it pushes small updates through a
+//! lock-free queue ([`super::dash_writer`]) and one writer thread owns the board,
+//! applies them and publishes it to the dashboard Redis. At the end of the run the
+//! board is printed once as text on stderr.
+//!
 //! JSON event logs go to stdout (a file); output errors are ignored everywhere so a
 //! closed terminal or log can never crash the runner.
+use serde::Serialize;
 use std::collections::VecDeque;
-use std::io::{IsTerminal, Write};
-use std::sync::{Arc, Mutex};
+use std::io::Write;
 
-pub type Shared = Arc<Mutex<Board>>;
+/// Events kept in the snapshot (newest first).
+const EVENTS_KEPT: usize = 8;
+/// Events waiting for the writer, kept while the dashboard Redis is unreachable.
+const PENDING_KEPT: usize = 500;
 
 /// Writes one JSON event line to stdout; never panics on a broken pipe.
 pub fn emit(value: serde_json::Value) {
@@ -19,7 +28,7 @@ pub fn note(text: &str) {
     let _ = writeln!(std::io::stderr().lock(), "{text}");
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct Board {
     pub mode: String,
     pub slot: String,
@@ -62,19 +71,24 @@ pub struct Board {
     // control
     pub status: String,
     pub halted: Option<String>,
+    /// Dashboard updates dropped because the queue was full (should stay 0).
+    pub dropped: u64,
     pub(crate) events: VecDeque<String>,
+    /// New events (epoch ms, text) not yet written to the dashboard event stream.
+    #[serde(skip)]
+    pub(crate) pending: VecDeque<(i64, String)>,
 }
 
 impl Board {
-    pub fn shared(mut self) -> Shared {
-        self.status = "STARTING".into();
-        Arc::new(Mutex::new(self))
-    }
-
     pub fn event(&mut self, text: String) {
-        let stamp = chrono::Utc::now().with_timezone(&ist()).format("%H:%M:%S");
+        let now = chrono::Utc::now();
+        let stamp = now.with_timezone(&ist()).format("%H:%M:%S");
         self.events.push_front(format!("{stamp}  {text}"));
-        self.events.truncate(8);
+        self.events.truncate(EVENTS_KEPT);
+        self.pending.push_back((now.timestamp_millis(), text));
+        while self.pending.len() > PENDING_KEPT {
+            self.pending.pop_front();
+        }
     }
 
     /// Applies one broker fill (`signed_qty` > 0 buys) to position, average entry and realised points.
@@ -122,6 +136,7 @@ impl Board {
         Some(self.position * (self.last_price? - self.entry_avg?))
     }
 
+    /// Plain-text summary (ANSI colours), printed once on stderr when the run ends.
     pub fn render(&self, now: chrono::DateTime<chrono::FixedOffset>, square_off_ns: i64) -> String {
         let (g, r, y, b, d, x) = ("\x1b[32m", "\x1b[31m", "\x1b[33m", "\x1b[1m", "\x1b[2m", "\x1b[0m");
         let money = |pts: f64| {
@@ -187,6 +202,9 @@ impl Board {
             row(format!(" {r}{b}HALTED: {h}{x}"));
         }
         row(format!(" Redis run    {}", self.redis_namespace));
+        if self.dropped > 0 {
+            row(format!(" {y}Dashboard    dropped {} updates (queue full){x}", self.dropped));
+        }
         row(line);
         row(format!("{b} Recent events{x}"));
         if self.events.is_empty() {
@@ -195,194 +213,12 @@ impl Board {
         for e in &self.events {
             row(format!(" {e}"));
         }
-        row(format!("{d} Ctrl+C = flatten and stop · JSON log in logs/{x}"));
         s
     }
 }
 
-fn ist() -> chrono::FixedOffset {
+pub(crate) fn ist() -> chrono::FixedOffset {
     chrono::FixedOffset::east_opt(19_800).expect("IST")
-}
-
-/// Ratatui view of the board: header, market / SATS / position panels, session and events.
-pub fn draw(frame: &mut ratatui::Frame, b: &Board, now: chrono::DateTime<chrono::FixedOffset>, square_off_ns: i64) {
-    use ratatui::{
-        layout::{Constraint, Layout},
-        style::{Color, Modifier, Style},
-        text::{Line, Span},
-        widgets::{Block, BorderType, Paragraph, Wrap},
-    };
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
-    let green = Style::default().fg(Color::Green);
-    let red = Style::default().fg(Color::Red);
-    let yellow = Style::default().fg(Color::Yellow);
-    let pnl = |pts: f64| {
-        let style = if pts > 0.0 { green } else if pts < 0.0 { red } else { Style::default() };
-        Span::styled(format!("{pts:+.1} pts  ₹{:+.0}", pts * b.point_value), style.add_modifier(Modifier::BOLD))
-    };
-    let px = |v: Option<f64>| v.map_or("—".to_string(), |v| format!("{v:.0}"));
-    let kv = |k: &str, v: Vec<Span<'static>>| {
-        let mut spans = vec![Span::styled(format!("{k:<12}"), dim)];
-        spans.extend(v);
-        Line::from(spans)
-    };
-    let panel = |title: &str| Block::bordered().border_type(BorderType::Rounded).title(Span::styled(format!(" {title} "), bold));
-
-    let [header, panels, session, events] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(8),
-        Constraint::Length(5),
-        Constraint::Min(4),
-    ])
-    .areas(frame.area());
-    let [market, model, position] =
-        Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(33), Constraint::Percentage(37)]).areas(panels);
-
-    let mode_style = if b.mode.starts_with("LIVE") { red } else { yellow };
-    let status_style = match b.status.as_str() {
-        "RUNNING" => green,
-        "STARTING" | "SQUARED OFF" | "STOPPING" => yellow,
-        _ => red,
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {} ", b.title()), bold),
-            Span::raw(format!("· {} · {}   ", b.instrument, b.slot)),
-            Span::styled(b.mode.clone(), mode_style.add_modifier(Modifier::BOLD)),
-            Span::raw("   "),
-            Span::styled(b.status.clone(), status_style.add_modifier(Modifier::BOLD | Modifier::REVERSED)),
-            Span::styled(format!("   {} IST", now.format("%H:%M:%S")), dim),
-        ]))
-        .block(Block::bordered().border_type(BorderType::Rounded)),
-        header,
-    );
-
-    let feed = match &b.feed_fault {
-        None => Span::styled("OK", green),
-        Some(f) => Span::styled(format!("FAULT: {f}"), red),
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            kv("Price", vec![Span::styled(px(b.last_price), bold)]),
-            kv("Last bar", vec![Span::raw(b.last_bar.as_ref().map_or("—".into(), |(t, c)| format!("{t}  close {c:.0}")))]),
-            kv("Bars", vec![Span::raw(format!("history {} · live {}", b.history_bars, b.live_bars))]),
-            kv("Next bar", vec![Span::styled(b.next_bar(now), yellow)]),
-            kv("Feed", vec![feed]),
-        ])
-        .block(panel("Market")),
-        market,
-    );
-
-    let trend = match b.trend {
-        1 => Span::styled("▲ BULLISH", green.add_modifier(Modifier::BOLD)),
-        -1 => Span::styled("▼ BEARISH", red.add_modifier(Modifier::BOLD)),
-        _ => Span::raw("—"),
-    };
-    let warmed = kv("Warmed", vec![if b.warmed { Span::styled("yes", green) } else { Span::styled("no", yellow) }]);
-    let model_lines = if b.model_rows.is_empty() {
-        vec![
-            kv("Trend", vec![trend]),
-            kv("SuperTrend", vec![Span::raw(px(b.supertrend))]),
-            kv("TQI", vec![Span::raw(format!("{:.2}  {}", b.tqi, b.regime))]),
-            kv("TP1 at", vec![Span::raw(format!("{:.2} R", b.next_r[0]))]),
-            kv("Exit", vec![Span::raw(b.exit_rule.clone())]),
-            warmed,
-        ]
-    } else {
-        let mut lines = vec![kv("Trend", vec![trend])];
-        lines.extend(b.model_rows.iter().map(|(k, v)| kv(k, vec![Span::raw(v.clone())])));
-        lines.push(kv("Exit", vec![Span::raw(b.exit_rule.clone())]));
-        lines.push(warmed);
-        lines
-    };
-    let model_title = if b.model_title.is_empty() { "SATS" } else { b.model_title.as_str() };
-    frame.render_widget(Paragraph::new(model_lines).block(panel(model_title)), model);
-
-    let side = if b.position > 0.0 {
-        Span::styled(format!("LONG {:.0} lot", b.position), green.add_modifier(Modifier::BOLD))
-    } else if b.position < 0.0 {
-        Span::styled(format!("SHORT {:.0} lot", -b.position), red.add_modifier(Modifier::BOLD))
-    } else {
-        Span::styled("FLAT", dim)
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            kv("Position", vec![side]),
-            kv("Entry", vec![Span::raw(px(b.entry_avg))]),
-            kv("Stop", match b.exchange_stop {
-                Some(t) => vec![Span::styled(px(b.sl), red), Span::styled(format!("  SL-M {t:.0} at Zerodha"), green)],
-                None => vec![Span::styled(px(b.sl), red)],
-            }),
-            kv("TP1", vec![Span::styled(
-                px(b.tps.map(|t| t[0])),
-                green,
-            )]),
-            kv("Unrealised", vec![b.unrealized_points().map_or(Span::raw("—"), pnl)]),
-            kv("Realised", vec![pnl(b.realized_points), Span::styled(format!("  {} trips", b.round_trips), dim)]),
-        ])
-        .block(panel("Position")),
-        position,
-    );
-
-    let left = (square_off_ns - now.timestamp_nanos_opt().unwrap_or(0)) / 1_000_000_000;
-    let countdown = if left > 0 { format!("in {}h {:02}m", left / 3600, (left % 3600) / 60) } else { "reached".into() };
-    let mut session_lines = vec![
-        kv("Square-off", vec![Span::raw(format!("{} IST  ({countdown})   lots {}", b.square_off, b.lots))]),
-        kv("Redis run", vec![Span::styled(b.redis_namespace.clone(), dim)]),
-    ];
-    if let Some(h) = &b.halted {
-        session_lines.push(kv("HALTED", vec![Span::styled(h.clone(), red.add_modifier(Modifier::BOLD))]));
-    }
-    frame.render_widget(Paragraph::new(session_lines).wrap(Wrap { trim: false }).block(panel("Session")), session);
-
-    // Newest first; long events wrap onto the next line instead of being cut off.
-    let lines: Vec<Line> = if b.events.is_empty() {
-        vec![Line::from(Span::styled("none yet", dim))]
-    } else {
-        b.events.iter().map(|e| Line::from(e.clone())).collect()
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(panel("Events").title_bottom(Span::styled(" Ctrl+C = flatten and stop · JSON log in logs/ ", dim))),
-        events,
-    );
-}
-
-/// Ratatui dashboard on stderr (alternate screen), redrawn every second while
-/// stderr is a terminal. Raw mode is not enabled, so Ctrl+C still stops the run.
-pub fn spawn(board: Shared, square_off_ns: i64) -> Option<Dashboard> {
-    if !std::io::stderr().is_terminal() {
-        return None;
-    }
-    let mut err = std::io::stderr();
-    let _ = crossterm::execute!(err, crossterm::terminal::EnterAlternateScreen, crossterm::cursor::Hide);
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stderr())).ok()?;
-    let task = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
-        loop {
-            tick.tick().await;
-            let now = chrono::Utc::now().with_timezone(&ist());
-            if let Ok(b) = board.lock() {
-                let _ = terminal.draw(|f| draw(f, &b, now, square_off_ns));
-            }
-        }
-    });
-    Some(Dashboard { task })
-}
-
-pub struct Dashboard {
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Dashboard {
-    /// Stops redrawing and restores the normal screen and cursor.
-    pub fn close(self) {
-        self.task.abort();
-        let mut err = std::io::stderr();
-        let _ = crossterm::execute!(err, crossterm::cursor::Show, crossterm::terminal::LeaveAlternateScreen);
-    }
 }
 
 #[cfg(test)]
@@ -422,41 +258,37 @@ mod tests {
             square_off: "23:15".into(),
             point_value: 10.0,
             status: "RUNNING".into(),
+            dropped: 3,
             ..Board::default()
         };
         b.apply_fill(1.0, 8790.0);
         b.last_price = Some(8780.0);
         b.event("BUY 1 lot".into());
         let text = b.render(chrono::Utc::now().with_timezone(&ist()), 0);
-        for needle in ["CRUDEOILM26OCTFUT.MCX", "LIVE", "LONG 1 lot", "₹-100", "BUY 1 lot", "Square-off"] {
+        for needle in ["CRUDEOILM26OCTFUT.MCX", "LIVE", "LONG 1 lot", "₹-100", "BUY 1 lot", "Square-off", "dropped 3"] {
             assert!(text.contains(needle), "missing {needle}");
         }
     }
 
     #[test]
-    fn ratatui_view_draws_every_panel() {
-        use ratatui::{Terminal, backend::TestBackend};
-        let mut b = Board { mode: "PAPER".into(), instrument: "CRUDEOILM26OCTFUT.MCX".into(), point_value: 10.0, ..Board::default() };
-        b.apply_fill(-1.0, 8800.0);
-        b.last_price = Some(8790.0);
-        b.event("SELL 1 lot".into());
-        let mut t = Terminal::new(TestBackend::new(110, 32)).unwrap();
-        t.draw(|f| draw(f, &b, chrono::Utc::now().with_timezone(&ist()), 0)).unwrap();
-        let text: String = t.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        for needle in ["Market", "SATS", "Position", "Session", "Events", "SHORT 1 lot", "SELL 1 lot", "+10.0 pts"] {
-            assert!(text.contains(needle), "missing {needle}");
+    fn events_keep_the_last_eight_and_queue_every_one_for_the_stream() {
+        let mut b = Board::default();
+        for i in 0..10 {
+            b.event(format!("e{i}"));
         }
+        assert_eq!(b.events.len(), 8);
+        assert!(b.events[0].ends_with("e9"), "newest first");
+        assert_eq!(b.pending.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(), (0..10).map(|i| format!("e{i}")).collect::<Vec<_>>());
     }
 
     #[test]
-    fn long_events_wrap_instead_of_being_cut() {
-        use ratatui::{Terminal, backend::TestBackend};
-        let mut b = Board { mode: "PAPER".into(), ..Board::default() };
-        b.event(format!("Warm-up done on 1297 history bars {} END-OF-EVENT", "x".repeat(120)));
-        let mut t = Terminal::new(TestBackend::new(100, 32)).unwrap();
-        t.draw(|f| draw(f, &b, chrono::Utc::now().with_timezone(&ist()), 0)).unwrap();
-        let text: String = t.backend().buffer().content().iter().map(|c| c.symbol()).collect();
-        assert!(text.contains("END-OF-EVENT"), "tail of a long event must be visible");
+    fn snapshot_json_has_the_dashboard_fields_and_no_pending_queue() {
+        let mut b = Board { slot: "crudeoilm-sniper-202610".into(), status: "RUNNING".into(), ..Board::default() };
+        b.event("hello".into());
+        let v = serde_json::to_value(&b).unwrap();
+        assert_eq!(v["slot"], "crudeoilm-sniper-202610");
+        assert_eq!(v["status"], "RUNNING");
+        assert!(v["events"][0].as_str().unwrap().ends_with("hello"));
+        assert!(v.get("pending").is_none());
     }
 }
-

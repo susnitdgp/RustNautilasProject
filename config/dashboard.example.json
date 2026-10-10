@@ -1,0 +1,3 @@
+{
+  "redis_dashboard_url": "redis://default:PASSWORD@HOST:PORT"
+}

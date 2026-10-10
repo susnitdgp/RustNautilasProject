@@ -22,7 +22,10 @@
 //! fault / stop request flattens; any rejection, denial, unresolved order (30 s) or
 //! position disagreement halts entries and flattens.
 use super::live_control::Control;
-use super::sats_dashboard::{self, Board, Shared};
+use super::{
+    dash_writer::Feed,
+    sats_dashboard::{self, Board},
+};
 use super::sniper_config::SniperConfig;
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, NaiveDate};
@@ -110,7 +113,7 @@ pub struct SniperStrategy {
     last_close_ns: i64,
     halted: Option<String>,
     flatten_attempts: u32,
-    board: Option<Shared>,
+    board: Option<Feed>,
     live_started: bool,
 }
 
@@ -153,16 +156,15 @@ impl SniperStrategy {
         self
     }
 
-    pub fn with_dashboard(mut self, board: Shared) -> Self {
+    pub fn with_dashboard(mut self, board: Feed) -> Self {
         self.board = Some(board);
         self
     }
 
-    fn board(&self, f: impl FnOnce(&mut Board)) {
-        if let Some(b) = &self.board
-            && let Ok(mut b) = b.lock()
-        {
-            f(&mut b);
+    /// Queues a dashboard update; never blocks (see `dash_writer`).
+    fn board(&self, f: impl FnOnce(&mut Board) + Send + 'static) {
+        if let Some(feed) = &self.board {
+            feed.push(f);
         }
     }
 
@@ -199,10 +201,11 @@ impl SniperStrategy {
     fn halt(&mut self, reason: &str) {
         if self.halted.is_none() {
             self.log_json(serde_json::json!({"event":"sniper_halted","reason":reason}));
-            self.board(|b| {
-                b.halted = Some(reason.to_owned());
+            let why = reason.to_owned();
+            self.board(move |b| {
+                b.event(format!("HALTED: {why}"));
+                b.halted = Some(why);
                 b.status = "HALTED".into();
-                b.event(format!("HALTED: {reason}"));
             });
             self.halted = Some(reason.to_owned());
         }
@@ -213,7 +216,7 @@ impl SniperStrategy {
     /// Model stop / targets onto the dashboard.
     fn show_levels(&self) {
         let levels = self.engine.trade.as_ref().filter(|_| self.ours).map(|t| (t.stop, [t.tp1, t.tp2, t.tp3]));
-        self.board(|b| {
+        self.board(move |b| {
             b.sl = levels.map(|l| l.0);
             b.tps = levels.map(|l| l.1);
         });
@@ -223,7 +226,7 @@ impl SniperStrategy {
         let s = self.engine.status().clone();
         let r = self.engine.resolved();
         let label = DateTime::from_timestamp_nanos(close_ns).with_timezone(&ist()).format("%d %b %H:%M").to_string();
-        self.board(|b| {
+        self.board(move |b| {
             b.last_bar = Some((label, close));
             if live_bar {
                 b.live_bars += 1;
@@ -256,7 +259,7 @@ impl SniperStrategy {
                         "tp":[tp1,tp2,tp3],"score":score,"score_max":score_max,"grade":grade,"origin":origin,"lots":self.config.lots,"note":note}));
                     let side = if dir == 1 { "LONG" } else { "SHORT" };
                     let lots = self.config.lots;
-                    self.board(|b| b.event(format!("{side} {grade} {lots} lot @ {price:.0}  SL {stop:.0}  TP {tp1:.0}/{tp2:.0}/{tp3:.0}  ({note})")));
+                    self.board(move |b| b.event(format!("{side} {grade} {lots} lot @ {price:.0}  SL {stop:.0}  TP {tp1:.0}/{tp2:.0}/{tp3:.0}  ({note})")));
                 }
                 Event::Partial { level, price, .. } => {
                     if !self.ours {
@@ -266,7 +269,7 @@ impl SniperStrategy {
                     let open = self.target.abs();
                     self.target = self.target.signum() * (open - lots).max(0);
                     self.log_json(serde_json::json!({"event":"sniper_signal","kind":"partial","level":level,"price":price,"lots":lots}));
-                    self.board(|b| b.event(format!("TP{level} {price:.0}: close {lots} lot")));
+                    self.board(move |b| b.event(format!("TP{level} {price:.0}: close {lots} lot")));
                 }
                 Event::Exit { price, reason, gross_r, .. } => {
                     if !self.ours {
@@ -276,7 +279,7 @@ impl SniperStrategy {
                     self.target = 0;
                     self.ours = false;
                     self.log_json(serde_json::json!({"event":"sniper_signal","kind":"exit","reason":reason,"price":price,"model_r":gross_r}));
-                    self.board(|b| b.event(format!("EXIT {reason} @ {price:.0}  (model {gross_r:+.2} R)")));
+                    self.board(move |b| b.event(format!("EXIT {reason} @ {price:.0}  (model {gross_r:+.2} R)")));
                 }
             }
         }
@@ -331,7 +334,7 @@ impl SniperStrategy {
         self.in_flight = Some((order.client_order_id(), Self::now_ns()));
         self.set_flat(false);
         self.log_json(serde_json::json!({"event":"sniper_order","side":format!("{side:?}"),"qty":qty,"reduce_only":reduce,"position":pos,"target":target}));
-        self.board(|b| b.event(format!("ORDER {side:?} {qty} lot{} (position {pos} → target {target})", if reduce { " reduce-only" } else { "" })));
+        self.board(move |b| b.event(format!("ORDER {side:?} {qty} lot{} (position {pos} → target {target})", if reduce { " reduce-only" } else { "" })));
         self.submit_order(order, None, None, None)?;
         Ok(())
     }
@@ -408,7 +411,7 @@ impl DataActor for SniperStrategy {
                 self.log_json(serde_json::json!({"event":"sniper_warmup_trade_closed","model_r":gross_r}));
             }
             let s = self.engine.status().clone();
-            self.board(|b| {
+            self.board(move |b| {
                 b.event(format!(
                     "Warm-up done on {} bars · trend {} · ready {} · trading from this bar",
                     b.history_bars,
@@ -430,7 +433,7 @@ impl DataActor for SniperStrategy {
         let too_late = late_ns > MAX_ENTRY_LATENESS_NS;
         if late_ns > BACKFILLED_NS {
             let secs = late_ns / 1_000_000_000;
-            self.board(|b| b.event(format!("Backfilled bar {} ({secs}s after close){}", close_ist.format("%H:%M"),
+            self.board(move |b| b.event(format!("Backfilled bar {} ({secs}s after close){}", close_ist.format("%H:%M"),
                 if too_late { " · exits only" } else { "" })));
         }
         let squared = self.squared_off_on == Some(close_ist.date_naive());
@@ -442,7 +445,7 @@ impl DataActor for SniperStrategy {
             let events: Vec<Event> = self.engine.force_close(input.close, "Square-off").into_iter().collect();
             self.apply(events, false);
             self.target = 0;
-            self.board(|b| {
+            self.board(move |b| {
                 b.status = "SQUARED OFF".into();
                 b.event("Daily square-off: flattening, no new entries today".into());
             });
@@ -468,7 +471,7 @@ impl DataActor for SniperStrategy {
             let (bid, ask) = (quote.bid_price.as_f64(), quote.ask_price.as_f64());
             let mid = (bid + ask) / 2.0;
             live.market_price.store(mid.round() as i64, Ordering::Release);
-            self.board(|b| b.last_price = Some(mid));
+            self.board(move |b| b.last_price = Some(mid));
             self.check_levels(bid, ask)?;
         }
         Ok(())
@@ -481,7 +484,7 @@ impl DataActor for SniperStrategy {
         if self.stopping() && self.halted.is_none() {
             let fault = self.live.as_ref().and_then(|l| l.control.fault.lock().ok().and_then(|f| f.clone()));
             let shown = fault.clone();
-            self.board(|b| {
+            self.board(move |b| {
                 b.feed_fault = shown;
                 b.status = "STOPPING".into();
             });
@@ -502,9 +505,10 @@ nautilus_strategy!(SniperStrategy, {
         let px = e.last_px.as_f64();
         sats_dashboard::emit(serde_json::json!({"event":"sniper_fill","instance":self.instance_id,
             "client_order_id":e.client_order_id.to_string(),"side":format!("{:?}", e.order_side),"qty":qty,"price":px}));
-        self.board(|b| {
+        let side = e.order_side;
+        self.board(move |b| {
             b.apply_fill(signed, px);
-            b.event(format!("FILL {:?} {qty:.0} @ {px:.0}", e.order_side));
+            b.event(format!("FILL {side:?} {qty:.0} @ {px:.0}"));
         });
         if let Err(err) = self.reconcile() {
             self.halt(&format!("order after fill failed: {err:#}"));
