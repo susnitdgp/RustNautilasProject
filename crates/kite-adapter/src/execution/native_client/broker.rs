@@ -45,20 +45,18 @@ pub(crate) trait Broker: Send + Sync {
     async fn execute(&self, _: &Command) -> Result<Outcome> {
         anyhow::bail!("Broker mutations disabled")
     }
+    /// Full account view: orders, trades, positions and margins (start-up, reports).
     async fn snapshot(&self) -> Result<Snapshot>;
-    /// The order-path view: orders, trades and positions, as consistent as `snapshot`.
-    /// Margins are not part of any order check, so a broker may return the last known
-    /// funds instead of reading them again (`KiteBroker` does, kite-adapter 0.6.0).
-    async fn trading_snapshot(&self) -> Result<Snapshot> {
-        self.snapshot().await
+    /// Reconciliation view (kite-adapter 0.7.0): the order book and the trade book only.
+    /// No positions, no margins: fills come from orders and trades; positions are checked
+    /// separately by the background account audit (`positions`).
+    async fn book(&self) -> Result<(Vec<BrokerOrder>, Vec<BrokerTrade>)> {
+        let s = self.snapshot().await?;
+        Ok((s.orders, s.trades))
     }
-    /// Postback fast path: one order's latest state and its trades. `Ok(None)` means the
-    /// broker does not support it (mock, tests); the full snapshot then handles the fill.
-    async fn order_detail(
-        &self,
-        _order_id: &str,
-    ) -> Result<Option<(BrokerOrder, Vec<BrokerTrade>)>> {
-        Ok(None)
+    /// Net positions only (background account audit).
+    async fn positions(&self) -> Result<Vec<BrokerPosition>> {
+        Ok(self.snapshot().await?.positions)
     }
     async fn fees(
         &self,
@@ -81,8 +79,6 @@ pub(crate) struct KiteBroker {
     product: String,
     sandbox: bool,
     verified_mcx: std::sync::atomic::AtomicBool,
-    /// Funds from the last full snapshot, reused by `trading_snapshot`.
-    last_funds: std::sync::Mutex<Option<Funds>>,
 }
 impl KiteBroker {
     pub(crate) fn sandbox(
@@ -99,7 +95,6 @@ impl KiteBroker {
             product,
             sandbox: true,
             verified_mcx: std::sync::atomic::AtomicBool::new(false),
-            last_funds: std::sync::Mutex::new(None),
         })
     }
     pub fn new(credentials: &KiteCredentials, user_id: String, product: String) -> Result<Self> {
@@ -108,7 +103,6 @@ impl KiteBroker {
         Ok(Self {
             sandbox: false,
             verified_mcx: std::sync::atomic::AtomicBool::new(false),
-            last_funds: std::sync::Mutex::new(None),
             read: ReadClient::with_client(credentials, client.clone())?,
             orders: KiteOrderTransport::with_client(credentials, client)?,
             user_id,
@@ -165,31 +159,6 @@ impl Broker for KiteBroker {
             .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
-    /// The order comes from the day book (`GET /orders`), the same source as the full
-    /// snapshot: `GET /orders/{id}` history entries are documented without
-    /// `market_protection` and `exchange_update_timestamp`, which `reconcile` needs for
-    /// owned MARKET orders and for the trade/order chronology. Both reads go out
-    /// together: one round trip.
-    async fn order_detail(
-        &self,
-        order_id: &str,
-    ) -> Result<Option<(BrokerOrder, Vec<BrokerTrade>)>> {
-        let (book, trades) = tokio::join!(
-            self.read.get::<Vec<BrokerOrder>>(Endpoint::Orders),
-            self.read.order_trades::<Vec<BrokerTrade>>(order_id),
-        );
-        let mut matching = book?.into_iter().filter(|o| o.order_id == order_id);
-        let order = matching
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("Order not in the Kite day book yet"))?;
-        ensure!(matching.next().is_none(), "Kite day book lists the order twice");
-        let trades = trades?;
-        ensure!(
-            trades.iter().all(|t| t.order_id == order_id),
-            "Kite order trades identity mismatch"
-        );
-        Ok(Some((order, trades)))
-    }
     async fn snapshot(&self) -> Result<Snapshot> {
         let first: Vec<BrokerOrder> = self.read.get(Endpoint::Orders).await?;
         let trades = self.read.get(Endpoint::Trades).await?;
@@ -214,9 +183,6 @@ impl Broker for KiteBroker {
         first.sort_by(|a, b| a.order_id.cmp(&b.order_id));
         orders.sort_by(|a, b| a.order_id.cmp(&b.order_id));
         ensure!(first == orders, super::outage::ReadFailure::Transient);
-        if let Ok(mut last) = self.last_funds.lock() {
-            *last = Some(funds.clone());
-        }
         Ok(Snapshot {
             orders,
             trades,
@@ -224,44 +190,27 @@ impl Broker for KiteBroker {
             funds,
         })
     }
-    /// Order-path snapshot (kite-adapter 0.6.0): `/orders`, `/trades` and `/positions`
-    /// read together (one round trip instead of three), then `/orders` again; margins
-    /// are not read (no order check uses them; the last full snapshot's funds are
-    /// returned). 4 reads, ~2 round trips, instead of 5 reads one after another.
-    ///
-    /// Consistency is unchanged in kind: the book must be identical before and after the
-    /// trades and positions were read, or the read is retried (`Transient`). If an order
-    /// changes between the concurrent reads, `/trades` or `/positions` can trail the book;
-    /// reconciliation already classifies exactly that as `ObservationLag` (trade sum vs
-    /// filled quantity, owned fills vs position) and reads again, never inferring a fill.
-    async fn trading_snapshot(&self) -> Result<Snapshot> {
-        let funds = self.last_funds.lock().ok().and_then(|f| f.clone());
-        let Some(funds) = funds else {
-            return self.snapshot().await;
-        };
+    /// Reconciliation reads (kite-adapter 0.7.0): `/orders` and `/trades` together, one
+    /// round trip. They are not read under one lock at Kite, so a trade can be ahead of
+    /// the book or the book ahead of the trades; `broker_events::reconcile` classifies
+    /// exactly that as `ObservationLag` (never inferring a fill) and the dispatcher reads
+    /// again or leaves the order for the next pass.
+    async fn book(&self) -> Result<(Vec<BrokerOrder>, Vec<BrokerTrade>)> {
+        let (orders, trades) = tokio::join!(
+            self.read.get::<Vec<BrokerOrder>>(Endpoint::Orders),
+            self.read.get::<Vec<BrokerTrade>>(Endpoint::Trades),
+        );
+        Ok((orders?, trades?))
+    }
+    async fn positions(&self) -> Result<Vec<BrokerPosition>> {
         #[derive(Deserialize)]
         struct Positions {
             net: Vec<BrokerPosition>,
         }
-        let (first, trades, positions) = tokio::join!(
-            self.read.get::<Vec<BrokerOrder>>(Endpoint::Orders),
-            self.read.get::<Vec<BrokerTrade>>(Endpoint::Trades),
-            self.read.get::<Positions>(Endpoint::Positions),
-        );
-        let (mut first, trades, positions) = (first?, trades?, positions?);
-        let mut orders: Vec<BrokerOrder> = self.read.get(Endpoint::Orders).await?;
-        first.sort_by(|a, b| a.order_id.cmp(&b.order_id));
-        orders.sort_by(|a, b| a.order_id.cmp(&b.order_id));
-        ensure!(first == orders, super::outage::ReadFailure::Transient);
-        Ok(Snapshot {
-            orders,
-            trades,
-            positions: positions.net,
-            funds,
-        })
+        Ok(self.read.get::<Positions>(Endpoint::Positions).await?.net)
     }
 }
 
 #[cfg(test)]
-#[path = "trading_snapshot_tests.rs"]
-mod trading_snapshot_tests;
+#[path = "book_tests.rs"]
+mod book_tests;

@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.23.0 / kite-adapter 0.6.0.
+Written for kite-node 2.24.0 / kite-adapter 0.7.0.
 
 ---
 
@@ -122,91 +122,55 @@ from Redis by hand (`kite-prod:v1:{<slot>}:commands:*`, `kite-prod:v1:{<slot>}:l
 `trader-kite-prod-<slot>:*`). Since 2.21.1 local Redis runs `appendfsync everysec`
 (`redis-utility/redis-fsync-everysec.sh`): nothing in the order path waits for the disk.
 
-### 3.6 Order admission (kite-adapter 0.2.9)
+### 3.6 Order path: place, reconcile, done (kite-adapter 0.7.0)
 
-The account is reconciled at startup (flat, no open orders) and then kept current: every
-Kite order-stream update, plus a 15 s fallback, triggers a REST reconciliation (orders, trades,
-positions; see "Order-path reads" below). An order is admitted **from that observation, without new REST reads**,
-when all of these hold:
+Since kite-adapter 0.7.0 / kite-node 2.24.0 the order path works like a standard Nautilus
+venue adapter (e.g. Interactive Brokers): **placing an order makes no Kite read**.
 
-* the order stream is connected and has not reconnected since the observation;
-* no order update arrived since the observation started (any order on the account, manual ones
-  included);
-* the observation is under 20 s old;
-* no owned order is unresolved, and the strategy's position equals the observed position.
+**Placing.** Admission is local and in memory, then one place call:
 
-Otherwise the full REST preflight runs as before. Contract cap and exposure-shape checks run on
-every order either way. A protective-stop modify skips its REST confirmation under the same
-rule. A manual order placed just before an admitted order is still caught by the
-reconciliation it triggers, which stops the run for review. The run log ends with
-`{"event":"native_admissions","cached":N,"full_preflight":M}`.
+* the order stream is connected (new entries only; exits always pass);
+* no owned order is still unresolved (one at a time: Kite does not enforce reduce-only, so a
+  resting protective stop and an exit, or two entries, could otherwise both fill);
+* the strategy's position equals the position from the owned fills;
+* contract cap (`max_lots`) and exposure shape: a reduce-only exit no larger than the
+  position, an entry from flat, or one full flip;
+* the shared order-rate budget in local Redis (~0.06 ms; entries only, exits bypass it).
 
-Per order, the only write before sending is the shared order-rate budget in local Redis:
-one round trip of about 0.06 ms with `appendfsync everysec` (2.21.1; it was ~2.8 ms with
-`always` plus a disk confirmation). The journal record and the lease attempt counter are gone
-(2.21.0). A Redis crash can lose at most the last second of budget counts.
+**Reconciliation.** The order book and the trade book are read together (2 reads, one round
+trip, ~20 ms) and every owned order is turned into Nautilus events (`OrderAccepted`,
+`OrderFilled` with the real Kite trade IDs, `OrderCanceled`, `OrderRejected`). It runs on
+every Kite order-stream update, every **2 s** while an owned order is unresolved, and every
+15 s otherwise. If the two books disagree (a trade ahead of the order, or the reverse;
+`ObservationLag`) the book is read up to 3 times, 150 ms apart; still disagreeing, nothing
+is applied and the next pass reads again. A fill is never inferred. An open order nobody here
+placed halts the run at once.
 
-### 3.6a Order-path reads (kite-adapter 0.6.0)
+**Account audit.** Every 15 s positions are read (1 read):
 
-Measured from the box: one Kite read takes about 19 ms. Until 0.6.0 every account snapshot on
-the order path read orders, trades, positions, margins and orders again, one after another
-(5 reads, ~94 ms), and every order triggered two of them close together (one straight after the
-acknowledgement, one on Kite's order-stream update). With the program's read limit of 8 per
-second, the second snapshot's last reads waited out the rest of the second: a fill typically
-reached the strategy about 1 s after the order. Since 0.6.0:
+* any position in another contract or product halts the run at once ("Unmanaged account
+  exposure");
+* Kite's position for this contract must equal the owned fills. Kite's positions trail its
+  trade book by a moment, so a difference is tolerated for **20 s** (logged as
+  `native_position_mismatch`, then `native_position_converged`); still different after that,
+  the run halts.
 
-* the order-path snapshot reads **orders, trades and positions together**, then the order book
-  again (4 reads, ~2 round trips, ~40 ms). Margins are not read: no order check uses them; the
-  start-up snapshot still reads and checks them. The book must be identical before and after,
-  as before; a fill that `/trades` or positions do not show yet is still read again
-  (`ObservationLag`), never inferred;
-* in live runs there is **no snapshot straight after the acknowledgement** (it nearly always
-  found the MARKET order still pending). Kite's order-stream update for the order triggers the
-  reconciliation; while the order is unresolved the stream's 5 s timer reconciles too.
+**Start and stop.** Start-up still reads the full account (orders, trades, positions,
+margins) and requires it flat with no open orders. At shutdown the book is reconciled until
+nothing owned is unresolved (up to 5 passes, 500 ms apart), then positions must match the
+owned fills and be flat (up to 5 reads, 1 s apart).
 
-So an order costs one snapshot (4 reads) instead of two (10), well inside the read limit.
+**What changed from 0.6.0.** Removed: the pre-order account snapshot and cached admission
+(doorbell, 20 s freshness), the positions read on every reconciliation, the double order-book
+read, the switched-off postback fast path (`Dispatcher::fast_fill`, `GET /orders/{id}/trades`)
+and the protective-stop REST confirmation before a modify (Kite itself refuses to modify an
+order that has filled or been cancelled; an uncertain answer stops the run). Trade-off: a
+manual position in another contract is now found by the next audit (within 15 s) instead of
+before the next order; an open manual order is still found by the next reconciliation.
 
-### 3.7 Postback fills (kite-adapter 0.3.1; switched off since 0.5.0)
-
-**Switched off in kite-adapter 0.5.0 / kite-node 2.22.0.** Two problems found in review:
-(1) after a fast-path fill, a full snapshot whose positions still lag the trades was treated
-as a fatal mismatch instead of being retried, stopping the run with the position open, and an
-order sent right after was denied for the same reason; (2) a MARKET order's own post-submit
-refresh holds the dispatcher and usually sees the fill first, so the gain was small. The code
-and its tests stay; `Dispatcher::fast_fill` returns at once without any REST read. Every fill
-reaches the strategy through the full reconciliation, as before 0.3.1. What follows describes
-the switched-off path.
-
-
-A fill used to reach the strategy only through the full REST reconciliation: five sequential
-reads (orders, trades, positions, margins, orders again), retried after 250 ms and 500 ms
-while `/trades` lagged the order. Now a Kite order-stream postback with status `COMPLETE`
-for an **owned** order first takes a fast path:
-
-1. `GET /orders` (the day book, for that order) and `GET /orders/{id}/trades`, sent together:
-   one round trip. The day book is used rather than `GET /orders/{id}` because Kite documents
-   the history entries without `market_protection` and `exchange_update_timestamp`, which the
-   checks need for MARKET orders.
-2. They go through the same ownership, contract, quantity and chronology checks as the full
-   reconciliation. The fills carry the **real Kite trade IDs**; the postback payload itself
-   never creates a fill.
-3. The order record is updated first, then `OrderAccepted` (if still pending) and
-   `OrderFilled` are emitted.
-4. The full reconciliation runs right after, as before. It must show the same trades, with
-   unchanged quantity, price, time and order id. While `/trades` or positions still lag, the
-   run continues for up to **30 s**; past that, or on any difference, it stops for review.
-   A snapshot still missing a postback fill never backs cached admission.
-
-The fast path is skipped, and the full reconciliation handles the update exactly as in
-0.2.9, when: the order is not owned (manual orders), already closed, has a pending
-protective-stop modification, is not `COMPLETE` in the day book yet, a read fails or takes
-over 3 s, its trades do not add up yet, or any check fails. Partial-fill postbacks
-(`UPDATE`/`OPEN`) are not fast-pathed. The mock (paper) broker does not use it.
-
-Log events: `native_postback_fill` (with `ms` from the start of the reads),
-`native_postback_fill_verified` (`after_ms`), `native_postback_fill_skipped` (`reason`), and
-`postback_fills` in the final `native_admissions` line. A clean shutdown also requires every
-postback fill to be verified.
+Per order this is: 0 reads + 1 place call; then one reconciliation (2 reads) when Kite's
+order update arrives. Until 0.6.0 it was two snapshots of 5 reads each; in 0.6.0 one snapshot
+of 4 reads.
 
 ---
 
@@ -251,11 +215,12 @@ faults, flattens and stops. Before 0.5.0 it was 2 reconnects per run and a singl
 
 ### 5.1 One live slot per Zerodha account at a time (most important)
 
-Before every order, the adapter takes a snapshot of the **whole** Kite account and refuses the
-order (the strategy then halts and flattens) if:
-* there is a position in any other symbol or product ("Unmanaged account exposure");
-* Kite's net position in the slot's contract differs from what this slot believes it holds;
-* there is an open order the slot does not own.
+The adapter watches the **whole** Kite account (section 3.6) and halts the run (the strategy
+then flattens) if:
+* there is a position in any other symbol or product ("Unmanaged account exposure", account
+  audit every 15 s);
+* Kite's net position in the slot's contract differs from the owned fills for more than 20 s;
+* there is an open order the slot does not own (every reconciliation).
 
 Live startup also requires the account to be completely flat. As a result:
 * **two slots cannot trade live on the same account at the same time**, even on different

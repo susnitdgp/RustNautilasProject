@@ -467,25 +467,20 @@ async fn websocket_error_and_failed_reconciliation_clear_admission() {
     }
 }
 
+/// kite-adapter 0.7.0: admission reads nothing; while the stream recovers a new entry is
+/// denied locally, before any Kite read or write.
 #[tokio::test]
-async fn disconnect_during_preflight_denies_entry_before_broker_write() {
+async fn entry_is_denied_without_any_read_while_the_stream_recovers() {
     let mut f = fixture();
-    f.broker.delay.store(true, Ordering::Release);
-    let dispatcher = f.monitor.dispatcher.clone();
-    let ready = f.monitor.ready.clone();
-    let tx = f.monitor.tx.clone();
-    let o = order();
-    let task = tokio::spawn(async move {
-        dispatcher
-            .lock()
-            .await
-            .submit_guarded(o, 0, &tx, Some(&ready))
-            .await
-    });
-    until(|| f.broker.entered.load(Ordering::Acquire)).await;
     f.monitor.ready.store(false, Ordering::Release);
-    f.broker.release.notify_one();
-    task.await.unwrap().unwrap();
+    f.monitor
+        .dispatcher
+        .lock()
+        .await
+        .submit_guarded(order(), 0, &f.monitor.tx, Some(&f.monitor.ready))
+        .await
+        .unwrap();
+    assert_eq!(f.broker.reads.load(Ordering::SeqCst), 0);
     assert_eq!(f.broker.writes.load(Ordering::SeqCst), 0);
     assert!(f.records.lock().unwrap().is_empty());
     assert!(matches!(

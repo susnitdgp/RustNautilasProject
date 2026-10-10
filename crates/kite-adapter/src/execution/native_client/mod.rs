@@ -312,18 +312,6 @@ impl ExecutionClient for Client {
         } else {
             None
         };
-        // Taken before the startup reads; the stream monitor has not started, so no update
-        // can be counted yet (buffered ones bump the doorbell once it reads them).
-        let observed = match &self.dispatcher {
-            Some(d) => Some((
-                std::time::Instant::now(),
-                d.lock()
-                    .await
-                    .doorbell()
-                    .load(std::sync::atomic::Ordering::Acquire),
-            )),
-            None => None,
-        };
         let snapshot = outage::snapshot(self.broker.as_ref()).await?;
         reports::positions_for(
             &snapshot,
@@ -346,11 +334,6 @@ impl ExecutionClient for Client {
                     .all(|o| matches!(o.status.as_str(), "COMPLETE" | "CANCELLED" | "REJECTED")),
                 "Production startup requires no open broker orders"
             );
-            // A flat account with no open orders is a clean observation: the first order
-            // can be admitted from it (cached admission) while it stays fresh.
-            if let (Some(d), Some((at, bell))) = (&self.dispatcher, observed) {
-                d.lock().await.mark_clean(at, bell);
-            }
         }
         let state = reports::account(&snapshot, &self.factory, Self::now())?;
         Self::emit(ExecutionEvent::Account(state.clone()))?;
@@ -395,13 +378,20 @@ impl ExecutionClient for Client {
                     }
                     return result;
                 }
+                // Mock/sandbox: reconcile every second, audit positions every 15 s.
+                let mut tick = 0_u32;
                 while active.load(std::sync::atomic::Ordering::Acquire) {
                     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
                     if !active.load(std::sync::atomic::Ordering::Acquire) {
                         break;
                     }
+                    tick = tick.wrapping_add(1);
                     let mut service = dispatcher.lock().await;
-                    if let Err(e) = service.refresh(&tx).await {
+                    let result = match service.refresh(&tx).await {
+                        Ok(()) if tick % 15 == 0 => service.audit().await,
+                        other => other,
+                    };
+                    if let Err(e) = result {
                         service.fault();
                         active.store(false, std::sync::atomic::Ordering::Release);
                         if let Some(signal) = &stop_signal {
@@ -467,8 +457,8 @@ impl ExecutionClient for Client {
         let order = OrderAny::from_events(vec![OrderEventAny::Initialized(cmd.order_init)])?;
         if self.production {
             // Protected MARKET orders, plus a reduce-only SL-M protective stop for an
-            // open position. The dispatcher still admits one unresolved order at a
-            // time, so an exit must cancel the resting stop (confirmed) first.
+            // open position. The dispatcher admits one unresolved order at a time, so
+            // an exit must cancel the resting stop (confirmed) first.
             ensure!(
                 order.order_type() == OrderType::Market
                     || (order.order_type() == OrderType::StopMarket && order.is_reduce_only()),
@@ -524,13 +514,10 @@ impl ExecutionClient for Client {
                                 Some(stream_ready.as_ref()),
                             )
                             .await?;
-                        // No snapshot here (kite-adapter 0.6.0). Right after the
-                        // acknowledgement a MARKET order is nearly always still pending,
-                        // so this read found nothing, held the dispatcher and used up the
-                        // read budget the real reconciliation then waited for. Kite's
-                        // order-stream update for this order triggers that
-                        // reconciliation; while the order is unresolved the stream's
-                        // 5 s pending timer reconciles too, so a lost update is covered.
+                        // Place and done (kite-adapter 0.7.0): no Kite read before or
+                        // after. Kite's order-stream update for this order triggers the
+                        // reconciliation; while it is unresolved the stream's 2 s pending
+                        // timer reconciles too, so a lost update is covered.
                         Ok(())
                     } else {
                         // Mock/sandbox: no order stream, reconcile right away.
@@ -901,16 +888,10 @@ mod tests;
 mod dispatch_tests;
 
 #[cfg(test)]
-mod cached_admission_tests;
-
-#[cfg(test)]
 mod fee_tests;
 
 #[cfg(test)]
 mod outage_tests;
-
-#[cfg(test)]
-mod postback_fill_tests;
 
 #[cfg(test)]
 mod budget_tests;

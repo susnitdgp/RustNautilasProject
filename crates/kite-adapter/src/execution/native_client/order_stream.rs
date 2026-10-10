@@ -1,8 +1,8 @@
-//! Production order notifications trigger REST reconciliation; payloads never create fills.
-//! A COMPLETE notification is also offered to the postback fast path
-//! (`Dispatcher::fast_fill`), which is switched off since kite-adapter 0.5.0 and then
-//! returns at once without any REST read; the full account snapshot handles every fill.
-//! Dedicated socket: no market-data subscription and no broker mutations.
+//! Production order notifications trigger reconciliation (order book + trade book, one
+//! round trip); payloads never create fills. Every 2 s while an owned order is unresolved
+//! and every 15 s otherwise the book is read anyway (a lost update is covered), and every
+//! 15 s the account audit checks positions. Dedicated socket: no market-data
+//! subscription and no broker mutations.
 use super::dispatch::Dispatcher;
 use crate::{credentials::KiteCredentials, websocket::transport};
 use anyhow::{Result, anyhow, bail, ensure};
@@ -12,8 +12,8 @@ use serde::Deserialize;
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 use tokio::{
@@ -38,7 +38,7 @@ impl Default for Timing {
     fn default() -> Self {
         Self {
             fallback: Duration::from_secs(15),
-            pending: Duration::from_secs(5),
+            pending: Duration::from_secs(2),
             idle: Duration::from_secs(10),
             reconnect: Duration::from_millis(500),
             window: Duration::from_secs(600),
@@ -77,8 +77,10 @@ struct Connection {
     connected: bool,
 }
 
-/// A validated order notification for this account.
+/// A validated order notification for this account. Only its arrival matters (it
+/// triggers reconciliation); the fields are validated and kept for the tests.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct Postback {
     order_id: String,
     status: String,
@@ -159,19 +161,14 @@ impl Monitor {
         timing: Timing,
     ) -> Result<()> {
         let notify = Notify::new(); // One pending notification coalesces bursts.
-        // Bumped on every order update / connection change, without the dispatcher lock,
-        // so an order admitted from cached state sees it immediately.
-        let doorbell = self.dispatcher.lock().await.doorbell();
-        // Order ids of COMPLETE notifications not yet offered to the fast path.
-        let completed = StdMutex::new(Vec::<String>::new());
         let (connection_tx, connection_rx) = watch::channel(Connection {
             generation: 1,
             connected: true,
         });
         // Both futures belong to this task: no detached reader on stop/failure.
         let result = tokio::select! {
-            result = self.read(&mut socket, endpoint, timing, &notify, &doorbell, &completed, connection_tx) => result,
-            result = self.reconcile(timing, &notify, &completed, connection_rx) => result,
+            result = self.read(&mut socket, endpoint, timing, &notify, connection_tx) => result,
+            result = self.reconcile(timing, &notify, connection_rx) => result,
             _ = async {
                 while self.active.load(Ordering::Acquire) {
                     sleep(Duration::from_millis(100)).await;
@@ -192,8 +189,6 @@ impl Monitor {
         endpoint: &str,
         timing: Timing,
         notify: &Notify,
-        doorbell: &AtomicU64,
-        completed: &StdMutex<Vec<String>>,
         connection: watch::Sender<Connection>,
     ) -> Result<()> {
         let mut generation = 1;
@@ -204,16 +199,7 @@ impl Monitor {
                 // independently; an idle timeout must not consume reconnect budget.
                 Err(_) => continue,
                 Ok(Some(Ok(Message::Text(text)))) => {
-                    if let Some(postback) = is_order(&text, &self.user_id)? {
-                        if postback.status == "COMPLETE" {
-                            let mut queue = completed
-                                .lock()
-                                .map_err(|_| anyhow!("Kite postback queue unavailable"))?;
-                            if !queue.contains(&postback.order_id) {
-                                queue.push(postback.order_id);
-                            }
-                        }
-                        doorbell.fetch_add(1, Ordering::AcqRel);
+                    if is_order(&text, &self.user_id)?.is_some() {
                         notify.notify_one();
                     }
                 }
@@ -231,9 +217,8 @@ impl Monitor {
                 }
                 Ok(Some(Ok(Message::Pong(_)))) => {}
                 Ok(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => {
-                    // Updates may be missed while disconnected: no cached admission until
-                    // a reconciliation started after the reconnect.
-                    doorbell.fetch_add(1, Ordering::AcqRel);
+                    // Updates may be missed while disconnected: entries stay paused until a
+                    // reconciliation started after the reconnect.
                     connection.send_replace(Connection {
                         generation,
                         connected: false,
@@ -273,7 +258,6 @@ impl Monitor {
                         }
                     };
                     generation += 1;
-                    doorbell.fetch_add(1, Ordering::AcqRel);
                     connection.send_replace(Connection {
                         generation,
                         connected: true,
@@ -289,7 +273,6 @@ impl Monitor {
         &self,
         timing: Timing,
         notify: &Notify,
-        completed: &StdMutex<Vec<String>>,
         mut connection: watch::Receiver<Connection>,
     ) -> Result<()> {
         let mut fallback = interval_at(Instant::now() + timing.fallback, timing.fallback);
@@ -297,37 +280,30 @@ impl Monitor {
         fallback.set_missed_tick_behavior(MissedTickBehavior::Skip);
         pending.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            let pending_check = tokio::select! {
-                _ = notify.notified() => false,
-                _ = fallback.tick() => false,
-                _ = pending.tick() => true,
+            // (pending tick, account audit)
+            let (pending_check, audit) = tokio::select! {
+                _ = notify.notified() => (false, false),
+                _ = fallback.tick() => (false, true),
+                _ = pending.tick() => (true, false),
                 changed = connection.changed() => {
                     changed.map_err(|_| anyhow!("Kite order-stream monitor closed"))?;
-                    false
+                    (false, true)
                 },
             };
             if !self.active.load(Ordering::Acquire) {
                 return Ok(());
             }
-            // Fast path first: the strategy gets the fill as soon as one REST round trip
-            // confirms it, before the full snapshot below starts. An order the strategy
-            // sends on that fill waits for the snapshot, which then also backs it.
-            let ids = std::mem::take(
-                &mut *completed
-                    .lock()
-                    .map_err(|_| anyhow!("Kite postback queue unavailable"))?,
-            );
-            for id in ids {
-                self.dispatcher.lock().await.fast_fill(&id, &self.tx).await?;
-            }
             let mut service = self.dispatcher.lock().await;
-            if pending_check && !service.needs_refresh() {
-                // Nothing in flight: the 15 s fallback and order updates keep it current.
+            if pending_check && !service.has_unresolved() {
+                // Nothing in flight: order updates and the 15 s fallback keep it current.
                 continue;
             }
             let before = *connection.borrow_and_update();
             service.refresh(&self.tx).await?;
-            // Never reopen admission from a snapshot taken before a disconnect/reconnect.
+            if audit {
+                service.audit().await?;
+            }
+            // Never reopen entries from a reconciliation started before a disconnect.
             let after = connection.borrow();
             self.ready.store(
                 before == *after && after.connected && self.active.load(Ordering::Acquire),
