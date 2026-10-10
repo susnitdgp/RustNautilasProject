@@ -201,8 +201,13 @@ fn validates_account_and_redacts_bad_payloads() {
             "MOCK"
         )
         .unwrap()
+        .is_some()
     );
-    assert!(!is_order(r#"{"type":"message","data":"notice"}"#, "MOCK").unwrap());
+    assert!(
+        is_order(r#"{"type":"message","data":"notice"}"#, "MOCK")
+            .unwrap()
+            .is_none()
+    );
     for payload in [
         r#"{"type":"order","data":{"user_id":"OTHER","order_id":"1","status":"COMPLETE","secret":"sentinel"}}"#,
         r#"{"type":"order","data":{"secret":"sentinel"}}"#,
@@ -228,7 +233,13 @@ fn websocket_account_id_payload_is_accepted_and_conflicting_identity_is_rejected
         let frame = format!(
             r#"{{"type":"order","data":{{{identity},"order_id":"123","status":"COMPLETE"}}}}"#
         );
-        assert!(is_order(&frame, "MOCK").unwrap());
+        assert_eq!(
+            is_order(&frame, "MOCK").unwrap(),
+            Some(Postback {
+                order_id: "123".into(),
+                status: "COMPLETE".into()
+            })
+        );
     }
     for identity in [
         r#""account_id":"OTHER""#,

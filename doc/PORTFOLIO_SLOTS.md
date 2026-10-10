@@ -149,6 +149,38 @@ so a crash still blocks the next start). The remaining writes before sending are
 attempt counter, the shared order-rate budget and the journal record: three writes of about
 2.7 ms each with `appendfsync always` (Redis replies only after the disk fsync).
 
+### 3.7 Postback fills (kite-adapter 0.3.1)
+
+A fill used to reach the strategy only through the full REST reconciliation: five sequential
+reads (orders, trades, positions, margins, orders again), retried after 250 ms and 500 ms
+while `/trades` lagged the order. Now a Kite order-stream postback with status `COMPLETE`
+for an **owned** order first takes a fast path:
+
+1. `GET /orders` (the day book, for that order) and `GET /orders/{id}/trades`, sent together:
+   one round trip. The day book is used rather than `GET /orders/{id}` because Kite documents
+   the history entries without `market_protection` and `exchange_update_timestamp`, which the
+   checks need for MARKET orders.
+2. They go through the same ownership, contract, quantity and chronology checks as the full
+   reconciliation. The fills carry the **real Kite trade IDs**; the postback payload itself
+   never creates a fill.
+3. The record is journalled (fsynced) first, then `OrderAccepted` (if still pending) and
+   `OrderFilled` are emitted.
+4. The full reconciliation runs right after, as before. It must show the same trades, with
+   unchanged quantity, price, time and order id. While `/trades` or positions still lag, the
+   run continues for up to **30 s**; past that, or on any difference, it stops for review.
+   A snapshot still missing a postback fill never backs cached admission.
+
+The fast path is skipped, and the full reconciliation handles the update exactly as in
+0.2.9, when: the order is not owned (manual orders), already closed, has a pending
+protective-stop modification, is not `COMPLETE` in the day book yet, a read fails or takes
+over 3 s, its trades do not add up yet, or any check fails. Partial-fill postbacks
+(`UPDATE`/`OPEN`) are not fast-pathed. The mock (paper) broker does not use it.
+
+Log events: `native_postback_fill` (with `ms` from the start of the reads),
+`native_postback_fill_verified` (`after_ms`), `native_postback_fill_skipped` (`reason`), and
+`postback_fills` in the final `native_admissions` line. A clean shutdown also requires every
+postback fill to be verified.
+
 ---
 
 ## 4. Gates for real orders

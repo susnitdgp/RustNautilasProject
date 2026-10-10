@@ -153,6 +153,12 @@ impl ReadClient {
         self.get_at(&format!("{}{}", self.root, endpoint.path()))
             .await
     }
+    /// The exchange trades of one order (`GET /orders/{id}/trades`).
+    pub(crate) async fn order_trades<T: DeserializeOwned>(&self, order_id: &str) -> Result<T> {
+        crate::execution::request::broker_id(order_id)?;
+        self.get_at(&format!("{}/orders/{order_id}/trades", self.root))
+            .await
+    }
     #[cfg(test)]
     pub(crate) fn charges_test_url(mut self, url: String) -> Self {
         self.charge_test_url = Some(url);

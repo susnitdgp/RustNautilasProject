@@ -1,4 +1,7 @@
 //! Production order notifications trigger REST reconciliation; payloads never create fills.
+//! A COMPLETE notification for an owned order first takes the postback fast path: that
+//! order and its trades are read over REST (one round trip) and its fills emitted with
+//! real Kite trade IDs; the full account snapshot follows and must confirm them.
 //! Dedicated socket: no market-data subscription and no broker mutations.
 use super::dispatch::Dispatcher;
 use crate::{credentials::KiteCredentials, websocket::transport};
@@ -7,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use nautilus_common::messages::ExecutionEvent;
 use serde::Deserialize;
 use std::sync::{
-    Arc,
+    Arc, Mutex as StdMutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::{
@@ -42,9 +45,17 @@ struct Connection {
     connected: bool,
 }
 
+/// A validated order notification for this account.
+#[derive(Debug, PartialEq, Eq)]
+struct Postback {
+    order_id: String,
+    status: String,
+}
+
 /// Do not expose private payloads in parse errors or logs. Notifications from
 /// manual orders also trigger account reconciliation, but never establish ownership.
-fn is_order(text: &str, user_id: &str) -> Result<bool> {
+/// `Ok(None)`: not an order notification (ignored).
+fn is_order(text: &str, user_id: &str) -> Result<Option<Postback>> {
     #[derive(Deserialize)]
     struct Envelope {
         #[serde(rename = "type")]
@@ -80,12 +91,15 @@ fn is_order(text: &str, user_id: &str) -> Result<bool> {
             ensure!(identity == user_id, "Kite order-update account mismatch");
             super::super::request::broker_id(&update.order_id)?;
             ensure!(!update.status.is_empty(), "Missing Kite order status");
-            Ok(true)
+            Ok(Some(Postback {
+                order_id: update.order_id,
+                status: update.status,
+            }))
         }
         "error" => Err(anyhow!(
             "Kite order stream reported an error; review session"
         )),
-        _ => Ok(false),
+        _ => Ok(None),
     }
 }
 
@@ -116,14 +130,16 @@ impl Monitor {
         // Bumped on every order update / connection change, without the dispatcher lock,
         // so an order admitted from cached state sees it immediately.
         let doorbell = self.dispatcher.lock().await.doorbell();
+        // Order ids of COMPLETE notifications not yet offered to the fast path.
+        let completed = StdMutex::new(Vec::<String>::new());
         let (connection_tx, connection_rx) = watch::channel(Connection {
             generation: 1,
             connected: true,
         });
         // Both futures belong to this task: no detached reader on stop/failure.
         let result = tokio::select! {
-            result = self.read(&mut socket, endpoint, timing, &notify, &doorbell, connection_tx) => result,
-            result = self.reconcile(timing, &notify, connection_rx) => result,
+            result = self.read(&mut socket, endpoint, timing, &notify, &doorbell, &completed, connection_tx) => result,
+            result = self.reconcile(timing, &notify, &completed, connection_rx) => result,
             _ = async {
                 while self.active.load(Ordering::Acquire) {
                     sleep(Duration::from_millis(100)).await;
@@ -145,6 +161,7 @@ impl Monitor {
         timing: Timing,
         notify: &Notify,
         doorbell: &AtomicU64,
+        completed: &StdMutex<Vec<String>>,
         connection: watch::Sender<Connection>,
     ) -> Result<()> {
         let mut generation = 1;
@@ -154,7 +171,15 @@ impl Monitor {
                 // independently; an idle timeout must not consume reconnect budget.
                 Err(_) => continue,
                 Ok(Some(Ok(Message::Text(text)))) => {
-                    if is_order(&text, &self.user_id)? {
+                    if let Some(postback) = is_order(&text, &self.user_id)? {
+                        if postback.status == "COMPLETE" {
+                            let mut queue = completed
+                                .lock()
+                                .map_err(|_| anyhow!("Kite postback queue unavailable"))?;
+                            if !queue.contains(&postback.order_id) {
+                                queue.push(postback.order_id);
+                            }
+                        }
                         doorbell.fetch_add(1, Ordering::AcqRel);
                         notify.notify_one();
                     }
@@ -212,6 +237,7 @@ impl Monitor {
         &self,
         timing: Timing,
         notify: &Notify,
+        completed: &StdMutex<Vec<String>>,
         mut connection: watch::Receiver<Connection>,
     ) -> Result<()> {
         let mut fallback = interval_at(Instant::now() + timing.fallback, timing.fallback);
@@ -231,8 +257,19 @@ impl Monitor {
             if !self.active.load(Ordering::Acquire) {
                 return Ok(());
             }
+            // Fast path first: the strategy gets the fill as soon as one REST round trip
+            // confirms it, before the full snapshot below starts. An order the strategy
+            // sends on that fill waits for the snapshot, which then also backs it.
+            let ids = std::mem::take(
+                &mut *completed
+                    .lock()
+                    .map_err(|_| anyhow!("Kite postback queue unavailable"))?,
+            );
+            for id in ids {
+                self.dispatcher.lock().await.fast_fill(&id, &self.tx).await?;
+            }
             let mut service = self.dispatcher.lock().await;
-            if pending_check && !service.has_unresolved() {
+            if pending_check && !service.needs_refresh() {
                 // Keep the existing durable account heartbeat fresh without a REST request.
                 service.heartbeat()?;
                 continue;

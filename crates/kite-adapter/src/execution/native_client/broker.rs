@@ -46,6 +46,14 @@ pub(crate) trait Broker: Send + Sync {
         anyhow::bail!("Broker mutations disabled")
     }
     async fn snapshot(&self) -> Result<Snapshot>;
+    /// Postback fast path: one order's latest state and its trades. `Ok(None)` means the
+    /// broker does not support it (mock, tests); the full snapshot then handles the fill.
+    async fn order_detail(
+        &self,
+        _order_id: &str,
+    ) -> Result<Option<(BrokerOrder, Vec<BrokerTrade>)>> {
+        Ok(None)
+    }
     async fn fees(
         &self,
         snapshot: &Snapshot,
@@ -146,6 +154,31 @@ impl Broker for KiteBroker {
         self.verified_mcx
             .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
+    }
+    /// The order comes from the day book (`GET /orders`), the same source as the full
+    /// snapshot: `GET /orders/{id}` history entries are documented without
+    /// `market_protection` and `exchange_update_timestamp`, which `reconcile` needs for
+    /// owned MARKET orders and for the trade/order chronology. Both reads go out
+    /// together: one round trip.
+    async fn order_detail(
+        &self,
+        order_id: &str,
+    ) -> Result<Option<(BrokerOrder, Vec<BrokerTrade>)>> {
+        let (book, trades) = tokio::join!(
+            self.read.get::<Vec<BrokerOrder>>(Endpoint::Orders),
+            self.read.order_trades::<Vec<BrokerTrade>>(order_id),
+        );
+        let mut matching = book?.into_iter().filter(|o| o.order_id == order_id);
+        let order = matching
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("Order not in the Kite day book yet"))?;
+        ensure!(matching.next().is_none(), "Kite day book lists the order twice");
+        let trades = trades?;
+        ensure!(
+            trades.iter().all(|t| t.order_id == order_id),
+            "Kite order trades identity mismatch"
+        );
+        Ok(Some((order, trades)))
     }
     async fn snapshot(&self) -> Result<Snapshot> {
         let first: Vec<BrokerOrder> = self.read.get(Endpoint::Orders).await?;

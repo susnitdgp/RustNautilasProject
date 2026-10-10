@@ -29,10 +29,17 @@ use tokio::sync::mpsc::UnboundedSender;
 /// Longest a clean reconciliation may back an order without a fresh REST read. The order
 /// stream's fallback refresh runs every 15 s, so a healthy session always stays inside it.
 pub(crate) const CACHED_ADMISSION_MAX_AGE: Duration = Duration::from_secs(20);
+/// How long the full account snapshot may lag a postback fill (its trades missing from
+/// `/trades`, its quantity missing from positions) before the run stops for review.
+pub(crate) const POSTBACK_VERIFY_GRACE: Duration = Duration::from_secs(30);
 struct PreparedObservation {
     position: i64,
     records: BTreeMap<String, Record>,
     events: Vec<OrderEventAny>,
+    /// A postback fill is not yet visible in this snapshot (inside its grace period).
+    pending: bool,
+    /// Postback fills this snapshot confirmed trade for trade.
+    verified: Vec<String>,
 }
 pub(crate) struct Dispatcher {
     broker: Arc<dyn Broker>,
@@ -56,6 +63,13 @@ pub(crate) struct Dispatcher {
     /// Orders admitted from cached state / from a full REST preflight.
     admitted_cached: u64,
     admitted_full: u64,
+    /// Postback fills awaiting confirmation by the full snapshot:
+    /// client order id → (Kite trade ids emitted, verification deadline).
+    verifying: BTreeMap<String, (Vec<String>, Instant)>,
+    /// Fills emitted from the postback fast path so far.
+    postback_fills: u64,
+    /// `POSTBACK_VERIFY_GRACE`, shortened only by tests.
+    verify_grace: Duration,
 }
 impl Dispatcher {
     /// Shared counter the order stream bumps; any change invalidates cached admission.
@@ -119,12 +133,17 @@ impl Dispatcher {
         if !self.poisoned && !failed && self.refresh(tx).await.is_err() {
             self.fault();
         }
-        let clean = !failed && !self.poisoned && !self.has_unresolved() && self.position == 0;
+        let clean = !failed
+            && !self.poisoned
+            && !self.has_unresolved()
+            && self.verifying.is_empty()
+            && self.position == 0;
         if self.cached_admission {
             let (cached, full) = self.admissions();
             eprintln!(
                 "{}",
-                serde_json::json!({"event":"native_admissions","cached":cached,"full_preflight":full})
+                serde_json::json!({"event":"native_admissions","cached":cached,"full_preflight":full,
+                    "postback_fills":self.postback_fills})
             );
         }
         self.store.finish(clean, self.unresolved(), self.position)?;
@@ -154,6 +173,11 @@ impl Dispatcher {
         self.records
             .values()
             .any(|r| OrderAny::from_events(r.events.clone()).map_or(true, |o| !o.is_closed()))
+    }
+    /// True while an owned order is unresolved or a postback fill awaits confirmation:
+    /// the order stream's short pending timer must keep running full snapshots.
+    pub fn needs_refresh(&self) -> bool {
+        self.has_unresolved() || !self.verifying.is_empty()
     }
 
     pub fn ownership(&self) -> BTreeMap<String, ClientOrderId> {
@@ -193,11 +217,19 @@ impl Dispatcher {
             clean: None,
             admitted_cached: 0,
             admitted_full: 0,
+            verifying: BTreeMap::new(),
+            postback_fills: 0,
+            verify_grace: POSTBACK_VERIFY_GRACE,
         }
     }
     /// Raises the contract cap from 1 (reviewed `max_lots` setting, 1..=10).
     pub fn with_max_lots(mut self, lots: u32) -> Self {
         self.max_lots = i64::from(lots.clamp(1, 10));
+        self
+    }
+    #[cfg(test)]
+    pub fn with_verify_grace(mut self, grace: Duration) -> Self {
+        self.verify_grace = grace;
         self
     }
     fn now() -> UnixNanos {
@@ -457,11 +489,156 @@ impl Dispatcher {
         for event in prepared.events {
             Self::emit(tx, event)?;
         }
+        for id in &prepared.verified {
+            if let Some((trades, deadline)) = self.verifying.remove(id) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"native_postback_fill_verified","order":id,
+                        "trades":trades.len(),
+                        "after_ms":self.verify_grace.saturating_sub(left).as_millis() as u64})
+                );
+            }
+        }
         self.store
             .health("Running", self.unresolved(), self.position)?;
         self.poisoned = false;
-        self.clean = Some(observed);
+        // A snapshot still missing a postback fill never backs cached admission.
+        self.clean = (!prepared.pending).then_some(observed);
         Ok(())
+    }
+    /// Postback fast path (production order stream). On a COMPLETE postback for an owned,
+    /// still-open order, read only that order and its trades (two parallel REST calls)
+    /// and emit its fills with their real Kite trade IDs through the same `reconcile`
+    /// checks as the full snapshot. The record is journalled (fsynced) before any event
+    /// is emitted. The full snapshot that follows must then show the same trades, with
+    /// unchanged quantity, price and time, within `POSTBACK_VERIFY_GRACE`; otherwise the
+    /// run stops for review.
+    ///
+    /// `Ok(false)`: not taken (not owned, already closed, pending stop modification,
+    /// not COMPLETE yet, read failed, trades lagging, any check failed). Nothing changed;
+    /// the full reconciliation handles the update exactly as before. `Err` only when a
+    /// journal write or event delivery failed after the dispatcher began changing state.
+    pub async fn fast_fill(
+        &mut self,
+        broker_id: &str,
+        tx: &UnboundedSender<ExecutionEvent>,
+    ) -> Result<bool> {
+        use nautilus_model::enums::{OrderSide, OrderStatus};
+        use rust_decimal::prelude::ToPrimitive;
+        if self.poisoned {
+            return Ok(false);
+        }
+        let Some((id, record)) = self
+            .records
+            .iter()
+            .find(|(_, r)| r.broker_id.as_deref() == Some(broker_id))
+            .map(|(id, r)| (id.clone(), r.clone()))
+        else {
+            return Ok(false);
+        };
+        if !record.management.is_empty() {
+            return Ok(false);
+        }
+        let Ok(current) = OrderAny::from_events(record.events.clone()) else {
+            return Ok(false);
+        };
+        if current.is_closed() {
+            return Ok(false);
+        }
+        let started = Instant::now();
+        let skip = |reason: String| -> Result<bool> {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"native_postback_fill_skipped","order":id,
+                    "reason":reason,"ms":started.elapsed().as_millis() as u64})
+            );
+            Ok(false)
+        };
+        let (broker, trades) = match tokio::time::timeout(
+            Duration::from_secs(3),
+            self.broker.order_detail(broker_id),
+        )
+        .await
+        {
+            Ok(Ok(Some(detail))) => detail,
+            Ok(Ok(None)) => return Ok(false),
+            Ok(Err(e)) => return skip(format!("{e}")),
+            Err(_) => return skip("order read timed out".into()),
+        };
+        if broker.status != "COMPLETE" {
+            return skip(format!("status {}", broker.status));
+        }
+        if broker.tag.as_deref() != Some(record.tag.as_str()) {
+            return skip("tag mismatch".into());
+        }
+        let owner = Ownership {
+            broker_id,
+            tag: &record.tag,
+            product: &record.product,
+            token: record.token,
+        };
+        let events = match broker_events::reconcile(
+            &current,
+            &owner,
+            &broker,
+            &trades,
+            &self.factory,
+            Self::now(),
+        ) {
+            Ok(events) => events,
+            Err(e) => return skip(format!("{e}")),
+        };
+        let mut order = current.clone();
+        let mut filled = 0_i64;
+        let mut trade_ids = Vec::new();
+        for event in &events {
+            if let OrderEventAny::Filled(f) = event {
+                let Some(qty) = f.last_qty.as_decimal().to_i64() else {
+                    return skip("invalid fill quantity".into());
+                };
+                filled += qty;
+                trade_ids.push(f.trade_id.to_string());
+            }
+            if order.apply(event.clone()).is_err() {
+                return skip("fill does not apply to the native order".into());
+            }
+        }
+        if order.status() != OrderStatus::Filled || trade_ids.is_empty() {
+            return skip("observation does not complete the order".into());
+        }
+        let position = self.position
+            + if order.order_side() == OrderSide::Buy {
+                filled
+            } else {
+                -filled
+            };
+        if position.abs() > self.max_lots {
+            return skip("resulting position exceeds contract cap".into());
+        }
+        let mut next = record.clone();
+        next.broker_id = Some(broker_id.to_owned());
+        next.outcome = "Observed".into();
+        next.events.extend(events.iter().cloned());
+        // From here a failed write or delivery poisons the dispatcher, as in `refresh`.
+        self.poisoned = true;
+        self.clean = None;
+        self.store.save(&id, &next)?;
+        self.records.insert(id.clone(), next);
+        self.position = position;
+        self.verifying
+            .insert(id.clone(), (trade_ids, Instant::now() + self.verify_grace));
+        for event in events {
+            Self::emit(tx, event)?;
+        }
+        self.poisoned = false;
+        self.postback_fills += 1;
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"native_postback_fill","order":id,"qty":filled,
+                "position":position,"ms":started.elapsed().as_millis() as u64})
+        );
+        Ok(true)
     }
     fn prepare_observation(
         &self,
@@ -514,8 +691,29 @@ impl Dispatcher {
             position,
             records: BTreeMap::new(),
             events: Vec::new(),
+            pending: false,
+            verified: Vec::new(),
         };
         for (id, record) in &self.records {
+            // A postback fill is checked only once all its trades are visible here; until
+            // then the record is left as journalled, and only inside its grace period.
+            let verifying = match self.verifying.get(id) {
+                Some((trades, deadline)) => {
+                    let visible = trades
+                        .iter()
+                        .all(|t| snapshot.trades.iter().any(|s| &s.trade_id == t));
+                    if !visible {
+                        ensure!(
+                            Instant::now() < *deadline,
+                            "Postback fill not confirmed by Kite trades within grace; review required"
+                        );
+                        prepared.pending = true;
+                        continue;
+                    }
+                    true
+                }
+                None => false,
+            };
             let current = OrderAny::from_events(record.events.clone())?;
             let matches: Vec<_> = snapshot
                 .orders
@@ -603,6 +801,11 @@ impl Dispatcher {
                 &self.factory,
                 Self::now(),
             )?;
+            // `reconcile` has just proved every previously emitted fill of this order is
+            // present in `/trades` with the same quantity, price, time and venue id.
+            if verifying {
+                prepared.verified.push(id.clone());
+            }
             if let Some(trigger) = stop_modified {
                 use nautilus_model::{
                     identifiers::VenueOrderId,
@@ -648,6 +851,12 @@ impl Dispatcher {
             } else {
                 -order.filled_qty().as_decimal()
             };
+        }
+        if expected != rust_decimal::Decimal::from(position) && prepared.pending {
+            // Positions lag a postback fill whose trades are not visible yet either: keep
+            // the native position; the deadline above bounds how long this may last.
+            prepared.position = self.position;
+            return Ok(prepared);
         }
         if expected != rust_decimal::Decimal::from(position) {
             ensure!(
