@@ -3,7 +3,7 @@
 //! step stop for the NEXT bar) → new entry at the bar close.
 use crate::{
     params::{Params, Resolved, StructurePolicy, VolMode},
-    ta::{Atr, Dmi, MacdHist, Rsi, Sma, Smoothed, Vwap},
+    nt::{Atr, Dmi, Ema, MacdHist, Rsi, Sma, Vwap},
 };
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -150,9 +150,9 @@ pub struct Engine {
     status: Status,
     r: Resolved,
     bar_index: u64,
-    ema_fast: Smoothed,
-    ema_slow: Smoothed,
-    ema_trend: Smoothed,
+    ema_fast: Ema,
+    ema_slow: Ema,
+    ema_trend: Ema,
     atr: Atr,
     atr_mean: Sma,
     rsi: Rsi,
@@ -182,9 +182,9 @@ impl Engine {
         Self {
             status: Status::default(),
             bar_index: 0,
-            ema_fast: Smoothed::ema(r.fast),
-            ema_slow: Smoothed::ema(r.slow),
-            ema_trend: Smoothed::ema(r.trend),
+            ema_fast: Ema::new(r.fast),
+            ema_slow: Ema::new(r.slow),
+            ema_trend: Ema::new(r.trend),
             atr: Atr::new(r.atr),
             atr_mean: Sma::new(ATR_MEAN_LEN),
             rsi: Rsi::new(r.rsi),
@@ -264,7 +264,7 @@ impl Engine {
         let dmi = self.dmi.update(b.high, b.low, b.close);
         let vol_mean = self.vol_mean.update(b.volume);
         let hlc3 = (b.high + b.low + b.close) / 3.0;
-        let vwap = self.vwap.update((b.start + IST_OFFSET).div_euclid(86_400), hlc3, b.volume);
+        let vwap = self.vwap.update(b.start + IST_OFFSET, hlc3, b.volume);
         if b.volume > 0.0 {
             self.has_volume = true;
         }

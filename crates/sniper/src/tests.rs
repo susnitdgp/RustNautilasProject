@@ -148,3 +148,68 @@ fn thirds_close_at_each_target_and_live_marks_match_the_bar_model() {
     assert!(matches!(&ev[..], [Event::Partial { level: 2, .. }, Event::Exit { reason: "TP3", .. }]));
     assert!(l.trade.is_none());
 }
+
+/// Same wavy market as `trades_alternate_and_respect_their_geometry`.
+fn wavy(n: i64) -> Vec<Bar> {
+    let mut px = 8000.0_f64;
+    (0..n)
+        .map(|i| {
+            let drift = (i as f64 / 37.0).sin() * 6.0 + (i as f64 / 11.0).cos() * 3.0;
+            let o = px;
+            let c = (px + drift).round();
+            px = c;
+            Bar {
+                start: 1_790_000_000 + i * 300,
+                open: o,
+                high: o.max(c) + 2.0 + ((i % 5) as f64),
+                low: o.min(c) - 2.0 - ((i % 3) as f64),
+                close: c,
+                volume: 100.0 + ((i * 37) % 90) as f64,
+            }
+        })
+        .collect()
+}
+
+/// The engine's nautilus-indicators agree with the Pine-exact backup once the warm-up has passed.
+#[test]
+fn nautilus_backend_converges_to_the_pine_port() {
+    use crate::{nt, ta};
+    let (mut ne, mut te) = (nt::Ema::new(34), ta::Smoothed::ema(34));
+    let (mut nr, mut tr) = (nt::Rsi::new(14), ta::Rsi::new(14));
+    let (mut na, mut ta_) = (nt::Atr::new(14), ta::Atr::new(14));
+    let (mut nm, mut tm) = (nt::MacdHist::new(12, 26, 9), ta::MacdHist::new(12, 26, 9));
+    let (mut nd, mut td) = (nt::Dmi::new(14, 14), ta::Dmi::new(14, 14));
+    let (mut ns, mut ts) = (nt::Sma::new(20), ta::Sma::new(20));
+    let (mut nv, mut tv) = (nt::Vwap::default(), ta::Vwap::default());
+    let close = |a: Option<f64>, b: Option<f64>, what: &str, i: usize| {
+        let (a, b) = (a.unwrap_or_else(|| panic!("{what} nautilus None at {i}")), b.unwrap_or_else(|| panic!("{what} ta None at {i}")));
+        assert!((a - b).abs() <= 1e-6 * b.abs().max(1.0), "{what} bar {i}: nautilus {a} vs ta {b}");
+    };
+    for (i, b) in wavy(1500).iter().enumerate() {
+        let ist = b.start + 19_800;
+        let hlc3 = (b.high + b.low + b.close) / 3.0;
+        let e = (ne.update(b.close), te.update(b.close));
+        let r = (nr.update(b.close), tr.update(b.close));
+        let a = (na.update(b.high, b.low, b.close), ta_.update(b.high, b.low, b.close));
+        let m = (nm.update(b.close), tm.update(b.close));
+        let d = (nd.update(b.high, b.low, b.close), td.update(b.high, b.low, b.close));
+        let s = (ns.update(b.volume), ts.update(b.volume));
+        let v = (nv.update(ist, hlc3, b.volume), tv.update(ist.div_euclid(86_400), hlc3, b.volume));
+        if i >= 19 {
+            close(s.0, s.1, "SMA", i); // exact from the first full window
+        }
+        if i >= 20 {
+            close(v.0, v.1, "VWAP", i);
+        }
+        if i >= 1000 {
+            close(e.0, e.1, "EMA", i);
+            close(r.0, r.1, "RSI", i);
+            close(a.0, a.1, "ATR", i);
+            close(m.0, m.1, "MACD hist", i);
+            let (nd, td) = (d.0.unwrap(), d.1.unwrap());
+            close(Some(nd.0), Some(td.0), "+DI", i);
+            close(Some(nd.1), Some(td.1), "-DI", i);
+            close(Some(nd.2), Some(td.2), "ADX", i);
+        }
+    }
+}

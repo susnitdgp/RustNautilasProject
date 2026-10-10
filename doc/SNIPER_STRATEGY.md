@@ -6,7 +6,8 @@ strategy through the native Kite execution client.
 
 | Item | Where |
 |---|---|
-| Signal and trade model (pure, no I/O) | `crates/sniper` (`engine.rs`, `params.rs`, `ta.rs`) |
+| Signal and trade model (pure, no I/O) | `crates/sniper` (`engine.rs`, `params.rs`, `nt.rs`) |
+| Indicators | `crates/sniper/src/nt.rs` on `nautilus-indicators` 0.64; `ta.rs` = old Pine-exact port, kept as a backup file (not used) |
 | Slot settings, entry window, costs | `apps/kite-node/src/native_node/sniper_config.rs` |
 | Live strategy (orders, intrabar exits, safety) | `apps/kite-node/src/native_node/sniper_strategy.rs` |
 | Live / paper runner | `apps/kite-node/src/native_node/sniper_live.rs` |
@@ -14,7 +15,7 @@ strategy through the native Kite execution client.
 | Shipped config | `config/sniper-crudeoilm.json` |
 | Launch scripts | `deploy/run-sniper-paper.sh`, `deploy/run-sniper-live.sh` |
 
-Written for kite-node 2.16.0 / kite-adapter 0.2.7.
+Written for kite-node 2.17.0 / kite-adapter 0.2.7 / sniper 2.1.0+3.
 
 ---
 
@@ -59,6 +60,22 @@ Within one bar the order is fixed:
 Live trading adds tick-level checks between bar closes (section 8).
 
 ---
+
+### 2.1 Indicators
+
+All indicators (EMA fast/slow/trend, ATR and its 42-bar mean, RSI, MACD 12/26/9 histogram,
+DMI/ADX 14/14, 20-bar volume mean, session VWAP) come from **`nautilus-indicators` 0.64**
+through thin streaming wrappers in `crates/sniper/src/nt.rs`: EMA, SMA, RSI (Wilder),
+MACD (EMA), ATR (Wilder) and VWAP are the library's. ADX is not in the library, so it is
+built from its `DirectionalMovement`, `AverageTrueRange` and `WilderMovingAverage` with
+Pine's `fixnan`. VWAP gets the bar time shifted to IST so it resets at the IST day.
+
+The earlier hand-written Pine `ta.*` port stays in `crates/sniper/src/ta.rs` as a backup
+file; the engine does not use it. Against that port (and Pine) the library differs only in
+the warm-up: EMA / Wilder averages seed with the first value instead of the SMA of the first
+`length` values, and RSI counts the first bar as a zero change. The gap shrinks every bar and
+is gone well before the engine's own warm-up (trend EMA × `warmup_mult` bars) ends. The test
+`nautilus_backend_converges_to_the_pine_port` checks every indicator against the backup.
 
 ## 3. Presets: what really sets the lengths
 

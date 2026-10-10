@@ -6,7 +6,9 @@
 //! Entries at the signal bar close; exits stop-first on bar OHLC; reversal on an
 //! accepted opposite signal. Dashboard, journal, alerts and HTF bias are not ported.
 pub mod engine;
+pub mod nt;
 pub mod params;
+/// Pine-exact `ta.*` port, no longer used by the engine; kept as a backup.
 pub mod ta;
 
 pub use engine::{Bar, Engine, Event, Status, Trade};
