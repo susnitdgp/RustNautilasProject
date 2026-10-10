@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.22.0 / kite-adapter 0.5.0.
+Written for kite-node 2.23.0 / kite-adapter 0.6.0.
 
 ---
 
@@ -126,7 +126,7 @@ from Redis by hand (`kite-prod:v1:{<slot>}:commands:*`, `kite-prod:v1:{<slot>}:l
 
 The account is reconciled at startup (flat, no open orders) and then kept current: every
 Kite order-stream update, plus a 15 s fallback, triggers a REST reconciliation (orders, trades,
-positions, margins). An order is admitted **from that observation, without new REST reads**,
+positions; see "Order-path reads" below). An order is admitted **from that observation, without new REST reads**,
 when all of these hold:
 
 * the order stream is connected and has not reconnected since the observation;
@@ -145,6 +145,26 @@ Per order, the only write before sending is the shared order-rate budget in loca
 one round trip of about 0.06 ms with `appendfsync everysec` (2.21.1; it was ~2.8 ms with
 `always` plus a disk confirmation). The journal record and the lease attempt counter are gone
 (2.21.0). A Redis crash can lose at most the last second of budget counts.
+
+### 3.6a Order-path reads (kite-adapter 0.6.0)
+
+Measured from the box: one Kite read takes about 19 ms. Until 0.6.0 every account snapshot on
+the order path read orders, trades, positions, margins and orders again, one after another
+(5 reads, ~94 ms), and every order triggered two of them close together (one straight after the
+acknowledgement, one on Kite's order-stream update). With the program's read limit of 8 per
+second, the second snapshot's last reads waited out the rest of the second: a fill typically
+reached the strategy about 1 s after the order. Since 0.6.0:
+
+* the order-path snapshot reads **orders, trades and positions together**, then the order book
+  again (4 reads, ~2 round trips, ~40 ms). Margins are not read: no order check uses them; the
+  start-up snapshot still reads and checks them. The book must be identical before and after,
+  as before; a fill that `/trades` or positions do not show yet is still read again
+  (`ObservationLag`), never inferred;
+* in live runs there is **no snapshot straight after the acknowledgement** (it nearly always
+  found the MARKET order still pending). Kite's order-stream update for the order triggers the
+  reconciliation; while the order is unresolved the stream's 5 s timer reconciles too.
+
+So an order costs one snapshot (4 reads) instead of two (10), well inside the read limit.
 
 ### 3.7 Postback fills (kite-adapter 0.3.1; switched off since 0.5.0)
 

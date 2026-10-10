@@ -18,8 +18,24 @@ impl std::fmt::Display for ReadFailure {
     }
 }
 impl std::error::Error for ReadFailure {}
+
+/// Which account view to read (kite-adapter 0.6.0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum View {
+    /// Orders, trades, positions and margins: start-up and account reports.
+    Full,
+    /// Orders, trades and positions only: the order path (pre-order checks,
+    /// reconciliation). See `Broker::trading_snapshot`.
+    Trading,
+}
+
+/// Full account snapshot (start-up, reports).
 pub(crate) async fn snapshot(broker: &dyn Broker) -> Result<Snapshot> {
-    snapshot_checked(broker, |_| Ok(()))
+    snapshot_view(broker, View::Full).await
+}
+/// Account snapshot of the given view, with the bounded retry.
+pub(crate) async fn snapshot_view(broker: &dyn Broker, view: View) -> Result<Snapshot> {
+    snapshot_checked(broker, view, |_| Ok(()))
         .await
         .map(|(snapshot, ())| snapshot)
 }
@@ -27,10 +43,17 @@ pub(crate) async fn snapshot(broker: &dyn Broker) -> Result<Snapshot> {
 /// validator must be side-effect free: only the successful result is published.
 pub(crate) async fn snapshot_checked<T>(
     broker: &dyn Broker,
+    view: View,
     mut validate: impl FnMut(&Snapshot) -> Result<T>,
 ) -> Result<(Snapshot, T)> {
     for attempt in 0..3 {
-        let result = tokio::time::timeout(Duration::from_secs(12), broker.snapshot())
+        let read = async {
+            match view {
+                View::Full => broker.snapshot().await,
+                View::Trading => broker.trading_snapshot().await,
+            }
+        };
+        let result = tokio::time::timeout(Duration::from_secs(12), read)
             .await
             .unwrap_or_else(|_| Err(anyhow!(ReadFailure::Transient)))
             .and_then(|snapshot| validate(&snapshot).map(|value| (snapshot, value)));

@@ -153,8 +153,9 @@ impl Dispatcher {
         );
         Ok(())
     }
+    /// Order-path account view (no margins; see `Broker::trading_snapshot`).
     async fn snapshot(&mut self) -> Result<super::broker::Snapshot> {
-        match super::outage::snapshot(self.broker.as_ref()).await {
+        match super::outage::snapshot_view(self.broker.as_ref(), super::outage::View::Trading).await {
             Ok(s) => Ok(s),
             Err(e) => {
                 if let Some(super::outage::ReadFailure::RateLimited(ms)) =
@@ -479,7 +480,7 @@ impl Dispatcher {
         let observed = (Instant::now(), self.doorbell.load(Ordering::Acquire));
         self.clean = None;
         let broker = self.broker.clone();
-        let result = super::outage::snapshot_checked(broker.as_ref(), |snapshot| {
+        let result = super::outage::snapshot_checked(broker.as_ref(), super::outage::View::Trading, |snapshot| {
             // Retain the exclusive dispatcher borrow across retries; Store is Send,
             // not Sync. Preparing an observation itself makes no state changes.
             let dispatcher = &mut *self;

@@ -114,6 +114,12 @@ impl ReadClient {
         self.root = "https://sandbox.kite.trade/oms";
         self
     }
+    /// Points this reader at a local fake Kite server (tests only).
+    #[cfg(test)]
+    pub(crate) fn with_test_root(mut self, root: &'static str) -> Self {
+        self.root = root;
+        self
+    }
     pub(crate) async fn sandbox_quote<T: DeserializeOwned>(&self) -> Result<T> {
         ensure!(
             self.root == "https://sandbox.kite.trade/oms",

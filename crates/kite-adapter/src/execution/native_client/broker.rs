@@ -46,6 +46,12 @@ pub(crate) trait Broker: Send + Sync {
         anyhow::bail!("Broker mutations disabled")
     }
     async fn snapshot(&self) -> Result<Snapshot>;
+    /// The order-path view: orders, trades and positions, as consistent as `snapshot`.
+    /// Margins are not part of any order check, so a broker may return the last known
+    /// funds instead of reading them again (`KiteBroker` does, kite-adapter 0.6.0).
+    async fn trading_snapshot(&self) -> Result<Snapshot> {
+        self.snapshot().await
+    }
     /// Postback fast path: one order's latest state and its trades. `Ok(None)` means the
     /// broker does not support it (mock, tests); the full snapshot then handles the fill.
     async fn order_detail(
@@ -75,6 +81,8 @@ pub(crate) struct KiteBroker {
     product: String,
     sandbox: bool,
     verified_mcx: std::sync::atomic::AtomicBool,
+    /// Funds from the last full snapshot, reused by `trading_snapshot`.
+    last_funds: std::sync::Mutex<Option<Funds>>,
 }
 impl KiteBroker {
     pub(crate) fn sandbox(
@@ -91,6 +99,7 @@ impl KiteBroker {
             product,
             sandbox: true,
             verified_mcx: std::sync::atomic::AtomicBool::new(false),
+            last_funds: std::sync::Mutex::new(None),
         })
     }
     pub fn new(credentials: &KiteCredentials, user_id: String, product: String) -> Result<Self> {
@@ -99,6 +108,7 @@ impl KiteBroker {
         Ok(Self {
             sandbox: false,
             verified_mcx: std::sync::atomic::AtomicBool::new(false),
+            last_funds: std::sync::Mutex::new(None),
             read: ReadClient::with_client(credentials, client.clone())?,
             orders: KiteOrderTransport::with_client(credentials, client)?,
             user_id,
@@ -204,6 +214,45 @@ impl Broker for KiteBroker {
         first.sort_by(|a, b| a.order_id.cmp(&b.order_id));
         orders.sort_by(|a, b| a.order_id.cmp(&b.order_id));
         ensure!(first == orders, super::outage::ReadFailure::Transient);
+        if let Ok(mut last) = self.last_funds.lock() {
+            *last = Some(funds.clone());
+        }
+        Ok(Snapshot {
+            orders,
+            trades,
+            positions: positions.net,
+            funds,
+        })
+    }
+    /// Order-path snapshot (kite-adapter 0.6.0): `/orders`, `/trades` and `/positions`
+    /// read together (one round trip instead of three), then `/orders` again; margins
+    /// are not read (no order check uses them; the last full snapshot's funds are
+    /// returned). 4 reads, ~2 round trips, instead of 5 reads one after another.
+    ///
+    /// Consistency is unchanged in kind: the book must be identical before and after the
+    /// trades and positions were read, or the read is retried (`Transient`). If an order
+    /// changes between the concurrent reads, `/trades` or `/positions` can trail the book;
+    /// reconciliation already classifies exactly that as `ObservationLag` (trade sum vs
+    /// filled quantity, owned fills vs position) and reads again, never inferring a fill.
+    async fn trading_snapshot(&self) -> Result<Snapshot> {
+        let funds = self.last_funds.lock().ok().and_then(|f| f.clone());
+        let Some(funds) = funds else {
+            return self.snapshot().await;
+        };
+        #[derive(Deserialize)]
+        struct Positions {
+            net: Vec<BrokerPosition>,
+        }
+        let (first, trades, positions) = tokio::join!(
+            self.read.get::<Vec<BrokerOrder>>(Endpoint::Orders),
+            self.read.get::<Vec<BrokerTrade>>(Endpoint::Trades),
+            self.read.get::<Positions>(Endpoint::Positions),
+        );
+        let (mut first, trades, positions) = (first?, trades?, positions?);
+        let mut orders: Vec<BrokerOrder> = self.read.get(Endpoint::Orders).await?;
+        first.sort_by(|a, b| a.order_id.cmp(&b.order_id));
+        orders.sort_by(|a, b| a.order_id.cmp(&b.order_id));
+        ensure!(first == orders, super::outage::ReadFailure::Transient);
         Ok(Snapshot {
             orders,
             trades,
@@ -212,3 +261,7 @@ impl Broker for KiteBroker {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "trading_snapshot_tests.rs"]
+mod trading_snapshot_tests;

@@ -524,10 +524,19 @@ impl ExecutionClient for Client {
                                 Some(stream_ready.as_ref()),
                             )
                             .await?;
+                        // No snapshot here (kite-adapter 0.6.0). Right after the
+                        // acknowledgement a MARKET order is nearly always still pending,
+                        // so this read found nothing, held the dispatcher and used up the
+                        // read budget the real reconciliation then waited for. Kite's
+                        // order-stream update for this order triggers that
+                        // reconciliation; while the order is unresolved the stream's
+                        // 5 s pending timer reconciles too, so a lost update is covered.
+                        Ok(())
                     } else {
+                        // Mock/sandbox: no order stream, reconcile right away.
                         service.submit(order, position as i64, &tx).await?;
+                        service.refresh(&tx).await
                     }
-                    service.refresh(&tx).await
                 }
                 .await;
                 if result.is_err() {
