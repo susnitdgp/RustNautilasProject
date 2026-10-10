@@ -225,7 +225,8 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         ..Board::default()
     };
     // Dashboard: strategy and stop watcher push into their own lock-free queues; one
-    // thread owns the board and publishes it to the dashboard Redis (never the trading one).
+    // thread owns the board and publishes it to the dashboard Redis (config/dashboard.json:
+    // local Redis database 1, apart from the trading keys in database 0).
     let dash_url = DashboardConfig::load(dash_writer::CONFIG_PATH)?.map(|c| c.redis_dashboard_url);
     let dash_keys = dash_writer::Keys::new(&p.keys.dashboard());
     let (dashboard, [strategy_feed, watcher_feed]) = dash_writer::start::<2>(board, dash_url.clone(), dash_keys.clone())?;

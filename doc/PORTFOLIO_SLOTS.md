@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.21.1 / kite-adapter 0.4.0.
+Written for kite-node 2.21.2 / kite-adapter 0.4.0.
 
 ---
 
@@ -80,7 +80,7 @@ process:
 | Instance lock (one process per slot and account) | file `~/.local/state/kite-node/locks/kite-prod-<slot>-<kite user>.lock` (`KITE_LOCK_DIR` overrides the directory) |
 | Order budget (Kite rate limits) | Redis `kite-prod:v1:{account-<kite user>}:order-budget`, shared by all slots on the account |
 | Kite access token | Redis, written by `native-kite-auth` |
-| Live dashboard | dashboard Redis `kite-prod:v1:{<slot>}:dash…` |
+| Live dashboard | local Redis database 1, `kite-prod:v1:{<slot>}:dash…` |
 | Logs | `logs/<strategy>-<mode>-<date>.jsonl` |
 
 Each slot also runs as its own Nautilus trader (`kite-prod-<slot>`) with its own strategy ID.

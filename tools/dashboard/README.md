@@ -1,6 +1,7 @@
 # Live dashboard (Streamlit)
 
-Read-only web view of the dashboard Redis the bot publishes to (`doc/LIVE_DASHBOARD.md`).
+Read-only web view of the dashboard Redis the bot publishes to (`doc/LIVE_DASHBOARD.md`):
+local Redis database 1, as set in `config/dashboard.json`.
 Served at https://nautilas.awsgoswami.com (Cloudflare → nginx with a password → Streamlit).
 
 | File | Purpose |

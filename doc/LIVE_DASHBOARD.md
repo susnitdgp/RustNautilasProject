@@ -1,8 +1,9 @@
 # Live dashboard data (Redis)
 
-A running Sniper or SATS slot publishes its live state to a **separate dashboard Redis**
-(never the trading Redis), for a web dashboard to read. Written for kite-node 2.18.0 /
-kite-adapter 0.2.8.
+A running Sniper or SATS slot publishes its live state to the **dashboard Redis**, for a web
+dashboard to read. Since kite-node 2.21.2 that is the box's own Redis, **database 1**
+(`redis://127.0.0.1:6379/1`): local, no network hop, nothing leaves the box, and the dashboard
+keys stay apart from the trading keys in database 0. Written for kite-node 2.21.2.
 
 ## 1. How it works
 
@@ -25,15 +26,16 @@ stop watcher ─try_push─▶ rtrb queue ─┼─▶ "dashboard" OS thread ─
 
 ## 2. Configuration
 
-`config/dashboard.json` (gitignored, mode 600: the URL holds a password):
+`config/dashboard.json` (gitignored):
 
 ```json
-{ "redis_dashboard_url": "redis://default:PASSWORD@HOST:PORT" }
+{ "redis_dashboard_url": "redis://127.0.0.1:6379/1" }
 ```
 
 Template: `config/dashboard.example.json`. Without the file the bot runs normally and
-publishes nothing. Use `rediss://` once TLS is enabled on the database (the current Redis
-Cloud database accepts plain `redis://` only, so traffic is unencrypted). No Kite
+publishes nothing. Both the bot and the Streamlit app (`tools/dashboard`) read this file, so
+they always use the same Redis. A remote Redis also works (`redis://user:PASSWORD@HOST:PORT`,
+preferably `rediss://` with TLS); until 2.21.2 a Redis Cloud database was used. No Kite
 credentials are ever written to this Redis; the URL is never logged.
 
 ## 3. Keys
@@ -80,9 +82,9 @@ few seconds = the bot is stopped or cannot reach this Redis.
 ## 5. Reading it
 
 ```bash
-redis-cli -u "$URL" HGET 'kite-prod:v1:{crudeoilm-sniper-202610}:dash:state' snapshot
-redis-cli -u "$URL" XREVRANGE 'kite-prod:v1:{crudeoilm-sniper-202610}:dash:events' + - COUNT 20
-redis-cli -u "$URL" SUBSCRIBE 'kite-prod:v1:{crudeoilm-sniper-202610}:dash:live'
+redis-cli -n 1 HGET 'kite-prod:v1:{crudeoilm-sniper-202610}:dash:state' snapshot
+redis-cli -n 1 XREVRANGE 'kite-prod:v1:{crudeoilm-sniper-202610}:dash:events' + - COUNT 20
+redis-cli -n 1 SUBSCRIBE 'kite-prod:v1:{crudeoilm-sniper-202610}:dash:live'
 ```
 
 A web dashboard: read the snapshot and the latest stream entries on page load, then
