@@ -355,7 +355,7 @@ async fn native_mass_reconciliation_preserves_owned_ids_fills_and_positions() {
             .await
             .unwrap_err()
             .to_string()
-            .contains("review")
+            .contains("check positions and open orders in Kite")
     );
 }
 
@@ -432,7 +432,7 @@ async fn native_polling_delivers_delayed_fill_without_resubmitting() {
             .await
             .unwrap_err()
             .to_string()
-            .contains("review")
+            .contains("check positions and open orders in Kite")
     );
     assert!(!c.is_connected());
 }

@@ -1,5 +1,5 @@
 //! Explicit native production dispatcher. Disabled unless both gates are enabled.
-use super::{Client, Config, broker::KiteBroker, dispatch::Dispatcher, ledger::RedisStore};
+use super::{Client, Config, broker::KiteBroker, dispatch::Dispatcher, ledger::RunStore};
 use anyhow::{Result, anyhow, ensure};
 use nautilus_common::{
     cache::CacheView,
@@ -87,7 +87,7 @@ pub struct LiveConfig {
     pub symbol: String,
     pub namespace: String,
     pub stop_signal: Arc<AtomicBool>,
-    /// Redis key space for the ledger and lease (portfolio slot or legacy).
+    /// Key space of the slot (shared order-rate budget, lock name).
     pub keys: super::keys::KeySpace,
 }
 impl ClientConfig for LiveConfig {
@@ -143,11 +143,7 @@ impl ExecutionClientFactory for Factory {
         )?;
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
-            Box::new(RedisStore::coordinated(
-                &c.keys,
-                &c.namespace,
-                &c.settings.expected_user_id,
-            )?),
+            Box::new(RunStore::open(&c.keys, &c.settings.expected_user_id)?),
             client.factory.clone(),
             c.settings.product.clone(),
             c.settings.instrument_token,

@@ -180,6 +180,7 @@ impl Portfolio {
         ensure!(self.instances.iter().any(|v| v.id == id), "Unknown portfolio instance");
         Ok(format!("{}-{}", self.redis_prefix, id))
     }
+    #[cfg(test)]
     pub fn key(&self, id: &str, kind: &str) -> Result<String> {
         ensure!(
             segment(id) && segment(kind) && self.instances.iter().any(|v| v.id == id),
@@ -219,12 +220,10 @@ pub fn inspect(path: &str) -> Result<()> {
                 "id": v.id, "enabled": v.enabled, "rollover_strategy": v.rollover.as_ref().map(|r| &r.strategy_id), "contract_month":v.rollover.as_ref().map(|r| &r.contract_month), "strategy": v.strategy, "instrument": v.instrument,
                 "token": v.instrument_token, "strategy_config": v.strategy_config,
                 "strategy_settings": settings,
-                "redis_journal": portfolio.key(&v.id, "journal").expect("validated"),
-                "redis_owner": portfolio.key(&v.id, "owner").expect("validated"),
-                "redis_commands": portfolio.keyspace(&v.id).and_then(|k| k.commands("YYYYMMDD-run")).expect("validated"),
-                "redis_lease": portfolio.keyspace(&v.id).and_then(|k| k.lease("KITEUSER")).expect("validated"),
                 "redis_order_budget": portfolio.keyspace(&v.id).and_then(|k| k.order_budget("KITEUSER")).expect("validated"),
-                "nautilus_cache": format!("trader-{}:<run-uuid>:*", portfolio.trader_id(&v.id).expect("validated"))
+                "lock_file": portfolio.keyspace(&v.id)
+                    .and_then(|k| kite_adapter::execution::native_client::coordination::lock_file(&k, "KITEUSER"))
+                    .map(|p| p.display().to_string()).expect("validated"),
             })).collect::<Vec<_>>()
         })
     );

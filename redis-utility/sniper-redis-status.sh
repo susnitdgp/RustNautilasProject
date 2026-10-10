@@ -1,49 +1,34 @@
 #!/usr/bin/env bash
-# sniper-redis-status.sh v1.0.0
-# Read-only view of the Precision Sniper slot's state, in line with
-# sats-redis-status.sh: account lease (live and paper), today's run ledgers,
-# the shared order budget, plus a summary of today's Sniper JSON logs.
+# sniper-redis-status.sh v2.0.0
+# Read-only view of the Precision Sniper slot (kite-node 2.21.0+: no journal, no lease):
+# whether a run holds the slot's lock file (live and paper), the shared order budget in
+# Redis, and a summary of today's Sniper JSON logs.
 # Never prints or touches the Kite credential keys.
 # Usage: ./redis-utility/sniper-redis-status.sh [slot] [kite_user]
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 SLOT="${1:-crudeoilm-sniper-202610}"
 USER_ID="${2:-NVC171}"
-TODAY="$(TZ=Asia/Kolkata date +%Y%m%d)"
 TODAY_DASH="$(TZ=Asia/Kolkata date +%F)"
+LOCK_DIR="${KITE_LOCK_DIR:-$HOME/.local/state/kite-node/locks}"
 
-lease() {
-  local key="$1"
-  if [[ "$(redis-cli EXISTS "$key")" == "1" ]]; then
-    # one field per line; empty fields (e.g. no owner) stay in place
-    mapfile -t f < <(redis-cli HMGET "$key" state owner unresolved position last_namespace)
-    printf "  %-55s state=%s owner=%s unresolved=%s position=%s last_run=%s\n" \
-      "$key" "${f[0]:--}" "${f[1]:--}" "${f[2]:--}" "${f[3]:--}" "${f[4]:--}"
+lock() {
+  local file="$LOCK_DIR/$1.lock"
+  if [[ ! -f "$file" ]]; then
+    echo "  $file  (never used)"
+  elif flock -n "$file" true 2>/dev/null; then
+    echo "  $file  free"
   else
-    echo "  $key  (not created yet)"
+    echo "  $file  HELD ($(cat "$file" 2>/dev/null))"
   fi
 }
 
 echo "Sniper slot: $SLOT"
 echo
-echo "Account leases (Clean = no run owns the account; Running = a run is live)"
-lease "kite-prod:v1:{$SLOT}:lease:$USER_ID"
-lease "kite-prod:v1:{$SLOT}:lease:PAPER"
-lease "kite-dev:v1:{$SLOT}:lease:PAPER"
-
-echo
-echo "Run ledgers today ($TODAY)"
-found=0
-for prefix in kite-prod kite-dev; do
-  while read -r key; do
-    [[ -z "$key" ]] && continue
-    found=1
-    orders=$(redis-cli HKEYS "$key" | grep -c '^order:' || true)
-    review=$(redis-cli HEXISTS "$key" review)
-    echo "  $key  orders=$orders$([[ $review == 1 ]] && echo '  (manual review note present)')"
-  done < <(redis-cli --scan --pattern "$prefix:v1:{$SLOT}:commands:$TODAY-*" | sort)
-done
-[[ $found == 0 ]] && echo "  (no runs today)"
+echo "Instance locks (HELD = a run is active for this slot)"
+lock "kite-prod-$SLOT-$USER_ID"
+lock "kite-prod-$SLOT-PAPER"
+lock "kite-dev-$SLOT-PAPER"
 
 echo
 echo "Shared order budget"

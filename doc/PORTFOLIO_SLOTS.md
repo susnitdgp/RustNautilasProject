@@ -2,11 +2,11 @@
 
 The portfolio manifest (`config/portfolio-production.json`) lists the **slots** this project can
 run. A slot is one strategy on one futures contract month, with its own settings file, its own
-Redis key space and its own run history. Code: `apps/kite-node/src/native_node/portfolio.rs`
+lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
-(Redis names).
+(names).
 
-Written for kite-node 2.16.0.
+Written for kite-node 2.21.0 / kite-adapter 0.4.0.
 
 ---
 
@@ -70,18 +70,20 @@ Read-only check with the full key layout:
 
 ### 3.1 Isolated state
 
-Everything a slot's execution writes lives under its own Redis names
-(`{…}` is a Redis Cluster hash tag that keeps one slot's keys together):
+Since kite-node 2.21.0 a run keeps its trading state **in memory only**: order records, the
+Nautilus cache (orders, positions) and the strategy state all end with the process. Nothing is
+journalled and nothing is reloaded; Kite is the source of truth. What remains outside the
+process:
 
-| State | Key |
+| State | Where |
 |---|---|
-| Command ledger (journal of every order, written to disk before sending) | `kite-prod:v1:{<slot>}:commands:<run namespace>` |
-| Slot lease (who owns the slot, health, last run) | `kite-prod:v1:{<slot>}:lease:<kite user>` |
-| Order budget (Kite rate limits) | `kite-prod:v1:{account-<kite user>}:order-budget`, shared by all slots on the account |
-| Nautilus cache (orders, positions; MsgPack) | `trader-kite-prod-<slot>:<run uuid>:…` |
+| Instance lock (one process per slot and account) | file `~/.local/state/kite-node/locks/kite-prod-<slot>-<kite user>.lock` (`KITE_LOCK_DIR` overrides the directory) |
+| Order budget (Kite rate limits) | Redis `kite-prod:v1:{account-<kite user>}:order-budget`, shared by all slots on the account |
+| Kite access token | Redis, written by `native-kite-auth` |
+| Live dashboard | dashboard Redis `kite-prod:v1:{<slot>}:dash…` |
+| Logs | `logs/<strategy>-<mode>-<date>.jsonl` |
 
 Each slot also runs as its own Nautilus trader (`kite-prod-<slot>`) with its own strategy ID.
-A new contract month is a new slot ID, so old journals and leases are never reused.
 
 ### 3.2 Own settings file
 
@@ -93,37 +95,31 @@ strategy with different settings (for example, two Sniper configs on two instrum
 Each `native-<strategy>-paper` / `native-<strategy>-live` run handles one slot for one trading
 day:
 1. it checks the slot, the calendar, the contract and history;
-2. it takes the slot lease;
+2. it takes the slot's lock file;
 3. it warms up on broker history;
 4. it trades until the square-off;
 5. it flattens and stops.
 
-Each run gets a fresh namespace. Paper runs use the native Kite **mock** execution client (live
+Paper runs use the native Kite **mock** execution client (live
 market data, simulated fills, never Zerodha's order API).
 
-### 3.4 Lease: one owner per slot
+### 3.4 Lock file and startup check
 
-* A run takes the slot's lease atomically and keeps it while it runs; a second process on the
-  same slot is refused.
-* A clean finish releases it. An **unclean** finish (crash, kill, unresolved order) keeps the
-  lease marked for review: the next start is refused until you check the account and the
-  journal (`native-<strategy>-review`, `redis-utility/*-redis-status.sh`). There is no timeout
-  takeover and no automatic unlock.
-* A run never resumes an earlier run: each start begins from a flat account with no open
-  orders and a fresh namespace. The journal of the run is what the review reads.
+* A run takes the slot's lock file (an OS lock) for its whole life; a second process on the
+  same slot and account is refused at once, naming the holder's PID. Preflight only checks
+  that the lock is free.
+* The OS frees the lock when the process ends for any reason, so a crash or kill never blocks
+  the next start. There is no review step and no journal.
+* Every start requires the Kite account to be **flat with no open orders** (production; read
+  from Kite at connect). After an unclean stop, square off in Kite and start again.
+* A run never resumes an earlier run.
 
-### 3.5 Retention (kite-node 2.19.0)
+### 3.5 Retention
 
-Run state is never read by a later run, so it expires instead of piling up:
-
-| State | When it gets a TTL | TTL |
-|---|---|---|
-| Command ledger of a run that finished **clean** | at that clean finish | 30 days |
-| Earlier command ledgers of the slot | when a new run takes the slot lease (only possible from `Clean`, so every earlier run is finished or reviewed) | 30 days |
-| Nautilus cache of earlier runs (`trader-kite-prod-<slot>:<uuid>:…`) | at the start of a new run, after the lease check | 7 days |
-
-A run that ends unclean keeps its ledger without a TTL until the review is done and a later
-run starts. `EXPIRE … NX` never shortens a TTL that is already set.
+Nothing to retain: since 2.21.0 no order journal or Nautilus cache is written to Redis.
+Ledgers, leases and caches from runs before 2.21.0 are no longer read; they can be deleted
+from Redis by hand (`kite-prod:v1:{<slot>}:commands:*`, `kite-prod:v1:{<slot>}:lease:*`,
+`trader-kite-prod-<slot>:*`). Redis no longer needs `appendfsync always` for trading.
 
 ### 3.6 Order admission (kite-adapter 0.2.9)
 
@@ -144,10 +140,8 @@ rule. A manual order placed just before an admitted order is still caught by the
 reconciliation it triggers, which stops the run for review. The run log ends with
 `{"event":"native_admissions","cached":N,"full_preflight":M}`.
 
-Per order, the lease is no longer written before sending (it is non-`Clean` for the whole run,
-so a crash still blocks the next start). The remaining writes before sending are the lease's
-attempt counter, the shared order-rate budget and the journal record: three writes of about
-2.7 ms each with `appendfsync always` (Redis replies only after the disk fsync).
+Per order, the only write before sending is the shared order-rate budget in Redis (one
+round trip to local Redis). The journal record and the lease attempt counter are gone (2.21.0).
 
 ### 3.7 Postback fills (kite-adapter 0.3.1)
 
@@ -163,7 +157,7 @@ for an **owned** order first takes a fast path:
 2. They go through the same ownership, contract, quantity and chronology checks as the full
    reconciliation. The fills carry the **real Kite trade IDs**; the postback payload itself
    never creates a fill.
-3. The record is journalled (fsynced) first, then `OrderAccepted` (if still pending) and
+3. The order record is updated first, then `OrderAccepted` (if still pending) and
    `OrderFilled` are emitted.
 4. The full reconciliation runs right after, as before. It must show the same trades, with
    unchanged quantity, price, time and order id. While `/trades` or positions still lag, the
@@ -256,10 +250,12 @@ Each month is a new slot (section 6).
 * There is no overnight position, and no carry-over of the Nautilus cache between runs: each
   run starts flat and reconciles with Zerodha.
 
-### 5.6 Manual review after an unclean stop
+### 5.6 No crash recovery
 
-An unclean finish blocks the slot until reviewed (section 3.4). That's safe by design but needs
-a human.
+If the process dies, nothing in the program protects an open position until you act: a SATS
+SL-M already resting at Kite still protects it; a Sniper position has only MIS auto square-off.
+Check positions and open orders in Kite, square off if needed, then start again; the startup
+check refuses a non-flat account or one with open orders (section 3.4).
 
 ### 5.7 Leftovers
 

@@ -4,7 +4,7 @@ use super::super::{request::Command, transport::Outcome};
 use super::{
     broker::{Broker, Snapshot},
     dispatch::{CACHED_ADMISSION_MAX_AGE, Dispatcher},
-    ledger::{Record, Store, expire_previous_journals},
+    ledger::{Record, Store},
     mock::MockBroker,
 };
 use anyhow::Result;
@@ -29,8 +29,6 @@ use std::{
     },
     time::{Duration, Instant},
 };
-#[path = "../../../../kite-journal/test-support/redis.rs"]
-mod support;
 
 struct Memory;
 impl Store for Memory {
@@ -295,35 +293,4 @@ async fn fault_clears_the_observation() {
             .is_err()
     );
     assert_eq!(f.executes.load(Ordering::SeqCst), 0);
-}
-
-#[test]
-fn previous_run_journals_get_a_retention_ttl_once() {
-    let server = support::TestRedis::new();
-    let mut c = server.connection();
-    let base = "kite-prod:v1:{slot-a}:commands:";
-    for ns in ["20261009-aaaa", "20261009-bbbb", "20261010-cccc"] {
-        let _: () = redis::cmd("HSET")
-            .arg(format!("{base}{ns}"))
-            .arg("scope")
-            .arg("x")
-            .query(&mut c)
-            .unwrap();
-    }
-    // Another slot and an unrelated key are never touched.
-    let _: () = redis::cmd("HSET")
-        .arg("kite-prod:v1:{slot-b}:commands:20261009-dddd")
-        .arg("scope")
-        .arg("x")
-        .query(&mut c)
-        .unwrap();
-    let current = format!("{base}20261010-cccc");
-    assert_eq!(expire_previous_journals(&mut c, &current, "20261010-cccc").unwrap(), 2);
-    assert_eq!(expire_previous_journals(&mut c, &current, "20261010-cccc").unwrap(), 0);
-    let ttl = |c: &mut redis::Connection, k: &str| -> i64 {
-        redis::cmd("TTL").arg(k).query(c).unwrap()
-    };
-    assert!(ttl(&mut c, &format!("{base}20261009-aaaa")) > 29 * 86400);
-    assert_eq!(ttl(&mut c, &current), -1, "current run keeps no TTL");
-    assert_eq!(ttl(&mut c, "kite-prod:v1:{slot-b}:commands:20261009-dddd"), -1);
 }

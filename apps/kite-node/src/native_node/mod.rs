@@ -18,9 +18,6 @@ mod live_bars;
 mod live_control;
 mod ws_candles;
 mod live_backfill;
-pub mod persistence;
-pub mod recovery;
-pub mod redis_cache;
 // Legacy shared infrastructure kept for historical tooling and tests.
 #[allow(dead_code)]
 mod session_calendar;

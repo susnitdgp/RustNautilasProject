@@ -101,29 +101,17 @@ impl Dispatcher {
                     && self.doorbell.load(Ordering::Acquire) == bell
             })
     }
+    #[cfg(test)]
     pub fn unresolved(&self) -> usize {
         self.records
             .values()
             .filter(|r| OrderAny::from_events(r.events.clone()).map_or(true, |o| !o.is_closed()))
             .count()
     }
+    /// Stops all further dispatch for this run (in memory; the next run starts fresh).
     pub fn fault(&mut self) {
         self.poisoned = true;
         self.clean = None;
-        let _ = self
-            .store
-            .health("ReviewRequired", self.unresolved(), self.position);
-    }
-    pub fn heartbeat(&mut self) -> Result<()> {
-        self.store.health(
-            if self.poisoned {
-                "ReviewRequired"
-            } else {
-                "Running"
-            },
-            self.unresolved(),
-            self.position,
-        )
     }
     pub async fn finish(
         &mut self,
@@ -146,13 +134,12 @@ impl Dispatcher {
                     "postback_fills":self.postback_fills})
             );
         }
-        self.store.finish(clean, self.unresolved(), self.position)?;
         if !clean {
             self.poisoned = true;
         }
         ensure!(
             clean,
-            "Shutdown requires review: unresolved orders, exposure or failed reconciliation"
+            "Stopped with unresolved orders, exposure or a failed reconciliation: check positions and open orders in Kite"
         );
         Ok(())
     }
@@ -406,8 +393,6 @@ impl Dispatcher {
         // The account state changes from here; the next order needs a new reconciliation.
         self.clean = None;
         Self::emit(tx, submitted)?;
-        // No lease write here: the lease is already non-Clean for the whole run, so a crash
-        // blocks restart without it, and every fsynced write delays the order (~2.7 ms).
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(6),
             self.broker.execute(&command),
@@ -478,8 +463,8 @@ impl Dispatcher {
                 return Err(e);
             }
         };
-        // Every order, trade and position is validated before any journal/cache
-        // changes. A failed write or event delivery poisons this dispatcher.
+        // Every order, trade and position is validated before any state changes. A failed
+        // event delivery poisons this dispatcher.
         self.poisoned = true;
         self.position = prepared.position;
         for (id, record) in &prepared.records {
@@ -500,8 +485,6 @@ impl Dispatcher {
                 );
             }
         }
-        self.store
-            .health("Running", self.unresolved(), self.position)?;
         self.poisoned = false;
         // A snapshot still missing a postback fill never backs cached admission.
         self.clean = (!prepared.pending).then_some(observed);
@@ -510,15 +493,15 @@ impl Dispatcher {
     /// Postback fast path (production order stream). On a COMPLETE postback for an owned,
     /// still-open order, read only that order and its trades (two parallel REST calls)
     /// and emit its fills with their real Kite trade IDs through the same `reconcile`
-    /// checks as the full snapshot. The record is journalled (fsynced) before any event
-    /// is emitted. The full snapshot that follows must then show the same trades, with
+    /// checks as the full snapshot. The order record is updated before any event is
+    /// emitted. The full snapshot that follows must then show the same trades, with
     /// unchanged quantity, price and time, within `POSTBACK_VERIFY_GRACE`; otherwise the
     /// run stops for review.
     ///
     /// `Ok(false)`: not taken (not owned, already closed, pending stop modification,
     /// not COMPLETE yet, read failed, trades lagging, any check failed). Nothing changed;
     /// the full reconciliation handles the update exactly as before. `Err` only when a
-    /// journal write or event delivery failed after the dispatcher began changing state.
+    /// record update or event delivery failed after the dispatcher began changing state.
     pub async fn fast_fill(
         &mut self,
         broker_id: &str,
@@ -696,7 +679,7 @@ impl Dispatcher {
         };
         for (id, record) in &self.records {
             // A postback fill is checked only once all its trades are visible here; until
-            // then the record is left as journalled, and only inside its grace period.
+            // then the record is left as it is, and only inside its grace period.
             let verifying = match self.verifying.get(id) {
                 Some((trades, deadline)) => {
                     let visible = trades

@@ -8,7 +8,7 @@ use super::{
     Client, Config,
     broker::{Broker, BrokerPosition, Funds, Snapshot, Utilised},
     dispatch::Dispatcher,
-    ledger::RedisStore,
+    ledger::RunStore,
 };
 use anyhow::{Result, anyhow, ensure};
 use async_trait::async_trait;
@@ -36,7 +36,7 @@ pub struct MockConfig {
     pub symbol: String,
     pub instrument_token: u32,
     pub market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
-    /// Redis key space for the ledger and lease (`KeySpace::Legacy` for old tooling).
+    /// Key space of the slot (shared order-rate budget, lock name).
     pub keys: super::keys::KeySpace,
     /// Contract cap for the paper dispatcher (same meaning as production `max_lots`).
     pub max_lots: u32,
@@ -89,7 +89,7 @@ impl ExecutionClientFactory for MockFactory {
         )?;
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
-            Box::new(RedisStore::coordinated(&cfg.keys, &cfg.namespace, &cfg.account_id)?),
+            Box::new(RunStore::open(&cfg.keys, &cfg.account_id)?),
             client.factory.clone(),
             cfg.product.clone(),
             cfg.instrument_token,

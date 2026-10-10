@@ -270,8 +270,7 @@ impl Monitor {
             }
             let mut service = self.dispatcher.lock().await;
             if pending_check && !service.needs_refresh() {
-                // Keep the existing durable account heartbeat fresh without a REST request.
-                service.heartbeat()?;
+                // Nothing in flight: the 15 s fallback and order updates keep it current.
                 continue;
             }
             let before = *connection.borrow_and_update();

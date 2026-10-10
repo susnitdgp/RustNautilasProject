@@ -1,7 +1,7 @@
 //! Nautilus LiveNode runner for one `sats` portfolio slot.
 //!
 //! * `paper`: live Kite market data, orders filled by the native Kite **mock**
-//!   execution client (Redis-backed). Never touches the broker's order API.
+//!   execution client (in memory). Never touches the broker's order API.
 //! * `live`:  live Kite market data and the native Kite **production** execution
 //!   client. Requires all of: a `--features live-orders` build, the slot marked
 //!   `enabled` and `live_orders_enabled` in the portfolio, and the broker settings
@@ -12,7 +12,7 @@
 //! broker-finalised history, trades until the configured square-off, flattens,
 //! and stops. Any feed gap or invalid packet fails closed (flatten, stop).
 use super::{
-    data, live_bars, live_control::Control, persistence,
+    data, live_bars, live_control::Control,
     dash_writer::{self, DashboardConfig},
     sats_dashboard::{Board, emit, note},
     portfolio::{Instance, Portfolio},
@@ -158,7 +158,7 @@ pub fn preflight(portfolio_path: &str, instance_id: &str, broker_path: &str) -> 
     let p = prepare(portfolio_path, instance_id)?;
     let settings = load_broker(broker_path, &p.inst)?;
     live_gates(&p.inst)?;
-    kite_adapter::execution::native_client::coordination::check_startup_in(&p.keys, &settings.expected_user_id)?;
+    kite_adapter::execution::native_client::coordination::check_unlocked(&p.keys, &settings.expected_user_id)?;
     emit(
         serde_json::json!({
             "event": "sats_live_preflight", "status": "PASS",
@@ -166,7 +166,6 @@ pub fn preflight(portfolio_path: &str, instance_id: &str, broker_path: &str) -> 
             "warmup_bars": p.warmup.len(), "square_off": p.config.live.square_off.to_string(),
             "lots": p.config.lots, "exit": p.config.execution,
             "product": settings.product, "broker_orders_sent": false,
-            "redis_lease": p.keys.lease(&settings.expected_user_id)?,
             "redis_order_budget": p.keys.order_budget(&settings.expected_user_id)?,
             "nautilus_trader_id": p.trader_id,
         }),
@@ -196,22 +195,13 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         chrono::Utc::now().with_timezone(&ist()).format("%Y%m%d"),
         run_id.to_string().split('-').next().unwrap_or("run")
     );
-    kite_adapter::execution::native_client::coordination::check_startup_in(&p.keys, &account_id)?;
-    // Earlier runs' Nautilus caches are never read again: give them a retention TTL.
-    match persistence::expire_previous_runs(&p.trader_id) {
-        Ok(0) => {}
-        Ok(n) => eprintln!(
-            "{}",
-            serde_json::json!({"event":"nautilus_cache_retention","keys_expiring":n,"ttl_days":persistence::PREVIOUS_RUN_CACHE_TTL_SECS / 86400})
-        ),
-        Err(e) => eprintln!("Nautilus cache retention skipped: {e:#}"),
-    }
+    // One process per slot and account; the OS frees the lock when this process ends.
+    let lock = kite_adapter::execution::native_client::coordination::lock_instance(&p.keys, &account_id)?;
     let interval = p.config.interval()?;
     let mut control = Control::new(false).with_bar_ns(interval.nanoseconds());
     control.real = mode == Mode::Live;
     let market_price = Arc::new(AtomicI64::new(0));
     let credentials = Arc::new(kite_adapter::credentials::redis::load_from_env()?);
-    let redis = persistence::redis_config()?;
     let symbol = p.inst.instrument.trim_end_matches(".MCX").to_owned();
     let mode_label = if mode == Mode::Live { "LIVE (real Zerodha orders)" } else { "PAPER (Kite mock execution)" };
     let square_off_ns = ist_ns(chrono::Utc::now().with_timezone(&ist()).date_naive(), p.config.live.square_off)? as i64;
@@ -228,7 +218,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
             }
             mode => format!("{:?} {:?}", mode, p.config.execution.single_exit_at),
         },
-        redis_namespace: p.keys.commands(&namespace)?,
+        redis_namespace: namespace.clone(),
         point_value: p.config.point_value,
         lots: p.config.lots,
         bar_ns: p.config.bar_ns(),
@@ -245,8 +235,8 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
             environment: if mode == Mode::Live { Environment::Live } else { Environment::Sandbox },
             trader_id: p.trader_id.as_str().into(),
             instance_id: Some(run_id),
-            cache: Some(persistence::cache_config()),
-            save_state: true,
+            // Nautilus' default in-memory cache: nothing is persisted or reloaded.
+            save_state: false,
             load_state: false,
             shutdown_on_error: true,
             delay_post_stop: Duration::from_secs(2),
@@ -256,7 +246,6 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         cfg.exec_engine.reconciliation = false;
         cfg.risk_engine.max_notional_per_order.insert(p.instrument.id.to_string(), "2000000".into());
         let builder = LiveNodeBuilder::from_config(cfg)?
-            .with_cache_database_factory(Box::new(super::redis_cache::Factory(redis)))
             .add_data_client(
                 Some("KITE".into()),
                 Box::new(data::Factory),
@@ -345,9 +334,8 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         emit(
             serde_json::json!({
                 "event": "sats_node_started", "mode": mode_label, "namespace": &namespace,
-                "redis_commands": p.keys.commands(&namespace)?, "redis_lease": p.keys.lease(&account_id)?,
+                "lock": lock.path().display().to_string(),
                 "redis_order_budget": p.keys.order_budget(&account_id)?,
-                "nautilus_cache": format!("trader-{}:{}:*", p.trader_id, run_id),
                 "dashboard_redis": dash_url.is_some(), "dashboard_state": &dash_keys.state,
                 "dashboard_events": &dash_keys.events, "dashboard_live": &dash_keys.live,
                 "instance": p.inst.id, "instrument": p.instrument.id.to_string(), "bar_type": bar_type.to_string(),
@@ -375,11 +363,4 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
         });
         Ok(())
     })
-}
-
-/// Offline review of one run's execution ledger for a portfolio slot.
-pub fn review(portfolio_path: &str, instance_id: &str, namespace: &str) -> Result<()> {
-    let (_, _, keys, _) = load_slot(portfolio_path, instance_id)?;
-    emit(kite_adapter::execution::native_client::recovery::review_in(&keys, namespace)?);
-    Ok(())
 }

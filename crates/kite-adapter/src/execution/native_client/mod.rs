@@ -9,7 +9,6 @@ pub mod mock;
 mod order_stream;
 pub(crate) mod outage;
 pub mod production;
-pub mod recovery;
 pub mod sandbox;
 mod shutdown;
 // Native Kite client. Real mutations remain disabled at this boundary.
@@ -897,9 +896,6 @@ mod cached_admission_tests;
 
 #[cfg(test)]
 mod fee_tests;
-
-#[cfg(test)]
-mod coordination_tests;
 
 #[cfg(test)]
 mod outage_tests;

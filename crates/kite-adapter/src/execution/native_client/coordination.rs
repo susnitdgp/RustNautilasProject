@@ -1,145 +1,130 @@
-//! Persistent single account owner. No TTL takeover and no automatic unlock after a crash.
-use anyhow::{Result, anyhow, ensure};
+//! Run coordination without persistent trading state (kite-adapter 0.4.0).
+//!
+//! * [`InstanceLock`]: an OS lock file per slot and account. A second process for the same
+//!   slot and account cannot start while one runs. The OS releases the lock when the process
+//!   exits for any reason, so a crash never blocks the next start: after a crash, square off
+//!   in Kite if needed and start again (the run's own startup check requires a flat account
+//!   with no open orders).
+//! * [`OrderBudget`]: the Kite order-rate budget, kept in Redis so every process trading the
+//!   account (e.g. Sniper and SATS slots) shares one limit.
+use anyhow::{Context, Result, anyhow, ensure};
 use kite_execution::rate_limit::{Decision, Limiter, policy::Policy};
-use kite_journal::connection;
-use std::collections::BTreeMap;
+use std::{
+    fs::{File, OpenOptions, TryLockError},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
-pub(crate) struct Account {
-    connection: redis::Connection,
-    key: String,
-    owner: String,
+/// Directory for lock files: `KITE_LOCK_DIR`, else `$HOME/.local/state/kite-node/locks`.
+fn lock_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("KITE_LOCK_DIR").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow!("HOME is not set; set KITE_LOCK_DIR"))?;
+    Ok(PathBuf::from(home).join(".local/state/kite-node/locks"))
+}
+
+/// Lock file name from the slot's key space and the account, e.g.
+/// `kite-prod-crudeoilm-sniper-202610-AB1234.lock`.
+fn lock_name(keys: &super::keys::KeySpace, account: &str) -> Result<String> {
+    let scope = keys.lock(account)?;
+    let name: String = scope
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect();
+    Ok(format!("{name}.lock"))
+}
+
+/// Held for the whole run; dropping it (or the process ending) releases the lock.
+#[derive(Debug)]
+pub struct InstanceLock {
+    _file: File,
+    path: PathBuf,
+}
+impl InstanceLock {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Where the slot's lock file lives (for status output).
+pub fn lock_file(keys: &super::keys::KeySpace, account: &str) -> Result<PathBuf> {
+    Ok(lock_dir()?.join(lock_name(keys, account)?))
+}
+
+/// Takes the slot's lock or fails at once if another process holds it.
+pub fn lock_instance(keys: &super::keys::KeySpace, account: &str) -> Result<InstanceLock> {
+    lock_at(&lock_dir()?, &lock_name(keys, account)?)
+}
+
+/// Preflight: fails if another process holds the slot's lock; takes nothing.
+pub fn check_unlocked(keys: &super::keys::KeySpace, account: &str) -> Result<()> {
+    lock_instance(keys, account).map(drop)
+}
+
+fn lock_at(dir: &Path, name: &str) -> Result<InstanceLock> {
+    std::fs::create_dir_all(dir).with_context(|| format!("Cannot create lock directory {}", dir.display()))?;
+    let path = dir.join(name);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("Cannot open lock file {}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            let holder = std::fs::read_to_string(&path).unwrap_or_default();
+            anyhow::bail!(
+                "Another kite-node process is running this slot ({}; lock {}). Stop it first.",
+                holder.trim(),
+                path.display()
+            );
+        }
+        Err(TryLockError::Error(e)) => {
+            return Err(anyhow!(e)).with_context(|| format!("Cannot lock {}", path.display()));
+        }
+    }
+    // Informational only: who holds the lock. The OS lock is what counts.
+    file.set_len(0)?;
+    write!(file, "pid {}", std::process::id())?;
+    file.flush()?;
+    Ok(InstanceLock { _file: file, path })
+}
+
+/// Conservative application budget per account; includes cancellations and failed requests.
+const ORDER_POLICY: Policy = Policy {
+    per_second: 5,
+    per_minute: 100,
+    per_day: 1000,
+};
+
+/// The account's Kite order-rate budget in Redis, shared by every process on the account.
+pub(crate) struct OrderBudget {
     limiter: Limiter,
-    poisoned: bool,
 }
-pub fn key(account: &str) -> Result<String> {
-    super::keys::KeySpace::Legacy.lease(account)
-}
-/// Read-only admission check before acquiring a strategy lease. The atomic
-/// Account::acquire remains authoritative if another process starts afterwards.
-pub fn check_startup(account: &str) -> Result<()> {
-    check_startup_at(&connection::url_from_env()?, account)
-}
-/// Startup check for the lease of a specific key space (e.g. one portfolio slot).
-pub fn check_startup_in(keys: &super::keys::KeySpace, account: &str) -> Result<()> {
-    check_startup_key(&connection::url_from_env()?, &keys.lease(account)?)
-}
-pub fn check_startup_at(url: &str, account: &str) -> Result<()> {
-    check_startup_key(url, &key(account)?)
-}
-fn check_startup_key(url: &str, key: &str) -> Result<()> {
-    let key = key.to_owned();
-    let mut con = connection::connect(url)?;
-    let (values, ttl): (BTreeMap<String, String>, i64) = redis::pipe()
-        .atomic()
-        .cmd("HGETALL")
-        .arg(&key)
-        .cmd("PTTL")
-        .arg(&key)
-        .query(&mut con)
-        .map_err(|_| anyhow!("Cannot verify native account startup state"))?;
-    validate_startup(&values, ttl)
-}
-fn validate_startup(values: &BTreeMap<String, String>, ttl: i64) -> Result<()> {
-    if values.is_empty() && ttl == -2 {
-        return Ok(());
+impl OrderBudget {
+    pub fn open(keys: &super::keys::KeySpace, account: &str) -> Result<Self> {
+        Self::open_at(&kite_journal::connection::url_from_env()?, keys, account)
     }
-    ensure!(
-        values.get("scope").map(String::as_str) == Some("NATIVE_DISABLED_V1") && ttl == -1,
-        "Account coordination metadata invalid; manual review required"
-    );
-    let value = |key: &str| values.get(key).map(String::as_str).unwrap_or("unknown");
-    ensure!(
-        value("state") == "Clean"
-            && value("owner").is_empty()
-            && value("unresolved") == "0"
-            && value("position") == "0",
-        "Account restart blocked: state={}, owner={}, unresolved={}, position={}. Review the retained run with native-kite-review before restarting; no new strategy owner acquired",
-        value("state"),
-        value("owner"),
-        value("unresolved"),
-        value("position")
-    );
-    Ok(())
-}
-impl Account {
-    #[allow(dead_code)] // legacy single-account entry point (tests, old tooling)
-    pub fn acquire(url: &str, account: &str, owner: &str) -> Result<Self> {
-        Self::acquire_in(url, &super::keys::KeySpace::Legacy, account, owner)
-    }
-    pub fn acquire_in(url: &str, keys: &super::keys::KeySpace, account: &str, owner: &str) -> Result<Self> {
+    pub fn open_at(url: &str, keys: &super::keys::KeySpace, account: &str) -> Result<Self> {
         ensure!(
-            !owner.is_empty()
-                && owner.len() <= 64
-                && owner
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
-            "Invalid account owner"
+            !account.is_empty()
+                && account.len() <= 64
+                && account.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+            "Invalid account"
         );
-        let key = keys.lease(account)?;
-        let mut connection = connection::connect(url)?;
-        let script = "if redis.call('EXISTS',KEYS[1])==0 then redis.call('HSET',KEYS[1],'scope','NATIVE_DISABLED_V1','owner',ARGV[1],'state','Starting'); return 1 end; if redis.call('HGET',KEYS[1],'scope')~='NATIVE_DISABLED_V1' or redis.call('PTTL',KEYS[1])~=-1 or redis.call('HGET',KEYS[1],'state')~='Clean' or redis.call('HGET',KEYS[1],'owner')~='' then return 0 end; redis.call('HSET',KEYS[1],'owner',ARGV[1],'state','Starting'); return 2";
-        let acquired: u32 = redis::cmd("EVAL")
-            .arg(script)
-            .arg(1)
-            .arg(&key)
-            .arg(owner)
-            .query(&mut connection)
-            .map_err(|_| anyhow!("Account acquisition uncertain; manual review required"))?;
-        ensure!(
-            acquired > 0,
-            "Account already owned or requires restart review"
-        );
-        connection::sync(&mut connection)?;
-        let scope = format!("native-account-{account}");
-        // Conservative application budgets include cancellations and failed requests.
-        let policy = Policy {
-            per_second: 5,
-            per_minute: 100,
-            per_day: 1000,
-        };
-        let limiter = match keys.order_budget(account)? {
+        let key = match keys.order_budget(account)? {
             // Portfolio budgets are shared by every slot on the account.
-            Some(budget) => Limiter::open_or_create_key(url, &budget, policy)?,
-            None if acquired == 1 => Limiter::create_at(url, &scope, policy)?,
-            None => Limiter::open_at(url, &scope, policy)?,
+            Some(key) => key,
+            None => Limiter::key(&format!("native-account-{account}"))?,
         };
         Ok(Self {
-            connection,
-            key,
-            owner: owner.into(),
-            limiter,
-            poisoned: false,
+            limiter: Limiter::open_or_create_key(url, &key, ORDER_POLICY)?,
         })
     }
-    pub fn update(&mut self, state: &str, unresolved: usize, position: i64) -> Result<()> {
-        ensure!(
-            !self.poisoned,
-            "Account coordination requires manual review"
-        );
-        let result = (|| {
-            let script = "if redis.call('HGET',KEYS[1],'owner')~=ARGV[1] or redis.call('HGET',KEYS[1],'scope')~='NATIVE_DISABLED_V1' or redis.call('PTTL',KEYS[1])~=-1 then return 0 end; if redis.call('HGET',KEYS[1],'state')=='ReviewRequired' and ARGV[2]~='ReviewRequired' then return 0 end; local t=redis.call('TIME'); redis.call('HSET',KEYS[1],'state',ARGV[2],'unresolved',ARGV[3],'position',ARGV[4],'heartbeat_ms',t[1]*1000+math.floor(t[2]/1000),'last_namespace',ARGV[1]); return 1";
-            let ok: u32 = redis::cmd("EVAL")
-                .arg(script)
-                .arg(1)
-                .arg(&self.key)
-                .arg(&self.owner)
-                .arg(state)
-                .arg(unresolved)
-                .arg(position)
-                .query(&mut self.connection)
-                .map_err(|_| anyhow!("Account heartbeat unavailable"))?;
-            ensure!(ok == 1, "Account ownership lost; dispatch stopped");
-            Ok(())
-        })();
-        if result.is_err() {
-            self.poisoned = true;
-        }
-        result
-    }
     pub fn reserve(&mut self) -> Result<()> {
-        ensure!(!self.poisoned, "Account coordinator stopped");
-        let ok:u32=redis::cmd("EVAL").arg("if redis.call('HGET',KEYS[1],'owner')~=ARGV[1] or redis.call('HGET',KEYS[1],'scope')~='NATIVE_DISABLED_V1' or redis.call('PTTL',KEYS[1])~=-1 or redis.call('HGET',KEYS[1],'state')=='ReviewRequired' then return 0 end; redis.call('HINCRBY',KEYS[1],'command_attempts',1); return 1").arg(1).arg(&self.key).arg(&self.owner).query(&mut self.connection).map_err(|_|anyhow!("Account admission unavailable"))?;
-        ensure!(ok == 1, "Account ownership lost; no dispatch");
         ensure!(
             matches!(self.limiter.reserve()?, Decision::Allowed),
             "Account command rate budget exhausted; no dispatch"
@@ -149,125 +134,37 @@ impl Account {
     pub fn cooldown(&mut self, ms: u64) -> Result<()> {
         self.limiter.cooldown(ms.clamp(10_000, 86_400_000))
     }
-    pub fn finish(&mut self, clean: bool, unresolved: usize, position: i64) -> Result<()> {
-        self.update(
-            if clean { "Stopping" } else { "ReviewRequired" },
-            unresolved,
-            position,
-        )?;
-        if clean {
-            let script = "if redis.call('HGET',KEYS[1],'owner')~=ARGV[1] or redis.call('HGET',KEYS[1],'state')~='Stopping' then return 0 end; redis.call('HSET',KEYS[1],'owner','','state','Clean'); return 1";
-            let ok: u32 = redis::cmd("EVAL")
-                .arg(script)
-                .arg(1)
-                .arg(&self.key)
-                .arg(&self.owner)
-                .query(&mut self.connection)
-                .map_err(|_| anyhow!("Account release uncertain"))?;
-            ensure!(ok == 1, "Account release ownership mismatch");
-        }
-        connection::sync(&mut self.connection)
-    }
-}
-/// Release only the synthetic MOCK account after an explicit completed recovery review.
-/// This cannot be used for a broker account scope.
-pub fn release_reviewed_mock(owner: &str) -> Result<()> {
-    ensure!(
-        !owner.is_empty()
-            && owner.len() <= 64
-            && owner
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
-        "Invalid reviewed mock owner"
-    );
-    let key = key("MOCK")?;
-    let mut con = connection::connect(&connection::url_from_env()?)?;
-    let (values, ttl): (BTreeMap<String, String>, i64) = redis::pipe()
-        .atomic()
-        .cmd("HGETALL")
-        .arg(&key)
-        .cmd("PTTL")
-        .arg(&key)
-        .query(&mut con)
-        .map_err(|_| anyhow!("Cannot verify reviewed MOCK coordination state"))?;
-    ensure!(
-        values.get("scope").map(String::as_str) == Some("NATIVE_DISABLED_V1") && ttl == -1,
-        "MOCK coordination metadata invalid"
-    );
-    ensure!(
-        values.get("owner").map(String::as_str) == Some(owner)
-            && values.get("state").map(String::as_str) == Some("ReviewRequired")
-            && values.get("unresolved").map(String::as_str) == Some("0")
-            && values.get("position").map(String::as_str) == Some("0"),
-        "MOCK release requires the exact retained owner, ReviewRequired state, zero unresolved orders and flat position"
-    );
-    let script = "if redis.call('HGET',KEYS[1],'scope')~='NATIVE_DISABLED_V1' or redis.call('HGET',KEYS[1],'owner')~=ARGV[1] or redis.call('HGET',KEYS[1],'state')~='ReviewRequired' or redis.call('HGET',KEYS[1],'unresolved')~='0' or redis.call('HGET',KEYS[1],'position')~='0' or redis.call('PTTL',KEYS[1])~=-1 then return 0 end; redis.call('HSET',KEYS[1],'owner','','state','Clean'); return 1";
-    let released: u32 = redis::cmd("EVAL")
-        .arg(script)
-        .arg(1)
-        .arg(&key)
-        .arg(owner)
-        .query(&mut con)
-        .map_err(|_| anyhow!("Reviewed MOCK release uncertain"))?;
-    ensure!(released == 1, "Reviewed MOCK release preconditions changed");
-    connection::sync(&mut con)?;
-    Ok(())
-}
-
-pub fn status(account: &str) -> Result<serde_json::Value> {
-    status_at(&connection::url_from_env()?, account)
-}
-pub fn status_at(url: &str, account: &str) -> Result<serde_json::Value> {
-    let mut connection = connection::connect(url)?;
-    let values: BTreeMap<String, String> = redis::cmd("HGETALL")
-        .arg(key(account)?)
-        .query(&mut connection)
-        .map_err(|_| anyhow!("Account health unavailable"))?;
-    ensure!(
-        values.get("scope").map(String::as_str) == Some("NATIVE_DISABLED_V1"),
-        "Native account not found or invalid"
-    );
-    let (s, us): (u64, u64) = redis::cmd("TIME").query(&mut connection)?;
-    let age = values
-        .get("heartbeat_ms")
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(|t| (s * 1000 + us / 1000).saturating_sub(t));
-    Ok(
-        serde_json::json!({"event":"native_kite_health","account":account,"state":values.get("state"),"owner":values.get("owner"),"last_namespace":values.get("last_namespace"),"unresolved":values.get("unresolved"),"position":values.get("position"),"heartbeat_age_ms":age,"stale":values.get("state").is_none_or(|s|s!="Clean") && age.is_none_or(|a|a>15000),"command_attempts":values.get("command_attempts"),"restart_blocked":values.get("state").is_none_or(|s|s!="Clean"),"requires_review":values.get("state").is_none_or(|s|s=="ReviewRequired" || (s!="Clean" && age.is_none_or(|a|a>15000))),"live_orders_enabled":false}),
-    )
 }
 
 #[cfg(test)]
-mod startup_tests {
+mod lock_tests {
     use super::*;
+    fn dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("kite-lock-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
     #[test]
-    fn admission_requires_absent_or_clean_flat_unowned_durable_account() {
-        let empty = BTreeMap::new();
-        assert!(validate_startup(&empty, -2).is_ok());
-        assert!(validate_startup(&empty, -1).is_err());
-        let clean: BTreeMap<String, String> = [
-            ("scope", "NATIVE_DISABLED_V1"),
-            ("state", "Clean"),
-            ("owner", ""),
-            ("unresolved", "0"),
-            ("position", "0"),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.into(), v.into()))
-        .collect();
-        assert!(validate_startup(&clean, -1).is_ok());
-        assert!(validate_startup(&clean, 10_000).is_err());
-        for (field, value) in [
-            ("state", "ReviewRequired"),
-            ("state", "Running"),
-            ("owner", "previous-run"),
-            ("unresolved", "1"),
-            ("position", "-1"),
-            ("scope", "unknown"),
-        ] {
-            let mut invalid = clean.clone();
-            invalid.insert(field.into(), value.into());
-            assert!(validate_startup(&invalid, -1).is_err());
-        }
+    fn second_holder_is_refused_and_release_frees_the_lock() {
+        let d = dir("pair");
+        let first = lock_at(&d, "slot.lock").unwrap();
+        let error = lock_at(&d, "slot.lock").unwrap_err().to_string();
+        assert!(error.contains("Another kite-node process"), "{error}");
+        assert!(error.contains(&format!("pid {}", std::process::id())), "{error}");
+        // another slot is independent
+        let other = lock_at(&d, "other.lock").unwrap();
+        drop(first);
+        let again = lock_at(&d, "slot.lock").unwrap();
+        assert!(again.path().ends_with("slot.lock"));
+        drop((other, again));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    #[test]
+    fn lock_names_are_plain_file_names() {
+        let keys = super::super::keys::KeySpace::portfolio("kite", "crudeoilm-sniper").unwrap();
+        let name = lock_name(&keys, "AB1234").unwrap();
+        assert!(name.ends_with(".lock"));
+        assert!(name.contains("crudeoilm-sniper") && name.contains("AB1234"));
+        assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)), "{name}");
     }
 }

@@ -1,5 +1,5 @@
 //! Official Kite sandbox only. Fixed hosts and sandbox-only Redis credential keys.
-use super::{Client, Config, broker::KiteBroker, dispatch::Dispatcher, ledger::RedisStore};
+use super::{Client, Config, broker::KiteBroker, dispatch::Dispatcher, ledger::RunStore};
 use crate::{
     credentials::{KiteCredentials, redis::load_sandbox},
     http::authenticated::{Endpoint, ReadClient},
@@ -135,9 +135,8 @@ impl ExecutionClientFactory for SandboxFactory {
         )?;
         client.dispatcher = Some(Arc::new(tokio::sync::Mutex::new(Dispatcher::new(
             client.broker.clone(),
-            Box::new(RedisStore::coordinated(
+            Box::new(RunStore::open(
                 &super::keys::KeySpace::Legacy,
-                &c.namespace,
                 &format!("SB{}", c.user_id),
             )?),
             client.factory.clone(),

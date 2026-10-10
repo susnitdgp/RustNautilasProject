@@ -15,7 +15,7 @@ strategy through the native Kite execution client.
 | Shipped config | `config/sniper-crudeoilm.json` |
 | Launch scripts | `deploy/run-sniper-paper.sh`, `deploy/run-sniper-live.sh` |
 
-Written for kite-node 2.20.1 / kite-adapter 0.3.1 / sniper 2.1.0+3.
+Written for kite-node 2.21.0 / kite-adapter 0.4.0 / sniper 2.1.0+3.
 
 ---
 
@@ -455,7 +455,7 @@ DMI 14/14.
 | Paper (live data, mock fills) | `deploy/run-sniper-paper.sh` |
 | Live preflight only | `./target/release/kite-node native-sniper-live-preflight config/portfolio-production.json crudeoilm-sniper-202610 config/kite-production.json` |
 | Live (real orders, asks you to type LIVE) | `deploy/run-sniper-live.sh` |
-| Review a run's Redis state | `native-sniper-review PORTFOLIO SLOT NAMESPACE`, or `redis-utility/sniper-redis-status.sh` |
+| Slot status (lock, order budget, today's logs) | `redis-utility/sniper-redis-status.sh` |
 
 Tuning loop: change one input in the JSON, backtest the same date range, compare
 `summary.txt` (net ₹, profit factor, drawdown, reject counts), then paper-trade before live.

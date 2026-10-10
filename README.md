@@ -35,20 +35,17 @@ any order rejection or position mismatch halts new orders and flattens. The bar 
 connects is skipped (its ticks cannot be proven complete), so SATS sees a one-bar gap at start-up.
 Logs (JSON lines) go to `logs/`. After the contract expiry, roll the slot (instrument, token, rollover block).
 
-### Redis keys (named from the portfolio manifest)
+### State outside the process (named from the portfolio manifest)
 
-Every key a slot's run owns lives under the manifest's `redis_prefix` and the slot id
-(`{…}` is a Redis Cluster hash tag, so one slot's keys stay on one shard):
+A run keeps its order records, strategy state and Nautilus cache in memory only; there is no
+order journal and no crash recovery (kite-node 2.21.0). Kite is the source of truth: every
+live start requires a flat account with no open orders.
 
-| Key | Purpose |
+| Name | Purpose |
 |---|---|
-| `<prefix>:v1:{<slot>}:commands:<YYYYMMDD>-<run>` | execution ledger of one run (written before any broker call) |
-| `<prefix>:v1:{<slot>}:lease:<kite user>` | single-owner lease for the slot; a run blocks if the last one was not clean |
-| `<prefix>:v1:{account-<kite user>}:order-budget` | order-rate budget, shared by all slots trading that Kite account |
-| `trader-<prefix>-<slot>:<run uuid>:…` | Nautilus cache (orders, positions) |
+| file `~/.local/state/kite-node/locks/<prefix>-<slot>-<kite user>.lock` | one process per slot and account (OS lock, freed when the process ends; `KITE_LOCK_DIR` overrides the directory) |
+| Redis `<prefix>:v1:{account-<kite user>}:order-budget` | order-rate budget, shared by all slots trading that Kite account |
 
 Production uses `kite-prod` (`config/portfolio-production.json`), paper uses `kite-dev` and the pseudo-account
-`PAPER`, so the two never share keys. `native-portfolio-validate` prints each slot's keys; review a run's ledger
-with `kite-node native-sats-review <portfolio> <slot> <YYYYMMDD-run>`. Legacy tooling keeps the old
-`susanta:nautilus:native-kite:*` names.
+`PAPER`, so the two never share a lock or budget. `native-portfolio-validate` prints each slot's names.
 

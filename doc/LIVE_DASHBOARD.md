@@ -73,7 +73,7 @@ few seconds = the bot is stopped or cannot reach this Redis.
 | `position`, `entry_avg` | Signed lots from broker fills; average entry |
 | `sl`, `tps`, `exchange_stop` | Model stop, `[TP1, TP2, TP3]`, resting SL-M trigger (SATS) |
 | `realized_points`, `round_trips`, `fills`, `point_value`, `lots` | Realised P&L in points (× `point_value` = ₹), counts, configured lots. Unrealised = `position × (last_price − entry_avg)` |
-| `square_off`, `redis_namespace` | Square-off time (IST, "HH:MM"); the run's command-ledger key |
+| `square_off`, `redis_namespace` | Square-off time (IST, "HH:MM"); the run ID (`YYYYMMDD-xxxxxxxx`) |
 | `events` | Last 8 events as display strings (`"HH:MM:SS  text"`, newest first); the full history is in the stream |
 | `dropped` | Dashboard updates dropped because a queue was full |
 
