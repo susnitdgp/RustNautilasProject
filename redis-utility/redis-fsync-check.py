@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-# redis-fsync-check.py v1.0.0
-# Read-only check of Redis persistence and the disk-sync wait (WAITAOF) that
-# kite-node performs before every order. Uses one scratch key, deleted after.
+# redis-fsync-check.py v1.1.0
+# Read-only check of Redis persistence and the disk-sync wait (WAITAOF). Since
+# kite-node 2.21.1 no order waits for it (only startup, the daily token save and
+# a rate-limit cooldown do), so "everysec" is expected. Uses one scratch key.
 # Usage: ./redis-utility/redis-fsync-check.py [samples]   (default 20)
 import socket, statistics, subprocess, sys, time
 
@@ -47,10 +48,10 @@ def main():
     print(f"  WAITAOF after a write median {med:.1f} ms   max {max(waits):.1f} ms   ({SAMPLES} samples)")
     if info.get("aof_enabled") != "1":
         print("  PROBLEM: AOF is off; kite-node refuses to place orders without it")
-    elif med > 50:
-        print(f"  SLOW: each order waits ~{med:.0f} ms per Redis save; run ./redis-utility/redis-fsync-always.sh")
+    elif fsync == "everysec":
+        print(f"  OK: everysec; orders do not wait for the disk (startup/token/cooldown wait ~{med:.0f} ms once)")
     else:
-        print("  OK: disk-sync wait is negligible")
+        print(f"  NOTE: appendfsync {fsync}; every Redis write waits for the disk. Run ./redis-utility/redis-fsync-everysec.sh")
 
 
 if __name__ == "__main__":

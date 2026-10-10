@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "kite-execution"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "kite-journal",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "kite-node"
-version = "2.21.0"
+version = "2.21.1"
 dependencies = [
  "anyhow",
  "async-trait",

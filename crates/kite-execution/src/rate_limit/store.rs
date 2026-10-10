@@ -119,7 +119,11 @@ impl Limiter {
                     anyhow!("Redis rate-limit operation failed; outcome may be unknown")
                 })?;
             ensure!(allowed <= 1, "Invalid rate-limit result");
-            if allowed == 1 || operation == "cooldown" {
+            // Only a broker cooldown waits for the disk (rare, after a 429). An allowed
+            // reserve is on every order's path: with `appendfsync everysec` the wait would
+            // be up to ~1 s, and a crash can lose at most the last second of counts, which
+            // only makes the budget slightly more permissive for one second.
+            if operation == "cooldown" {
                 connection::sync(&mut self.connection)?;
             }
             if allowed == 1 {

@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.21.0 / kite-adapter 0.4.0.
+Written for kite-node 2.21.1 / kite-adapter 0.4.0.
 
 ---
 
@@ -119,7 +119,8 @@ market data, simulated fills, never Zerodha's order API).
 Nothing to retain: since 2.21.0 no order journal or Nautilus cache is written to Redis.
 Ledgers, leases and caches from runs before 2.21.0 are no longer read; they can be deleted
 from Redis by hand (`kite-prod:v1:{<slot>}:commands:*`, `kite-prod:v1:{<slot>}:lease:*`,
-`trader-kite-prod-<slot>:*`). Redis no longer needs `appendfsync always` for trading.
+`trader-kite-prod-<slot>:*`). Since 2.21.1 local Redis runs `appendfsync everysec`
+(`redis-utility/redis-fsync-everysec.sh`): nothing in the order path waits for the disk.
 
 ### 3.6 Order admission (kite-adapter 0.2.9)
 
@@ -140,8 +141,10 @@ rule. A manual order placed just before an admitted order is still caught by the
 reconciliation it triggers, which stops the run for review. The run log ends with
 `{"event":"native_admissions","cached":N,"full_preflight":M}`.
 
-Per order, the only write before sending is the shared order-rate budget in Redis (one
-round trip to local Redis). The journal record and the lease attempt counter are gone (2.21.0).
+Per order, the only write before sending is the shared order-rate budget in local Redis:
+one round trip of about 0.06 ms with `appendfsync everysec` (2.21.1; it was ~2.8 ms with
+`always` plus a disk confirmation). The journal record and the lease attempt counter are gone
+(2.21.0). A Redis crash can lose at most the last second of budget counts.
 
 ### 3.7 Postback fills (kite-adapter 0.3.1)
 
