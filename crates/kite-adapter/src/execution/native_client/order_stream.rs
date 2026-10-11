@@ -28,7 +28,10 @@ const ENDPOINT: &str = "wss://ws.kite.trade";
 struct Timing {
     fallback: Duration,
     pending: Duration,
+    /// No frame at all (heartbeat included) for this long: send a liveness Ping.
     idle: Duration,
+    /// After the Ping, no frame for this long: the connection is dead (half-open).
+    probe: Duration,
     /// Base delay before a reconnect attempt (multiplied by the attempt number).
     reconnect: Duration,
     /// Sliding window for `MAX_RECONNECTS_PER_WINDOW`.
@@ -40,6 +43,7 @@ impl Default for Timing {
             fallback: Duration::from_secs(15),
             pending: Duration::from_secs(2),
             idle: Duration::from_secs(10),
+            probe: Duration::from_secs(5),
             reconnect: Duration::from_millis(500),
             window: Duration::from_secs(600),
         }
@@ -200,31 +204,62 @@ impl Monitor {
     ) -> Result<()> {
         let mut generation = 1;
         let mut reconnects = VecDeque::new();
+        // Liveness (kite-adapter 0.8.1): Kite sends a 1-byte heartbeat every couple of
+        // seconds on a quiet connection. After `timing.idle` with no frame at all, a Ping
+        // probes the link; still no frame (no heartbeat, no Pong) within `timing.probe`
+        // means the connection is dead without having closed (half-open TCP). That is
+        // handled exactly like a drop: entries pause, reconnect, reconcile, reopen.
+        let mut probing = false;
         loop {
-            match timeout_at(Instant::now() + timing.idle, socket.next()).await {
-                // A quiet order stream is healthy. REST fallback/pending timers continue
-                // independently; an idle timeout must not consume reconnect budget.
-                Err(_) => continue,
-                Ok(Some(Ok(Message::Text(text)))) => {
+            let wait = if probing { timing.probe } else { timing.idle };
+            let frame = match timeout_at(Instant::now() + wait, socket.next()).await {
+                Err(_) if !probing => {
+                    probing = true;
+                    let sent = timeout(
+                        Duration::from_secs(3),
+                        socket.send(Message::Ping(Vec::new().into())),
+                    )
+                    .await;
+                    if matches!(sent, Ok(Ok(()))) {
+                        continue;
+                    }
+                    note("Kite order stream: liveness ping could not be sent");
+                    None
+                }
+                Err(_) => {
+                    note(&format!(
+                        "Kite order stream silent for {} s (no heartbeat, no pong): treating it as dropped",
+                        (timing.idle + timing.probe).as_secs()
+                    ));
+                    None
+                }
+                Ok(frame) => {
+                    probing = false;
+                    Some(frame)
+                }
+            };
+            match frame {
+                Some(Some(Ok(Message::Text(text)))) => {
                     if is_order(&text, &self.user_id)?.is_some() {
                         update_at.store(wall_ns(), Ordering::Release);
                         notify.notify_one();
                     }
                 }
-                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                Some(Some(Ok(Message::Binary(bytes)))) => {
                     ensure!(
                         bytes.len() == 1,
                         "Unexpected market data on order-only stream"
                     );
                 }
-                Ok(Some(Ok(Message::Ping(bytes)))) => {
+                Some(Some(Ok(Message::Ping(bytes)))) => {
                     timeout(Duration::from_secs(3), socket.send(Message::Pong(bytes)))
                         .await
                         .map_err(|_| anyhow!("Kite order-stream pong timed out"))?
                         .map_err(|_| anyhow!("Kite order-stream pong failed"))?;
                 }
-                Ok(Some(Ok(Message::Pong(_)))) => {}
-                Ok(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => {
+                Some(Some(Ok(Message::Pong(_)))) => {}
+                None | Some(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => {
+                    probing = false;
                     // Updates may be missed while disconnected: entries stay paused until a
                     // reconciliation started after the reconnect.
                     connection.send_replace(Connection {
@@ -272,7 +307,7 @@ impl Monitor {
                     });
                     note("Kite order stream reconnected; validating broker state");
                 }
-                Ok(Some(Ok(_))) => {}
+                Some(Some(Ok(_))) => {}
             }
         }
     }

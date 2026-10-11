@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.25.1 / kite-adapter 0.8.0.
+Written for kite-node 2.25.2 / kite-adapter 0.8.1.
 
 ---
 
@@ -225,7 +225,11 @@ exhausted or Redis fails:
 
 The Kite order stream (order updates) may drop and reconnect **3 times in any 10 minutes**,
 with up to 3 connection attempts per drop (0.5 s, 1 s, 1.5 s apart). Beyond that the run
-faults, flattens and stops. Before 0.5.0 it was 2 reconnects per run and a single attempt.
+faults, flattens and stops. Since kite-adapter 0.8.1 a connection that goes silent without
+closing (half-open) also counts as a drop: Kite sends a 1-byte heartbeat every couple of
+seconds, so after 10 s with no frame at all a Ping is sent, and with still no frame (no
+heartbeat, no Pong) 5 s later the stream is treated as dropped: entries pause, it
+reconnects, reconciles and reopens. Before 0.5.0 it was 2 reconnects per run and a single attempt.
 
 ---
 

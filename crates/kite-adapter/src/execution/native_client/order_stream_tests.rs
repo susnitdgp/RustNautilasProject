@@ -174,6 +174,7 @@ fn timing() -> Timing {
         fallback: Duration::from_secs(30),
         pending: Duration::from_secs(30),
         idle: Duration::from_secs(3),
+        probe: Duration::from_secs(3),
         reconnect: Duration::from_millis(20),
         window: Duration::from_secs(600),
     }
@@ -412,33 +413,90 @@ async fn reconnect_reconciles_before_reopening_admission() {
     assert!(!ready.load(Ordering::Acquire));
 }
 
+/// A quiet but live connection (Kite's 1-byte heartbeats) stays ready and never
+/// reconnects; heartbeats alone never trigger a liveness ping either.
 #[tokio::test]
-async fn idle_timeout_keeps_connection_ready_and_does_not_reconnect() {
+async fn heartbeats_keep_a_quiet_connection_ready_without_reconnecting() {
     let f = fixture();
-    let (socket, _server, listener, endpoint) = pair(&f.monitor.credentials).await;
+    let (socket, mut server, listener, endpoint) = pair(&f.monitor.credentials).await;
     let active = f.monitor.active.clone();
     let ready = f.monitor.ready.clone();
     let mut times = timing();
-    times.idle = Duration::from_millis(50);
+    times.idle = Duration::from_millis(80);
+    times.probe = Duration::from_millis(80);
     let task = tokio::spawn(async move { f.monitor.run_at(socket, &endpoint, times).await });
-
-    // A dedicated order stream may be silent between broker events. Silence is not
-    // a transport failure and must not reopen a TCP connection or clear admission.
-    sleep(Duration::from_millis(150)).await;
+    let beats = tokio::spawn(async move {
+        for _ in 0..20 {
+            if server.send(Message::Binary(vec![0].into())).await.is_err() {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        server
+    });
+    sleep(Duration::from_millis(300)).await;
     assert!(ready.load(Ordering::Acquire));
     assert!(
         timeout(Duration::from_millis(100), listener.accept())
             .await
-            .is_err()
+            .is_err(),
+        "no reconnect while heartbeats arrive"
     );
-
+    let _server = beats.await.unwrap();
     active.store(false, Ordering::Release);
-    timeout(Duration::from_secs(2), task)
+    timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap();
+}
+
+/// A connection that answers the liveness Ping (Pong) is alive even without heartbeats.
+#[tokio::test]
+async fn a_quiet_connection_that_answers_the_ping_stays_ready() {
+    let f = fixture();
+    let (socket, mut server, listener, endpoint) = pair(&f.monitor.credentials).await;
+    let active = f.monitor.active.clone();
+    let ready = f.monitor.ready.clone();
+    let mut times = timing();
+    times.idle = Duration::from_millis(50);
+    times.probe = Duration::from_millis(200);
+    let task = tokio::spawn(async move { f.monitor.run_at(socket, &endpoint, times).await });
+    // reading lets the server answer each Ping with a Pong
+    let reader = tokio::spawn(async move { while let Some(Ok(_)) = server.next().await {} });
+    sleep(Duration::from_millis(300)).await;
+    assert!(ready.load(Ordering::Acquire));
+    assert!(
+        timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "no reconnect while Pongs arrive"
+    );
+    active.store(false, Ordering::Release);
+    timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap();
+    reader.abort();
+}
+
+/// Half-open connection: no heartbeat and no Pong. It is treated as dropped:
+/// entries pause, the stream reconnects, reconciles and reopens.
+#[tokio::test]
+async fn a_silent_connection_is_treated_as_dropped_and_reconnected() {
+    let f = fixture();
+    let (socket, _silent_server, listener, endpoint) = pair(&f.monitor.credentials).await;
+    let active = f.monitor.active.clone();
+    let ready = f.monitor.ready.clone();
+    let mut times = timing();
+    times.idle = Duration::from_millis(50);
+    times.probe = Duration::from_millis(50);
+    let task = tokio::spawn(async move { f.monitor.run_at(socket, &endpoint, times).await });
+    until(|| !ready.load(Ordering::Acquire)).await;
+    let (tcp, _) = timeout(Duration::from_secs(2), listener.accept())
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
-    assert!(!ready.load(Ordering::Acquire));
+    let mut replacement = accept_async(tcp).await.unwrap();
+    let reader = tokio::spawn(async move { while let Some(Ok(_)) = replacement.next().await {} });
+    until(|| ready.load(Ordering::Acquire)).await;
+    assert!(f.broker.reads.load(Ordering::SeqCst) >= 1, "reconciled before reopening");
+    active.store(false, Ordering::Release);
+    timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap();
+    reader.abort();
 }
 
 #[tokio::test]
