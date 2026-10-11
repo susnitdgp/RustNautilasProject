@@ -6,7 +6,7 @@ lock and its own logs. Code: `apps/kite-node/src/native_node/portfolio.rs`
 (manifest and validation) and `crates/kite-adapter/src/execution/native_client/keys.rs`
 (names).
 
-Written for kite-node 2.25.2 / kite-adapter 0.8.1.
+Written for kite-node 2.26.0 / kite-adapter 0.8.2.
 
 ---
 
@@ -101,7 +101,9 @@ day:
 5. it flattens and stops.
 
 Paper runs use the native Kite **mock** execution client (live
-market data, simulated fills, never Zerodha's order API).
+market data, simulated fills, never Zerodha's order API). Since kite-adapter 0.8.2 a paper
+market order fills at the live **ask (BUY) or bid (SELL)**, as a real one would; until then it
+filled at the mid, which hid the spread.
 
 ### 3.4 Lock file and startup check
 

@@ -130,6 +130,9 @@ pub struct Params {
     // ── Execution model ──
     pub commission_pct_per_fill: f64,
     pub slippage_ticks: u32,
+    /// A take-profit counts only when the bar trades this many ticks THROUGH it (high
+    /// above a long's target, low below a short's). 0 = touch, as the Pine script.
+    pub tp_through_ticks: u32,
     pub min_risk_ticks: u32,
     pub max_pivot_age_bars: i64,
 }
@@ -195,6 +198,7 @@ impl Default for Params {
             calibration_quality_ceiling: 0.9,
             commission_pct_per_fill: 0.0,
             slippage_ticks: 0,
+            tp_through_ticks: 0,
             min_risk_ticks: 2,
             max_pivot_age_bars: 100,
         }
@@ -274,6 +278,7 @@ impl Params {
         range(self.calibration_quality_ceiling, 0.0, 1.0, "calibration_quality_ceiling must be 0..1", &mut e);
         range(self.commission_pct_per_fill, 0.0, 5.0, "commission_pct_per_fill must be 0..5", &mut e);
         range(self.slippage_ticks, 0, 1000, "slippage_ticks must be 0..1000", &mut e);
+        range(self.tp_through_ticks, 0, 100, "tp_through_ticks must be 0..100", &mut e);
         range(self.min_risk_ticks, 1, 10_000, "min_risk_ticks must be 1..10000", &mut e);
         range(self.max_pivot_age_bars, 5, 5000, "max_pivot_age_bars must be 5..5000", &mut e);
         // The script's own runtime.error checks.

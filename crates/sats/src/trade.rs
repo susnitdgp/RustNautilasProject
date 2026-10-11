@@ -141,6 +141,8 @@ pub struct ExitRules {
     pub timeout_bars: i64,
     pub slip: f64,
     pub fee_pct: f64,
+    /// Price distance a bar must trade beyond a take-profit for it to count (0 = touch).
+    pub tp_through: f64,
 }
 
 /// Settles an open trade on a confirmed bar. Returns the events and, when the
@@ -152,7 +154,7 @@ pub fn settle(t: &mut TradeSnapshot, bar: &BarCtx, rules: &ExitRules) -> (Vec<Ev
     }
     let side = t.side;
     let s = side.sign();
-    let reached = |level: f64| if side == Side::Long { bar.high >= level } else { bar.low <= level };
+    let reached = |level: f64| if side == Side::Long { bar.high >= level + rules.tp_through } else { bar.low <= level - rules.tp_through };
     let stop_hit = if t.side == Side::Long { bar.low <= t.sl } else { bar.high >= t.sl };
     let opposite = t.side.trend() != bar.trend;
     let timed_out = bar.bar_index - t.entry_bar >= rules.timeout_bars;

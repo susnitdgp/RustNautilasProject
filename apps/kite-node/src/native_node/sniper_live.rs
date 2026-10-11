@@ -31,7 +31,7 @@ use nautilus_core::UUID4;
 use nautilus_live::{builder::LiveNodeBuilder, config::LiveNodeConfig, node::NodeRunMode};
 use nautilus_model::instruments::FuturesContract;
 use std::{
-    sync::{Arc, atomic::AtomicI64},
+    sync::Arc,
     time::Duration,
 };
 
@@ -214,7 +214,7 @@ pub fn run(portfolio_path: &str, instance_id: &str, broker_path: Option<&str>, m
     let lock = kite_adapter::execution::native_client::coordination::lock_instance(&p.keys, &account_id)?;
     let interval = p.config.interval();
     let control = Control::new();
-    let market_price = Arc::new(AtomicI64::new(0));
+    let market_price = Arc::new(kite_adapter::execution::native_client::mock::PaperQuote::default());
     let credentials = Arc::new(kite_adapter::credentials::redis::load_from_env()?);
     let symbol = p.inst.instrument.trim_end_matches(".MCX").to_owned();
     let mode_label = if mode == Mode::Live { "LIVE (real Zerodha orders)" } else { "PAPER (Kite mock execution)" };

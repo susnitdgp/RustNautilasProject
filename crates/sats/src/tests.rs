@@ -108,7 +108,7 @@ fn ctx(i: i64, o: f64, h: f64, l: f64, c: f64, trend: i8) -> BarCtx {
     BarCtx { bar_index: i, time_ns: i * MIN, open: o, high: h, low: l, close: c, trend }
 }
 
-const RULES: ExitRules = ExitRules { timeout_bars: 100, slip: 0.0, fee_pct: 0.0 };
+const RULES: ExitRules = ExitRules { timeout_bars: 100, slip: 0.0, fee_pct: 0.0, tp_through: 0.0 };
 
 #[test]
 fn thirds_then_stop_with_gap_fill() {
@@ -126,6 +126,23 @@ fn thirds_then_stop_with_gap_fill() {
 }
 
 #[test]
+fn a_target_counts_only_when_traded_through_by_tp_through() {
+    let through = ExitRules { tp_through: 1.0, ..RULES };
+    // high exactly at TP1 (110): a touch, not reachable at the bid -> no TP
+    let mut t = long_trade();
+    let (ev, closed) = trade::settle(&mut t, &ctx(1, 101.0, 110.0, 101.0, 109.0, 1), &through);
+    assert!(ev.is_empty() && closed.is_none() && !t.hit1);
+    // one tick through (111): TP1 counts, filled at the TP level as before
+    let (ev, _) = trade::settle(&mut t, &ctx(2, 109.0, 111.0, 105.0, 110.0, 1), &through);
+    assert_eq!(ev.iter().map(|e| e.kind).collect::<Vec<_>>(), [EventKind::Tp1Hit]);
+    assert_eq!(ev[0].fill, 110.0);
+    // the Pine default (0) still counts a plain touch
+    let mut t = long_trade();
+    let (ev, _) = trade::settle(&mut t, &ctx(1, 101.0, 110.0, 101.0, 109.0, 1), &RULES);
+    assert_eq!(ev[0].kind, EventKind::Tp1Hit);
+}
+
+#[test]
 fn stop_wins_an_ambiguous_bar_and_entry_bar_is_skipped() {
     let mut t = long_trade();
     assert!(trade::settle(&mut t, &ctx(0, 100.0, 140.0, 80.0, 100.0, 1), &RULES).0.is_empty());
@@ -138,7 +155,7 @@ fn stop_wins_an_ambiguous_bar_and_entry_bar_is_skipped() {
 #[test]
 fn flip_and_timeout_exit_at_close_with_slippage_and_fees() {
     let mut t = long_trade();
-    let rules = ExitRules { timeout_bars: 100, slip: 1.0, fee_pct: 0.1 };
+    let rules = ExitRules { timeout_bars: 100, slip: 1.0, fee_pct: 0.1, tp_through: 0.0 };
     let (ev, closed) = trade::settle(&mut t, &ctx(3, 104.0, 106.0, 103.0, 105.0, -1), &rules);
     assert_eq!(ev[0].kind, EventKind::FlipExit);
     assert_eq!(ev[0].fill, 104.0);

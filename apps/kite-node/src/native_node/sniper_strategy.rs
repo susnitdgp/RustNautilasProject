@@ -46,7 +46,7 @@ use nautilus_trading::{
 use sniper::{Engine, Event};
 use std::sync::{
     Arc,
-    atomic::{AtomicI64, Ordering},
+    atomic::Ordering,
 };
 
 const GUARD_TIMER: &str = "sniper_guard";
@@ -119,7 +119,7 @@ pub fn next_order(pos: i64, target: i64) -> Option<(OrderSide, i64, bool)> {
 struct Live {
     start_ns: i64,
     control: Control,
-    market_price: Arc<AtomicI64>,
+    market_price: Arc<kite_adapter::execution::native_client::mock::PaperQuote>,
 }
 
 #[derive(Debug)]
@@ -190,7 +190,7 @@ impl SniperStrategy {
         self
     }
 
-    pub fn with_live(mut self, start_ns: i64, control: Control, market_price: Arc<AtomicI64>) -> Self {
+    pub fn with_live(mut self, start_ns: i64, control: Control, market_price: Arc<kite_adapter::execution::native_client::mock::PaperQuote>) -> Self {
         self.live = Some(Live { start_ns, control, market_price });
         self
     }
@@ -487,7 +487,7 @@ impl DataActor for SniperStrategy {
             volume: bar.volume.as_f64(),
         };
         let live_bar = self.live.as_ref().is_some_and(|l| {
-            l.market_price.store(input.close.round() as i64, Ordering::Release);
+            l.market_price.seed(input.close.round() as i64);
             close_ns > l.start_ns
         });
         if !live_bar {
@@ -561,7 +561,7 @@ impl DataActor for SniperStrategy {
         {
             let (bid, ask) = (quote.bid_price.as_f64(), quote.ask_price.as_f64());
             let mid = (bid + ask) / 2.0;
-            live.market_price.store(mid.round() as i64, Ordering::Release);
+            live.market_price.set(bid.round() as i64, ask.round() as i64);
             self.board(move |b| b.last_price = Some(mid));
             self.check_levels(bid, ask)?;
         }

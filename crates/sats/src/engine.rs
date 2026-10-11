@@ -313,7 +313,12 @@ impl Engine {
         let mut events = Vec::new();
         if let Some(t) = self.trade.as_mut() {
             let ctx = BarCtx { bar_index: idx, time_ns: bar.close_time_ns, open: o, high: h, low: l, close: c, trend: st.trend };
-            let rules = ExitRules { timeout_bars: p.trade_timeout_bars, slip, fee_pct: p.commission_pct_per_fill };
+            let rules = ExitRules {
+                timeout_bars: p.trade_timeout_bars,
+                slip,
+                fee_pct: p.commission_pct_per_fill,
+                tp_through: f64::from(p.tp_through_ticks) * self.spec.tick_size,
+            };
             let (evs, closed) = trade::settle(t, &ctx, &rules);
             events.extend(evs);
             if let Some(net) = closed {

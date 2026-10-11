@@ -35,7 +35,7 @@ pub struct MockConfig {
     pub instrument_id: String,
     pub symbol: String,
     pub instrument_token: u32,
-    pub market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
+    pub market_price: Option<Arc<PaperQuote>>,
     /// Key space of the slot (shared order-rate budget, lock name).
     pub keys: super::keys::KeySpace,
     /// Contract cap for the paper dispatcher (same meaning as production `max_lots`).
@@ -102,12 +102,41 @@ impl ExecutionClientFactory for MockFactory {
         Ok(Box::new(client))
     }
 }
+/// Latest bid / ask for paper fills (kite-adapter 0.8.2): a paper BUY fills at the ask and
+/// a SELL at the bid, as a real market order would (until 0.8.1 both filled at the mid,
+/// which hid the spread). The strategy sets it on every quote; a bar close only seeds it
+/// until the first quote arrives.
+#[derive(Debug, Default)]
+pub struct PaperQuote {
+    bid: std::sync::atomic::AtomicI64,
+    ask: std::sync::atomic::AtomicI64,
+}
+impl PaperQuote {
+    pub fn set(&self, bid: i64, ask: i64) {
+        self.bid.store(bid, std::sync::atomic::Ordering::Release);
+        self.ask.store(ask, std::sync::atomic::Ordering::Release);
+    }
+    /// Uses `price` for both sides only while no quote has been seen.
+    pub fn seed(&self, price: i64) {
+        if self.ask.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            self.set(price, price);
+        }
+    }
+    /// The price a market order on `side` ("BUY" / "SELL") would get.
+    pub fn for_side(&self, side: &str) -> i64 {
+        if side == "BUY" {
+            self.ask.load(std::sync::atomic::Ordering::Acquire)
+        } else {
+            self.bid.load(std::sync::atomic::Ordering::Acquire)
+        }
+    }
+}
 pub(crate) struct MockBroker {
     state: Mutex<Snapshot>,
     delay: std::sync::atomic::AtomicUsize,
     token: u32,
     product: String,
-    market_price: Option<Arc<std::sync::atomic::AtomicI64>>,
+    market_price: Option<Arc<PaperQuote>>,
 }
 impl MockBroker {
     #[cfg(test)]
@@ -137,7 +166,7 @@ impl MockBroker {
             market_price: None,
         }
     }
-    pub fn with_market_price(mut self, value: Option<Arc<std::sync::atomic::AtomicI64>>) -> Self {
+    pub fn with_market_price(mut self, value: Option<Arc<PaperQuote>>) -> Self {
         self.market_price = value;
         self
     }
@@ -247,7 +276,7 @@ impl Broker for MockBroker {
                 price_rupees: self
                     .market_price
                     .as_ref()
-                    .map_or(6000, |x| x.load(std::sync::atomic::Ordering::Acquire))
+                    .map_or(6000, |q| q.for_side(side))
                     .max(1),
             };
             let outcome = self.execute(&translated).await?;
@@ -450,5 +479,20 @@ mod ilrc_stop_flow_tests {
             market_protection: -1,
         };
         assert!(broker.execute(&cmd).await.is_err());
+    }
+}
+
+#[cfg(test)]
+mod paper_quote_tests {
+    use super::PaperQuote;
+    #[test]
+    fn buys_fill_at_the_ask_and_sells_at_the_bid_and_bars_only_seed() {
+        let q = PaperQuote::default();
+        q.seed(8800);
+        assert_eq!((q.for_side("BUY"), q.for_side("SELL")), (8800, 8800));
+        q.set(8862, 8864);
+        assert_eq!((q.for_side("BUY"), q.for_side("SELL")), (8864, 8862));
+        q.seed(8900); // a later bar close never overwrites a live quote
+        assert_eq!((q.for_side("BUY"), q.for_side("SELL")), (8864, 8862));
     }
 }

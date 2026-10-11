@@ -15,7 +15,7 @@ strategy through the native Kite execution client.
 | Shipped config | `config/sniper-crudeoilm.json` |
 | Launch scripts | `deploy/run-sniper-paper.sh`, `deploy/run-sniper-live.sh` |
 
-Written for kite-node 2.25.2 / kite-adapter 0.8.1 / sniper 2.1.0+3.
+Written for kite-node 2.26.0 / kite-adapter 0.8.2 / sniper 2.1.0+4.
 
 ---
 
@@ -198,6 +198,7 @@ They must satisfy TP1 < TP2 < TP3.
 | `tp1_r` / `tp2_r` / `tp3_r` | 1 / 2 / 3 | Targets further away: bigger wins, fewer hits, more trades end on stop or reversal | Closer targets: more partial profits, less upside captured |
 | `min_risk_ticks` | 2 | Refuses trades with a very small risk (protects against near-zero R) | — |
 | `positive_only` | true | Refuses plans with any level ≤ 0 (safety for odd prices) | — |
+| `tp_through_ticks` | 1 (Pine: 0) | A target counts only when the bar trades this many ticks **through** it. A plain touch at the last-traded price is often not reachable at the bid/ask (SATS live, 9 Oct: low = TP1 8855, ask never got there, model exit at the bar close filled 8 pts worse). With 1, backtests stop counting those touches as wins, and the model only closes at the bar close when price really went through | 0 = the script's touch rule (more, partly unreachable, TP hits) |
 
 ---
 
@@ -434,6 +435,7 @@ paper and live logs.
 | `min_risk_ticks` | 2 | Minimum risk in ticks |
 | `tick_size` | 1.0 | CRUDEOILM tick (₹1) |
 | `positive_only` | true | Refuse plans with a non-positive price level |
+| `tp_through_ticks` | 1 | Ticks a bar must trade beyond a target for it to count (0 = touch, as the script) |
 
 Fixed constants (not configurable): ADX trend level 20, ATR mean 42 bars, volume mean 20 bars,
 volume spike 1.2×, structure buffer 0.2 ATR, structure cap 1.5×, RSI band 25 / 75, MACD 12/26/9,

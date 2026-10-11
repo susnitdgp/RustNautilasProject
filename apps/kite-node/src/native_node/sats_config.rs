@@ -354,8 +354,8 @@ mod tests {
     fn shipped_config_is_valid_and_spells_out_every_param() {
         let c: SatsConfig = serde_json::from_str(SHIPPED).unwrap();
         c.validate().unwrap();
-        let expected = Params { tp_mode: sats::TpMode::Dynamic, ..Params::default() };
-        assert_eq!(c.params, expected, "script defaults except Dynamic TP mode");
+        let expected = Params { tp_mode: sats::TpMode::Dynamic, tp_through_ticks: 1, ..Params::default() };
+        assert_eq!(c.params, expected, "script defaults except Dynamic TP mode and TP trade-through");
         let raw: serde_json::Value = serde_json::from_str(SHIPPED).unwrap();
         let written: Vec<_> = raw["params"].as_object().unwrap().keys().cloned().collect();
         let all = serde_json::to_value(Params::default()).unwrap();

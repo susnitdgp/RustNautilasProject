@@ -15,7 +15,7 @@ Precision Sniper is the main one. In `config/portfolio-production.json` the SATS
 | Shipped config | `config/sats-crudeoilm.json` |
 | Launch scripts | `deploy/run-sats-paper.sh`, `deploy/run-sats-live.sh` |
 
-Written for kite-node 2.16.0.
+Written for kite-node 2.16.0; `tp_through_ticks` and bid/ask paper fills since 2.26.0.
 
 ---
 
@@ -290,6 +290,13 @@ score and TQI columns.
 The model's own `commission_pct_per_fill` and `slippage_ticks` (shipped 0) only change SATS's
 internal R accounting and the self-learning; real costs are modelled by the `execution` cost
 inputs.
+
+`tp_through_ticks` (shipped 1; the script's rule is 0) makes a take-profit count only when the
+bar trades that many ticks **through** it: high above a long's target, low below a short's. A
+plain touch at the last-traded price is often not reachable at the bid/ask. On 9 Oct (live) the
+5m bar's low touched TP1 8855 while the ask never got there; the model counted TP1 at the bar
+close and the market exit filled 8863, 8 points worse. Live, a target is still taken intrabar
+as soon as the bid (long) or ask (short) reaches it.
 
 ---
 

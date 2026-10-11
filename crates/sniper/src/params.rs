@@ -83,6 +83,10 @@ pub struct Params {
     pub min_risk_ticks: u32,
     pub tick_size: f64,
     pub positive_only: bool,
+    /// A take-profit counts only when the bar trades this many ticks THROUGH it (high
+    /// above a long's target, low below a short's). 0 = touch, as the Pine script.
+    /// Live, a touch at the last-traded price is often not reachable at the bid/ask.
+    pub tp_through_ticks: u32,
 }
 
 impl Default for Params {
@@ -118,6 +122,7 @@ impl Default for Params {
             structure_policy: StructurePolicy::Cap,
             min_risk_ticks: 2,
             tick_size: 1.0,
+            tp_through_ticks: 0,
             positive_only: true,
         }
     }
@@ -170,6 +175,9 @@ impl Params {
         let (f1, f2) = (self.tp1_close_fraction, self.tp2_close_fraction);
         if !(f1 >= 0.0 && f2 >= 0.0 && f1 + f2 < 1.0) {
             return Err("tp1/tp2 close fractions must be >= 0 and sum to < 1".into());
+        }
+        if self.tp_through_ticks > 100 {
+            return Err("tp_through_ticks must be 0..100".into());
         }
         if !(self.tick_size.is_finite() && self.tick_size > 0.0) {
             return Err("tick_size must be positive".into());

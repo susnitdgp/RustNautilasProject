@@ -435,7 +435,8 @@ impl Engine {
             let d = t.dir as f64;
             let old_stop = t.stop;
             let stopped = if t.dir == 1 { b.low <= old_stop } else { b.high >= old_stop };
-            let touch = |lvl: f64| if t.dir == 1 { b.high >= lvl } else { b.low <= lvl };
+            let through = f64::from(p.tp_through_ticks) * p.tick_size;
+            let touch = |lvl: f64| if t.dir == 1 { b.high >= lvl + through } else { b.low <= lvl - through };
             let (t1, t2, t3) = (!t.hit1 && touch(t.tp1), !t.hit2 && touch(t.tp2), !t.hit3 && touch(t.tp3));
             let mut exit: Option<(f64, &'static str)> = None;
             if stopped {

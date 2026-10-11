@@ -42,7 +42,7 @@ use nautilus_trading::{
 use sats::{BarInput, Engine, Event, Side};
 use std::sync::{
     Arc,
-    atomic::{AtomicI64, Ordering},
+    atomic::Ordering,
 };
 
 const GUARD_TIMER: &str = "sats_guard";
@@ -52,7 +52,7 @@ struct Live {
     start_ns: i64,
     square_off_minute: u32,
     control: Control,
-    market_price: Arc<AtomicI64>,
+    market_price: Arc<kite_adapter::execution::native_client::mock::PaperQuote>,
 }
 
 #[derive(Debug)]
@@ -156,7 +156,7 @@ impl SatsStrategy {
     }
 
     /// Enables the live safety behaviour described in the module docs.
-    pub fn with_live(mut self, start_ns: i64, square_off_minute: u32, control: Control, market_price: Arc<AtomicI64>) -> Self {
+    pub fn with_live(mut self, start_ns: i64, square_off_minute: u32, control: Control, market_price: Arc<kite_adapter::execution::native_client::mock::PaperQuote>) -> Self {
         self.live = Some(Live { start_ns, square_off_minute, control, market_price });
         self
     }
@@ -654,7 +654,7 @@ impl DataActor for SatsStrategy {
         // configured entry window (IST, by bar close); exits are never blocked
         self.engine.set_entries_enabled(self.config.entries_allowed(input.close_time_ns));
         let Some((start_ns, cutoff_minute)) = self.live.as_ref().map(|l| {
-            l.market_price.store(input.close.round() as i64, Ordering::Release);
+            l.market_price.seed(input.close.round() as i64);
             (l.start_ns, l.square_off_minute)
         }) else {
             for ev in self.engine.on_bar(&input) {
@@ -726,7 +726,7 @@ impl DataActor for SatsStrategy {
         {
             let (bid, ask) = (quote.bid_price.as_f64(), quote.ask_price.as_f64());
             let mid = (bid + ask) / 2.0;
-            live.market_price.store(mid.round() as i64, Ordering::Release);
+            live.market_price.set(bid.round() as i64, ask.round() as i64);
             self.board(move |b| b.last_price = Some(mid));
             if self.trail_mode() {
                 self.check_trail(bid, ask)?;

@@ -41,6 +41,7 @@
     "structure_policy": "Cap and flag",
     "min_risk_ticks": 2,
     "tick_size": 1.0,
-    "positive_only": true
+    "positive_only": true,
+    "tp_through_ticks": 1
   }
 }

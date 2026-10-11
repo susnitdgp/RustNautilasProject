@@ -93,6 +93,7 @@
     "commission_pct_per_fill": 0.0,
     "slippage_ticks": 0,
     "min_risk_ticks": 2,
-    "max_pivot_age_bars": 100
+    "max_pivot_age_bars": 100,
+    "tp_through_ticks": 1
   }
 }
