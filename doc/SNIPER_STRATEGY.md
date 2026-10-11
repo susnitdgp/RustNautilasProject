@@ -87,15 +87,15 @@ other preset they are ignored.
 | Preset | EMA fast / slow / trend | RSI | ATR | Min score (of 10) | SL × ATR |
 |---|---|---|---|---|---|
 | Scalping | 5 / 13 / 34 | 8 | 10 | 4 | 0.8 |
-| Aggressive | 8 / 18 / 50 | 11 | 12 | 3 | 1.2 |
+| **Aggressive** (shipped) | **8 / 18 / 50** | **11** | **12** | **3** | **1.2** |
 | Default | 9 / 21 / 55 | 13 | 14 | 5 | 1.5 |
-| **Conservative** (shipped) | **12 / 26 / 89** | **14** | **14** | **7** | **2.0** |
+| Conservative (shipped before 2.26.1) | 12 / 26 / 89 | 14 | 14 | 7 | 2.0 |
 | Swing | 13 / 34 / 89 | 21 | 20 | 6 | 2.5 |
 | Crypto 24/7 | 9 / 21 / 55 | 14 | 20 | 5 | 2.0 |
 | Custom | from the JSON fields | | | | |
 
 `"Auto"` picks by `timeframe_minutes`: up to 5 min → Scalping, up to 60 min → Default,
-under 4 h → Conservative, otherwise Swing. The shipped config sets Conservative explicitly,
+under 4 h → Conservative, otherwise Swing. The shipped config sets Aggressive explicitly,
 so on 3-minute bars it does **not** get Scalping.
 
 **Impact.** Shorter EMAs cross more often: more trades, more whipsaws, earlier entries.
@@ -140,9 +140,11 @@ One point each, for a long (a short mirrors every condition):
 Maximum score = 5 + 1 (volume available) + 1 (VWAP on). For CRUDEOILM with volume, that's 7.
 
 **Required ratio** = the largest of:
-* the preset's minimum score / 10 (Conservative: 0.7);
+* the preset's minimum score / 10 (Aggressive: 0.3, Conservative: 0.7);
 * 0.5 when `hide_c` is on;
 * 0.65 for `grade_filter` "A+ and A", 0.8 for "A+ Only", 0 for "All".
+
+Shipped (Aggressive + "A+ and A"): required ratio 0.65, so 5 of 7 points.
 
 Shipped config: 0.7 × 7 = 4.9, so **a signal needs 5 of the 7 points**.
 
@@ -188,7 +190,7 @@ They must satisfy TP1 < TP2 < TP3.
 
 | Input | Shipped | Raising it | Lowering it |
 |---|---|---|---|
-| preset SL × ATR | 2.0 | Wider stop, larger R, targets further away; fewer stop-outs, smaller hit rate on targets, larger ₹ loss per stop | Tighter stop, more noise stop-outs, targets closer |
+| preset SL × ATR | 1.2 | Wider stop, larger R, targets further away; fewer stop-outs, smaller hit rate on targets, larger ₹ loss per stop | Tighter stop, more noise stop-outs, targets closer |
 | `structure` | true | (on) stop also respects the recent swing: usually wider, fewer stop-hunts | (off) pure ATR stop, tighter and more mechanical |
 | `swing_lookback` | 10 | Swing taken over more bars, usually further away, so wider stops (until the cap) | Nearer swing, tighter stop |
 | `structure_policy` | Cap and flag | "Skip entry" refuses trades whose swing stop would be beyond the cap: fewer, tighter-risk trades | — |
@@ -282,7 +284,7 @@ still do.
 | `bar_minutes` | 3 | Candle size. Allowed 3, 5, 10, 15, 30. Must equal `params.timeframe_minutes`. Live bars are built from WebSocket ticks; history comes from the matching Kite interval. |
 | `entries_until` | 23:00 | No new entries on signal bars closing at or after this time (IST). Exits continue. |
 | `square_off` | 23:15 | On the bar closing at or after this time: flatten everything, no new entries for the rest of the day. Must be before the MCX session close. |
-| `entry_blackouts` | 17:30–19:30 | IST windows `[from, to)` with no new entries, by signal-bar close. The shipped window covers the 08:30 ET US releases (CPI, NFP, jobless claims): 18:00 IST while the US is on daylight time, 19:00 IST in winter. It does **not** cover the weekly EIA crude inventory (10:30 ET = 20:00 / 21:00 IST); add a window if you want that too. Exits are never blocked. |
+| `entry_blackouts` | none (17:30–19:30 before 2.26.2) | IST windows `[from, to)` with no new entries, by signal-bar close, e.g. `[{ "from": "17:30:00", "to": "19:30:00" }]`. Shipped empty since kite-node 2.26.2 (TradingView runs with no session filter). The old window covered the 08:30 ET US releases (CPI, NFP, jobless claims): 18:00 IST while the US is on daylight time, 19:00 IST in winter. It does **not** cover the weekly EIA crude inventory (10:30 ET = 20:00 / 21:00 IST); add a window if you want that too. Exits are never blocked. |
 | (fixed) | 09:00 | No entries before 09:00 IST. |
 
 **Impact.** Wider windows give more trades, including news spikes. Each blackout removes the
@@ -408,18 +410,18 @@ paper and live logs.
 | `slippage_points_per_side` | 1.0 | Backtest slippage per fill |
 | `live.session_calendar` | config/mcx-session-calendar.json | Holidays and special sessions |
 | `live.product` | MIS | Must be MIS |
-| `entries_until`, `square_off`, `entry_blackouts` | 23:00, 23:15, 17:30–19:30 | Section 7 |
+| `entries_until`, `square_off`, `entry_blackouts` | 23:00, 23:15, none | Section 7 |
 
 ### 10.2 `params` (the Pine inputs)
 
 | Key | Shipped | Meaning and impact |
 |---|---|---|
-| `preset` | Conservative | Lengths, minimum score, SL multiplier (section 3) |
+| `preset` | Aggressive | Lengths, minimum score, SL multiplier (section 3). Aggressive since kite-node 2.26.1 (matches the TradingView chart setup); Conservative before |
 | `timeframe_minutes` | 3 | Must equal `bar_minutes`; also drives "Auto" |
 | `vwap` | true | Adds the VWAP point to the score (maximum 7 instead of 6). Off: one point less to collect, but also a lower maximum |
 | `warmup_mult` | 3 | Warm-up = trend EMA × this (2..10). Higher: steadier EMAs before trading, longer history needed |
 | `ema_fast` … `sl_mult` | (unused) | Only read with preset "Custom" |
-| `grade_filter` | All | "A+ and A" (≥ 65 %) or "A+ Only" (≥ 80 %). It only matters when it is above the preset's minimum: with Conservative (70 %) "A+ and A" changes nothing, "A+ Only" needs 6 of 7 points |
+| `grade_filter` | A+ and A | "A+ and A" (≥ 65 %) or "A+ Only" (≥ 80 %), or "All". It only matters when it is above the preset's minimum: with Aggressive (30 %) "A+ and A" is the real gate (5 of 7 points); with Conservative (70 %) it changed nothing |
 | `hide_c` | true | Refuse grade C (< 50 %). Matters only if the preset minimum is below 0.5 |
 | `vol_mode` | Skip Signals | High volatility = ATR > `vol_threshold` × its 42-bar mean. Skip, Widen SL, or Off |
 | `vol_threshold` | 1.3 | Section 5.3 |

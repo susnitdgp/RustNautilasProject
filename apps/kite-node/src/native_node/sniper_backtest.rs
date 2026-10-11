@@ -399,7 +399,8 @@ mod tests {
             let lots: u32 = r.fills.split(' ').map(|f| f.split('@').next().unwrap().parse::<u32>().unwrap()).sum();
             assert_eq!(lots, c.lots, "every lot is closed: {}", r.fills);
             assert!(r.entry_time.as_str() < "23:00", "entry at {}", r.entry_time);
-            assert!(!(r.entry_time.as_str() >= "17:30" && r.entry_time.as_str() < "19:30"), "entry in blackout {}", r.entry_time);
+            let t = chrono::NaiveTime::parse_from_str(&r.entry_time, "%H:%M").unwrap();
+            assert!(!c.entry_blackouts.iter().any(|w| t >= w.from && t < w.to), "entry in blackout {}", r.entry_time);
             assert!(r.exit_time.as_str() <= "23:30" && r.exit_time.as_str() >= r.entry_time.as_str(), "overnight trade {:?}", r);
         }
     }

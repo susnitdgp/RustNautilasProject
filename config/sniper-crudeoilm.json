@@ -16,15 +16,13 @@
   },
   "entries_until": "23:00:00",
   "square_off": "23:15:00",
-  "entry_blackouts": [
-    { "from": "17:30:00", "to": "19:30:00" }
-  ],
+  "entry_blackouts": [],
   "params": {
-    "preset": "Conservative",
+    "preset": "Aggressive",
     "timeframe_minutes": 3,
     "vwap": true,
     "warmup_mult": 3,
-    "grade_filter": "All",
+    "grade_filter": "A+ and A",
     "hide_c": true,
     "vol_mode": "Skip Signals",
     "vol_threshold": 1.3,

@@ -40,7 +40,7 @@ pub struct Board {
     pub redis_namespace: String,
     pub point_value: f64,
     pub lots: u32,
-    /// Header title, set by the strategy runner (e.g. "SNIPER v2.1.0 · 3m Conservative").
+    /// Header title, set by the strategy runner (e.g. "SNIPER v2.1.0 · 3m Aggressive").
     pub title: String,
     /// Model panel: title and rows. Empty rows = the trend-model fields below.
     pub model_title: String,

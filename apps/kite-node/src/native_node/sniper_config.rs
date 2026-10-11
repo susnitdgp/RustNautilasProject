@@ -130,7 +130,8 @@ mod tests {
         assert_eq!((c.lots, c.tp1_lots, c.tp2_lots, c.bar_minutes), (3, 1, 1, 3));
         let p = c.engine_params();
         assert!((p.tp1_close_fraction - 1.0 / 3.0).abs() < 1e-12 && (p.tp2_close_fraction - 1.0 / 3.0).abs() < 1e-12);
-        assert_eq!(p.resolve().preset, sniper::params::Preset::Conservative);
+        assert_eq!(p.resolve().preset, sniper::params::Preset::Aggressive);
+        assert_eq!(p.grade_filter, sniper::params::GradeFilter::AOrBetter);
         let mut bad = c.clone();
         bad.tp2_lots = 2;
         assert!(bad.validate().is_err(), "TP1 + TP2 must leave a lot for TP3");
@@ -141,8 +142,12 @@ mod tests {
         // 2026-10-09 IST times as epoch seconds
         let at = |h: u32, m: u32| chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap().and_hms_opt(h, m, 0).unwrap().and_utc().timestamp() - 19_800;
         assert!(c.entries_allowed_at(at(10, 0)));
-        assert!(!c.entries_allowed_at(at(18, 0)), "US data blackout");
-        assert!(c.entries_allowed_at(at(19, 30)), "blackout ends at 19:30");
+        assert!(c.entry_blackouts.is_empty(), "shipped without blackouts (2.26.2)");
+        assert!(c.entries_allowed_at(at(18, 0)), "no US data blackout");
+        let mut b = c.clone();
+        b.entry_blackouts = vec![Blackout { from: NaiveTime::from_hms_opt(17, 30, 0).unwrap(), to: NaiveTime::from_hms_opt(19, 30, 0).unwrap() }];
+        assert!(!b.entries_allowed_at(at(18, 0)), "blackout blocks entries");
+        assert!(b.entries_allowed_at(at(19, 30)), "blackout ends at 19:30");
         assert!(!c.entries_allowed_at(at(23, 0)));
         assert!(c.square_off_due(at(23, 15)) && !c.square_off_due(at(23, 12)));
     }
